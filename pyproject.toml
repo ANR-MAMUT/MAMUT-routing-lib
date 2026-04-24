@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
 
 [project]
 name = "mamut-routing-lib"
@@ -40,8 +40,8 @@ Organization = "https://github.com/ANR-MAMUT"
 Source = "https://github.com/ANR-MAMUT/MAMUT-routing-lib"
 Issues = "https://github.com/ANR-MAMUT/MAMUT-routing-lib/issues"
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.hatch.build.targets.wheel]
+packages = ["src/mamut_routing_lib"]
 
 [dependency-groups]
 dev = [
