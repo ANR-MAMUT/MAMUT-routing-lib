@@ -80,6 +80,14 @@ class GitHubReleaseSource:
     manifest_filename: str = DEFAULT_MANIFEST_FILENAME
     token: str | None = None
 
+    def __post_init__(self) -> None:
+        parts = self.repo_full_name.split("/")
+        if len(parts) != 2 or not all(parts):
+            raise ValueError(
+                f"repo_full_name must be in 'owner/name' format, got: {self.repo_full_name!r}. "
+                f"Example: 'ANR-MAMUT/MAMUT-routing-dummy'."
+            )
+
     @classmethod
     def from_env(cls) -> "GitHubReleaseSource":
         repo_full_name = os.getenv(DEFAULT_RELEASE_REPO_ENV, "ANR-MAMUT/MAMUT-routing")
@@ -110,10 +118,25 @@ class GitHubReleaseClient:
         self.source = source or GitHubReleaseSource.from_env()
 
     def fetch_manifest(self, tag: str | None = None) -> ReleaseArchiveManifest:
-        release_metadata = self._fetch_release_metadata(tag=tag)
-        asset_metadata = self._find_asset_metadata(release_metadata["assets"], self.source.manifest_filename)
-        payload = self._download_json(asset_metadata["browser_download_url"])
+        resolved_tag = tag if tag is not None else self._resolve_latest_tag()
+        manifest_url = self._build_release_asset_url(resolved_tag, self.source.manifest_filename)
+        payload = self._download_json(manifest_url)
         return ReleaseArchiveManifest(**payload)
+
+    def _build_release_asset_url(self, tag: str, asset_filename: str) -> str:
+        return f"https://github.com/{self.source.repo_full_name}/releases/download/{tag}/{asset_filename}"
+
+    def _resolve_latest_tag(self) -> str:
+        url = f"https://github.com/{self.source.repo_full_name}/releases/latest"
+        with self._open_url(url) as response:
+            final_url = response.geturl()
+        marker = "/releases/tag/"
+        if marker not in final_url:
+            raise RuntimeError(
+                f"Could not resolve latest release tag for {self.source.repo_full_name!r} from {final_url!r}. "
+                f"Pass --tag explicitly."
+            )
+        return final_url.rsplit(marker, 1)[-1].split("?", 1)[0].rstrip("/")
 
     def download_asset(
         self,
@@ -146,20 +169,6 @@ class GitHubReleaseClient:
         with zipfile.ZipFile(destination_path, "r") as archive:
             archive.extractall(extract_dir)
         return extract_dir
-
-    def _fetch_release_metadata(self, tag: str | None = None) -> dict:
-        if tag is None:
-            url = f"https://api.github.com/repos/{self.source.repo_full_name}/releases/latest"
-        else:
-            url = f"https://api.github.com/repos/{self.source.repo_full_name}/releases/tags/{tag}"
-        return self._download_json(url)
-
-    @staticmethod
-    def _find_asset_metadata(assets: list[dict], filename: str) -> dict:
-        for asset in assets:
-            if asset.get("name") == filename:
-                return asset
-        raise FileNotFoundError(f"Release asset not found: {filename}")
 
     def _download_json(self, url: str) -> dict:
         with self._open_url(url) as response:
@@ -203,7 +212,6 @@ class GitHubReleaseClient:
 
     def _build_headers(self) -> dict[str, str]:
         headers = {
-            "Accept": "application/vnd.github+json",
             "User-Agent": "mamut-routing-lib",
         }
         if self.source.token:

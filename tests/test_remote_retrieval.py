@@ -39,29 +39,30 @@ def _build_zip_bytes(files: dict[str, bytes]) -> bytes:
 class _FakeHTTPResponse:
     """Minimal stand-in for the object returned by urllib.request.urlopen."""
 
-    def __init__(self, body: bytes, *, headers: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        body: bytes,
+        *,
+        headers: dict[str, str] | None = None,
+        final_url: str | None = None,
+    ) -> None:
         self._stream = io.BytesIO(body)
         self.headers = headers or {}
+        self._final_url = final_url
 
     def read(self, size: int = -1) -> bytes:
         if size == -1:
             return self._stream.read()
         return self._stream.read(size)
 
+    def geturl(self) -> str | None:
+        return self._final_url
+
     def __enter__(self) -> "_FakeHTTPResponse":
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
         self._stream.close()
-
-
-def _make_release_metadata(
-    *, manifest_filename: str, manifest_url: str, extra_assets: list[dict[str, Any]] | None = None
-) -> dict[str, Any]:
-    assets = [{"name": manifest_filename, "browser_download_url": manifest_url}]
-    if extra_assets:
-        assets.extend(extra_assets)
-    return {"tag_name": "v0.0.1", "assets": assets}
 
 
 def _patch_urlopen(responses_by_url: Mapping[str, _FakeHTTPResponse | Exception]):
@@ -80,64 +81,62 @@ def _patch_urlopen(responses_by_url: Mapping[str, _FakeHTTPResponse | Exception]
     return patch("mamut_routing_lib.remote.urllib.request.urlopen", side_effect=_fake_urlopen), seen_urls, seen_headers
 
 
-def test_fetch_manifest_uses_latest_endpoint_with_bearer_token() -> None:
+def test_fetch_manifest_with_explicit_tag_uses_direct_release_asset_url() -> None:
     manifest_payload = _load_fixture_manifest_payload()
-    release_metadata_url = "https://api.github.com/repos/ANR-MAMUT/MAMUT-routing-dummy/releases/latest"
-    manifest_url = "https://example.invalid/snapshot-manifest.json"
-    responses = {
-        release_metadata_url: _FakeHTTPResponse(
-            json.dumps(_make_release_metadata(manifest_filename="snapshot-manifest.json", manifest_url=manifest_url)).encode("utf-8")
-        ),
-        manifest_url: _FakeHTTPResponse(json.dumps(manifest_payload).encode("utf-8")),
-    }
+    expected_url = "https://github.com/ANR-MAMUT/MAMUT-routing-dummy/releases/download/v0.0.1/snapshot-manifest.json"
+    responses = {expected_url: _FakeHTTPResponse(json.dumps(manifest_payload).encode("utf-8"))}
 
     patcher, seen_urls, seen_headers = _patch_urlopen(responses)
     with patcher:
         client = GitHubReleaseClient(
             GitHubReleaseSource(repo_full_name="ANR-MAMUT/MAMUT-routing-dummy", token="ghp_secret")
         )
-        manifest = client.fetch_manifest()
+        manifest = client.fetch_manifest(tag="v0.0.1")
 
     assert isinstance(manifest, ReleaseArchiveManifest)
     assert manifest.snapshot_id == manifest_payload["snapshot_id"]
-    assert seen_urls == [release_metadata_url, manifest_url]
-    case_insensitive_first_call = {k.lower(): v for k, v in seen_headers[0].items()}
-    assert case_insensitive_first_call.get("authorization") == "Bearer ghp_secret"
-    assert "mamut-routing-lib" in case_insensitive_first_call.get("user-agent", "")
+    assert seen_urls == [expected_url]
+    case_insensitive_headers = {k.lower(): v for k, v in seen_headers[0].items()}
+    assert case_insensitive_headers.get("authorization") == "Bearer ghp_secret"
+    assert "mamut-routing-lib" in case_insensitive_headers.get("user-agent", "")
 
 
-def test_fetch_manifest_with_explicit_tag_uses_tags_endpoint() -> None:
+def test_fetch_manifest_resolves_latest_tag_via_redirect() -> None:
     manifest_payload = _load_fixture_manifest_payload()
-    tag_url = "https://api.github.com/repos/ANR-MAMUT/MAMUT-routing-dummy/releases/tags/v0.0.1"
-    manifest_url = "https://example.invalid/snapshot-manifest.json"
+    latest_url = "https://github.com/ANR-MAMUT/MAMUT-routing-dummy/releases/latest"
+    redirected_url = "https://github.com/ANR-MAMUT/MAMUT-routing-dummy/releases/tag/v0.0.1"
+    manifest_url = "https://github.com/ANR-MAMUT/MAMUT-routing-dummy/releases/download/v0.0.1/snapshot-manifest.json"
     responses = {
-        tag_url: _FakeHTTPResponse(
-            json.dumps(_make_release_metadata(manifest_filename="snapshot-manifest.json", manifest_url=manifest_url)).encode("utf-8")
-        ),
+        latest_url: _FakeHTTPResponse(b"<html/>", final_url=redirected_url),
         manifest_url: _FakeHTTPResponse(json.dumps(manifest_payload).encode("utf-8")),
     }
 
     patcher, seen_urls, _ = _patch_urlopen(responses)
     with patcher:
         client = GitHubReleaseClient(GitHubReleaseSource(repo_full_name="ANR-MAMUT/MAMUT-routing-dummy"))
-        client.fetch_manifest(tag="v0.0.1")
+        manifest = client.fetch_manifest()
 
-    assert seen_urls[0] == tag_url
+    assert manifest.snapshot_id == manifest_payload["snapshot_id"]
+    assert seen_urls == [latest_url, manifest_url]
 
 
-def test_fetch_manifest_missing_manifest_asset_raises_file_not_found() -> None:
-    release_metadata_url = "https://api.github.com/repos/ANR-MAMUT/MAMUT-routing-dummy/releases/latest"
-    responses = {
-        release_metadata_url: _FakeHTTPResponse(
-            json.dumps({"assets": [{"name": "something-else.zip", "browser_download_url": "https://example.invalid/x"}]}).encode("utf-8")
-        ),
-    }
+def test_release_source_rejects_repo_without_owner() -> None:
+    with pytest.raises(ValueError, match="owner/name"):
+        GitHubReleaseSource(repo_full_name="MAMUT-routing-dummy")
+
+
+def test_fetch_manifest_404_is_runtime_error() -> None:
+    expected_url = "https://github.com/ANR-MAMUT/MAMUT-routing-dummy/releases/download/v9.9.9/snapshot-manifest.json"
+    http_error = urllib.error.HTTPError(
+        url=expected_url, code=404, msg="Not Found", hdrs=None, fp=io.BytesIO(b"")
+    )
+    responses: dict[str, _FakeHTTPResponse | Exception] = {expected_url: http_error}
 
     patcher, _, _ = _patch_urlopen(responses)
     with patcher:
         client = GitHubReleaseClient(GitHubReleaseSource(repo_full_name="ANR-MAMUT/MAMUT-routing-dummy"))
-        with pytest.raises(FileNotFoundError, match="snapshot-manifest.json"):
-            client.fetch_manifest()
+        with pytest.raises(RuntimeError, match="HTTP 404"):
+            client.fetch_manifest(tag="v9.9.9")
 
 
 def _make_archive_asset(*, filename: str, sha256: str, size_bytes: int, download_url: str) -> ReleaseArchiveAsset:
@@ -282,15 +281,3 @@ def test_progress_callback_receives_increasing_byte_counts(tmp_path: Path) -> No
     assert progress_events == sorted(progress_events, key=lambda evt: evt[0])
 
 
-def test_http_error_is_wrapped_as_runtime_error() -> None:
-    release_url = "https://api.github.com/repos/acme/repo/releases/latest"
-    http_error = urllib.error.HTTPError(
-        url=release_url, code=404, msg="Not Found", hdrs=None, fp=io.BytesIO(b"")
-    )
-    responses: dict[str, _FakeHTTPResponse | Exception] = {release_url: http_error}
-
-    patcher, _, _ = _patch_urlopen(responses)
-    with patcher:
-        client = GitHubReleaseClient(GitHubReleaseSource("acme/repo"))
-        with pytest.raises(RuntimeError, match="HTTP 404"):
-            client.fetch_manifest()

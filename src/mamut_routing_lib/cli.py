@@ -90,6 +90,14 @@ def main_callback(
     ] = None,
 ) -> None:
     resolved_repo = repo or os.getenv(DEFAULT_RELEASE_REPO_ENV) or "ANR-MAMUT/MAMUT-routing"
+    parts = resolved_repo.split("/")
+    if len(parts) != 2 or not all(parts):
+        typer.echo(
+            f"Error: --repo must be in 'owner/name' format, got: {resolved_repo!r}. "
+            f"Example: --repo ANR-MAMUT/MAMUT-routing-dummy",
+            err=True,
+        )
+        raise typer.Exit(code=2)
     resolved_token = token if token is not None else os.getenv(DEFAULT_GITHUB_TOKEN_ENV)
     resolved_output_dir = (output_dir.expanduser().resolve() if output_dir is not None else _resolve_default_output_dir())
     ctx.obj = CLIState(
