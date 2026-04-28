@@ -10,6 +10,7 @@ import zipfile
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import Callable, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -21,6 +22,9 @@ DEFAULT_RELEASE_REPO_ENV = "MAMUT_ROUTING_RELEASE_REPO"
 DEFAULT_GITHUB_TOKEN_ENV = "MAMUT_ROUTING_GITHUB_TOKEN"
 DEFAULT_MANIFEST_FILENAME = "snapshot-manifest.json"
 MANIFEST_SCHEMA_VERSION = "1.0.0"
+DOWNLOAD_CHUNK_SIZE = 1024 * 1024
+
+ProgressCallback: TypeAlias = Callable[[int, int | None], None]
 
 
 class ReleaseArchiveScope(str, Enum):
@@ -117,11 +121,17 @@ class GitHubReleaseClient:
         destination_dir: str | Path,
         *,
         extract: bool = False,
+        progress_callback: ProgressCallback | None = None,
     ) -> Path:
         destination_root = Path(destination_dir)
         destination_root.mkdir(parents=True, exist_ok=True)
         destination_path = destination_root / asset.filename
-        self._download_file(asset.download_url, destination_path)
+        self._download_file(
+            asset.download_url,
+            destination_path,
+            expected_total_bytes=asset.size_bytes,
+            progress_callback=progress_callback,
+        )
 
         if asset.checksum_sha256 is not None:
             verify_sha256(destination_path, asset.checksum_sha256)
@@ -155,10 +165,34 @@ class GitHubReleaseClient:
         with self._open_url(url) as response:
             return json.loads(response.read().decode("utf-8"))
 
-    def _download_file(self, url: str, destination_path: Path) -> None:
+    def _download_file(
+        self,
+        url: str,
+        destination_path: Path,
+        *,
+        expected_total_bytes: int | None = None,
+        progress_callback: ProgressCallback | None = None,
+    ) -> None:
         with self._open_url(url) as response:
+            total_bytes = expected_total_bytes
+            if total_bytes is None:
+                content_length = response.headers.get("Content-Length")
+                if content_length is not None:
+                    try:
+                        total_bytes = int(content_length)
+                    except ValueError:
+                        total_bytes = None
+
+            bytes_downloaded = 0
             with destination_path.open("wb") as handle:
-                shutil.copyfileobj(response, handle)
+                while True:
+                    chunk = response.read(DOWNLOAD_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+                    bytes_downloaded += len(chunk)
+                    if progress_callback is not None:
+                        progress_callback(bytes_downloaded, total_bytes)
 
     def _open_url(self, url: str):
         request = urllib.request.Request(url, headers=self._build_headers())

@@ -34,6 +34,15 @@ classifiers = [
   "Programming Language :: Python"
 ]
 
+[project.optional-dependencies]
+cli = [
+    "typer>=0.12",
+    "tqdm>=4.66",
+]
+
+[project.scripts]
+mamut-routing = "mamut_routing_lib.cli:app"
+
 [project.urls]
 ANR-MAMUT = "https://anr.fr/Project-ANR-22-CE22-0016"
 Organization = "https://github.com/ANR-MAMUT"
@@ -46,4 +55,6 @@ packages = ["src/mamut_routing_lib"]
 [dependency-groups]
 dev = [
     "pytest>=9.0.0",
+    "typer>=0.12",
+    "tqdm>=4.66",
 ]

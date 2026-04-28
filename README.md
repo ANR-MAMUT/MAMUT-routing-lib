@@ -55,3 +55,55 @@ Default environment variables:
 - `MAMUT_ROUTING_GITHUB_TOKEN`
 - `MAMUT_ROUTING_ROOT`
 - `MAMUT_ROUTING_BENCHMARKS_ROOT`
+
+## Command-line interface
+
+A `mamut-routing` CLI is available with the optional `cli` extra:
+
+```bash
+pip install "mamut-routing-lib[cli]"
+# or with uv
+uv add "mamut-routing-lib[cli]"
+```
+
+It exposes four subcommands backed by the remote retrieval module:
+
+```bash
+# List archives available in the latest release of the configured repo
+mamut-routing --repo ANR-MAMUT/MAMUT-routing-dummy --tag v0.0.1 list
+
+# Filter by scope/problem-type/benchmark-name
+mamut-routing --tag v0.0.1 list --problem-type CVRP --scope problem_family
+
+# Download (and extract) one or more archives into --output-dir
+mamut-routing --tag v0.0.1 \
+    --output-dir ./benchmarks \
+    fetch CVRP-Mamut2026-snapshot-2026-04-24-621056e.zip
+
+# Or fetch by filter:
+mamut-routing --tag v0.0.1 fetch --problem-type CVRP --benchmark-name Mamut2026
+
+# Verify local zip checksums against the remote manifest
+mamut-routing --tag v0.0.1 --output-dir ./benchmarks verify
+
+# Print the parsed manifest as JSON
+mamut-routing --tag v0.0.1 manifest | jq .snapshot_id
+```
+
+Global flags `--repo`, `--token`, `--tag`, and `--output-dir` are also read from
+the environment (`MAMUT_ROUTING_RELEASE_REPO`, `MAMUT_ROUTING_GITHUB_TOKEN`,
+`MAMUT_ROUTING_BENCHMARKS_ROOT`).
+
+## Development
+
+```bash
+# Install editable with CLI extras and test deps
+uv pip install -e ".[cli]"
+uv pip install pytest
+
+# Hermetic offline test suite (no network)
+pytest -v tests/
+
+# Opt-in real-network smoke test (downloads ~1.8 MB from a public release)
+MAMUT_ROUTING_TEST_NETWORK=1 pytest -v tests/test_remote_network.py
+```

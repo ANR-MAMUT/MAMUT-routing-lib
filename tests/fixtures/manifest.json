@@ -1,0 +1,40 @@
+{
+    "schema_version": "1.0.0",
+    "snapshot_id": "2026-04-24-deadbee",
+    "published_at": "2026-04-24T12:00:00+00:00",
+    "source_commit": "deadbeef1234",
+    "source_branch": "main",
+    "release_tag": "v0.0.1",
+    "assets": [
+        {
+            "scope": "problem",
+            "filename": "CVRP-snapshot-2026-04-24-deadbee.zip",
+            "download_url": "https://example.invalid/CVRP-snapshot-2026-04-24-deadbee.zip",
+            "problem_type": "CVRP",
+            "benchmark_name": null,
+            "checksum_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "size_bytes": 1024,
+            "archive_root": "benchmarks/CVRP"
+        },
+        {
+            "scope": "problem_family",
+            "filename": "CVRP-Mamut2026-snapshot-2026-04-24-deadbee.zip",
+            "download_url": "https://example.invalid/CVRP-Mamut2026-snapshot-2026-04-24-deadbee.zip",
+            "problem_type": "CVRP",
+            "benchmark_name": "Mamut2026",
+            "checksum_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "size_bytes": 2048,
+            "archive_root": "benchmarks/CVRP/Mamut2026"
+        },
+        {
+            "scope": "problem_family",
+            "filename": "VRPTW-Sintef2008-snapshot-2026-04-24-deadbee.zip",
+            "download_url": "https://example.invalid/VRPTW-Sintef2008-snapshot-2026-04-24-deadbee.zip",
+            "problem_type": "VRPTW",
+            "benchmark_name": "Sintef2008",
+            "checksum_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "size_bytes": 4096,
+            "archive_root": "benchmarks/VRPTW/Sintef2008"
+        }
+    ]
+}
