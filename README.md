@@ -136,6 +136,9 @@ CLI (requires `[cli,pyvrp]`):
 mamut-routing --benchmarks-dir ./benchmarks list \
     --problem-type CVRP --benchmark-name Mamut2026
 
+# Include source file paths in the table when needed
+mamut-routing --benchmarks-dir ./benchmarks list --show-path
+
 # Pipe the matching paths into solve
 mamut-routing --benchmarks-dir ./benchmarks list \
     --problem-type CVRP --paths-only \

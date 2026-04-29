@@ -21,7 +21,7 @@ def _write(tmp_path: Path, instance) -> Path:
 def test_list_lists_filtered_with_summary(
     tmp_path: Path, toy_cvrp_instance, toy_vrptw_instance
 ) -> None:
-    _write(tmp_path, toy_cvrp_instance)
+    cvrp_path = _write(tmp_path, toy_cvrp_instance)
     _write(tmp_path, toy_vrptw_instance)
 
     result = _runner().invoke(
@@ -32,9 +32,25 @@ def test_list_lists_filtered_with_summary(
     assert result.exit_code == 0, result.stdout + result.stderr
     assert toy_cvrp_instance.instance_id in result.stdout
     assert toy_vrptw_instance.instance_id not in result.stdout
+    assert "PATH" not in result.stdout
+    assert str(cvrp_path.resolve()) not in result.stdout
     assert "Summary:" in result.stdout
+    assert "Scanned        : 2" in result.stdout
     assert "Total          : 1" in result.stdout
     assert "CVRP=1" in result.stdout
+
+
+def test_list_show_path_includes_path_column(tmp_path: Path, toy_cvrp_instance) -> None:
+    instance_path = _write(tmp_path, toy_cvrp_instance)
+
+    result = _runner().invoke(
+        app,
+        ["--benchmarks-dir", str(tmp_path), "list", "--show-path", "--no-summary"],
+    )
+
+    assert result.exit_code == 0, result.stdout + result.stderr
+    assert "PATH" in result.stdout
+    assert str(instance_path.resolve()) in result.stdout
 
 
 def test_list_paths_only_emits_one_path_per_line(

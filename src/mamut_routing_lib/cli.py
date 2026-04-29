@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass
 from importlib import metadata
 from pathlib import Path
-from typing import Annotated, Any, Optional
+from typing import Annotated, Any, Iterator, Optional
 
 import typer
 from tqdm import tqdm
@@ -362,6 +362,29 @@ def _resolve_candidate_paths(state: "CLIState", instance_paths: list[Path] | Non
     return sorted(state.benchmarks_dir.rglob("*.vrp.json"))
 
 
+def _iter_candidate_paths(state: "CLIState", instance_paths: list[Path] | None) -> Iterator[Path]:
+    if instance_paths:
+        candidate_paths = [Path(p).expanduser().resolve() for p in instance_paths]
+        missing = [p for p in candidate_paths if not p.is_file()]
+        if missing:
+            typer.echo(
+                f"Error: instance file(s) not found: {', '.join(str(p) for p in missing)}",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+        yield from candidate_paths
+        return
+
+    if not state.benchmarks_dir.is_dir():
+        typer.echo(
+            f"Error: --benchmarks-dir does not exist: {state.benchmarks_dir}. Pass positional "
+            f"INSTANCE_PATHS, specify a valid --benchmarks-dir or fetch archives first.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    yield from state.benchmarks_dir.rglob("*.vrp.json")
+
+
 def _enum_value(value: Any) -> Any:
     return value.value if hasattr(value, "value") else value
 
@@ -379,6 +402,39 @@ def _instance_descriptor(instance: "AnyBenchmarkInstance") -> dict[str, str | in
     }
 
 
+def _instance_matches(
+    instance: "AnyBenchmarkInstance",
+    *,
+    problem_type: ProblemType | None,
+    benchmark_name: BenchmarkName | None,
+    metric_variant: MetricVariant | None,
+    instance_id: str | None,
+) -> bool:
+    if problem_type is not None:
+        is_cvrp = isinstance(instance, BenchmarkInstanceCVRP)
+        inst_problem = ProblemType.CVRP if is_cvrp else ProblemType.VRPTW
+        if inst_problem != problem_type:
+            return False
+
+    if benchmark_name is not None:
+        inst_benchmark = getattr(instance, "benchmark_name", None)
+        if inst_benchmark is None or inst_benchmark != benchmark_name:
+            return False
+
+    if metric_variant is not None:
+        metadata = getattr(instance, "metadata", None)
+        inst_metric = getattr(metadata, "metric_variant", None) if metadata else None
+        if inst_metric is None or inst_metric != metric_variant:
+            return False
+
+    if instance_id is not None:
+        inst_id = getattr(instance, "instance_id", None) or getattr(instance, "instance_name", None)
+        if inst_id != instance_id:
+            return False
+
+    return True
+
+
 def _filter_loaded_instances(
     paths: list[Path],
     *,
@@ -390,30 +446,14 @@ def _filter_loaded_instances(
     selected: list[tuple[Path, AnyBenchmarkInstance]] = []
     for path in paths:
         instance = load_benchmark_instance(path)
-
-        if problem_type is not None:
-            is_cvrp = isinstance(instance, BenchmarkInstanceCVRP)
-            inst_problem = ProblemType.CVRP if is_cvrp else ProblemType.VRPTW
-            if inst_problem != problem_type:
-                continue
-
-        if benchmark_name is not None:
-            inst_benchmark = getattr(instance, "benchmark_name", None)
-            if inst_benchmark is None or inst_benchmark != benchmark_name:
-                continue
-
-        if metric_variant is not None:
-            metadata = getattr(instance, "metadata", None)
-            inst_metric = getattr(metadata, "metric_variant", None) if metadata else None
-            if inst_metric is None or inst_metric != metric_variant:
-                continue
-
-        if instance_id is not None:
-            inst_id = getattr(instance, "instance_id", None) or getattr(instance, "instance_name", None)
-            if inst_id != instance_id:
-                continue
-
-        selected.append((path, instance))
+        if _instance_matches(
+            instance,
+            problem_type=problem_type,
+            benchmark_name=benchmark_name,
+            metric_variant=metric_variant,
+            instance_id=instance_id,
+        ):
+            selected.append((path, instance))
     return selected
 
 
@@ -447,6 +487,10 @@ def list_instances(
         bool,
         typer.Option("--paths-only/--no-paths-only", help="Print only matching file paths (one per line)."),
     ] = False,
+    show_path: Annotated[
+        bool,
+        typer.Option("--show-path/--no-show-path", help="Include each matching file path in the table."),
+    ] = False,
     summary: Annotated[
         bool,
         typer.Option("--summary/--no-summary", help="Append a recap with counts per problem / benchmark / metric / size."),
@@ -462,56 +506,42 @@ def list_instances(
             | xargs -r mamut-routing solve --time-limit-s 30
     """
     state: CLIState = ctx.obj
-    candidate_paths = _resolve_candidate_paths(state, list(instance_paths) if instance_paths else None)
-    selected = _filter_loaded_instances(
-        candidate_paths,
-        problem_type=problem_type,
-        benchmark_name=benchmark_name,
-        metric_variant=metric_variant,
-        instance_id=instance_id,
-    )
+    candidate_paths = _iter_candidate_paths(state, list(instance_paths) if instance_paths else None)
 
-    if not selected:
-        typer.echo(
-            "No instances matched. Adjust filter flags or point --benchmarks-dir at a "
-            "tree containing *.vrp.json files.",
-            err=True,
-        )
-        raise typer.Exit(code=2)
-
-    if paths_only:
-        for path, _ in selected:
-            typer.echo(str(path))
-        return
-
-    descriptors = [(path, _instance_descriptor(instance)) for path, instance in selected]
-
-    typer.echo(f"Discovered {len(selected)} instance(s) under {state.benchmarks_dir}")
-    header = (
-        f"{'INSTANCE_ID':<32}  {'PROBLEM':<6}  {'BENCHMARK':<12}  "
-        f"{'METRIC':<10}  {'PLACE':<14}  {'n':>5}  PATH"
-    )
-    typer.echo(header)
-    typer.echo("-" * len(header))
-    for path, descriptor in descriptors:
-        typer.echo(
-            f"{(descriptor['instance_id'] or '-'):<32}  "
-            f"{(descriptor['problem_type'] or '-'):<6}  "
-            f"{(descriptor['benchmark_name'] or '-'):<12}  "
-            f"{(descriptor['metric_variant'] or '-'):<10}  "
-            f"{(descriptor['place_slug'] or '-'):<14}  "
-            f"{(descriptor['num_customers'] if descriptor['num_customers'] is not None else '-'):>5}  "
-            f"{path}"
-        )
-
-    if not summary:
-        return
-
+    scanned_count = 0
+    matched_count = 0
     counts_problem: dict[str, int] = {}
     counts_benchmark: dict[str, int] = {}
     counts_metric: dict[str, int] = {}
     counts_size: dict[int, int] = {}
-    for _, descriptor in descriptors:
+
+    if not paths_only:
+        base_header = (
+            f"{'INSTANCE_ID':<32}  {'PROBLEM':<6}  {'BENCHMARK':<12}  "
+            f"{'METRIC':<10}  {'PLACE':<14}  {'n':>5}"
+        )
+        header = f"{base_header}  PATH" if show_path else base_header
+        typer.echo(header)
+        typer.echo("-" * len(header))
+
+    for path in candidate_paths:
+        scanned_count += 1
+        instance = load_benchmark_instance(path)
+        if not _instance_matches(
+            instance,
+            problem_type=problem_type,
+            benchmark_name=benchmark_name,
+            metric_variant=metric_variant,
+            instance_id=instance_id,
+        ):
+            continue
+
+        matched_count += 1
+        if paths_only:
+            typer.echo(str(path))
+            continue
+
+        descriptor = _instance_descriptor(instance)
         problem_key = str(descriptor["problem_type"] or "-")
         benchmark_key = str(descriptor["benchmark_name"] or "-")
         metric_key = str(descriptor["metric_variant"] or "-")
@@ -522,12 +552,36 @@ def list_instances(
         if isinstance(size, int):
             counts_size[size] = counts_size.get(size, 0) + 1
 
+        row = (
+            f"{(descriptor['instance_id'] or '-'):<32}  "
+            f"{(descriptor['problem_type'] or '-'):<6}  "
+            f"{(descriptor['benchmark_name'] or '-'):<12}  "
+            f"{(descriptor['metric_variant'] or '-'):<10}  "
+            f"{(descriptor['place_slug'] or '-'):<14}  "
+            f"{(descriptor['num_customers'] if descriptor['num_customers'] is not None else '-'):>5}"
+        )
+        if show_path:
+            row = f"{row}  {path}"
+        typer.echo(row)
+
+    if matched_count == 0:
+        typer.echo(
+            "No instances matched. Adjust filter flags or point --benchmarks-dir at a "
+            "tree containing *.vrp.json files.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    if paths_only or not summary:
+        return
+
     def _fmt(counts: dict) -> str:
         return ", ".join(f"{key}={value}" for key, value in sorted(counts.items()))
 
     typer.echo("")
     typer.echo("Summary:")
-    typer.echo(f"  Total          : {len(selected)}")
+    typer.echo(f"  Scanned        : {scanned_count}")
+    typer.echo(f"  Total          : {matched_count}")
     typer.echo(f"  Problem types  : {_fmt(counts_problem)}")
     typer.echo(f"  Benchmarks     : {_fmt(counts_benchmark)}")
     typer.echo(f"  Metric variants: {_fmt(counts_metric)}")
