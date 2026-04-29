@@ -4,6 +4,7 @@ import json
 import os
 import sys
 from dataclasses import dataclass
+from importlib import metadata
 from pathlib import Path
 from typing import Annotated, Any, Optional
 
@@ -32,26 +33,57 @@ from mamut_routing_lib.remote import (
 
 app = typer.Typer(
     name="mamut-routing",
-    help="CLI for the MAMUT-routing benchmark library: list, fetch, and verify "
-    "remote benchmark archives published as GitHub release assets.",
+    help="CLI for the MAMUT-routing benchmark library: list and solve local benchmark instances.",
     no_args_is_help=True,
     add_completion=False,
 )
 
+remote_app = typer.Typer(
+    help="Commands for remote benchmark archives published as GitHub release assets.",
+    no_args_is_help=True,
+)
+app.add_typer(remote_app, name="remote")
+
+
+def _get_package_version() -> str:
+    package_name = "mamut-routing-lib"
+    try:
+        return metadata.version(package_name)
+    except metadata.PackageNotFoundError:
+        try:
+            import tomllib
+
+            pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
+            pyproject_data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+            return str(pyproject_data["project"]["version"])
+        except Exception:
+            return "unknown"
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(f"mamut-routing-lib {_get_package_version()}")
+        raise typer.Exit()
+
 
 @dataclass
 class CLIState:
+    benchmarks_dir: Path
+
+
+@dataclass
+class RemoteCLIState:
     repo: str
     token: str | None
     tag: str | None
-    output_dir: Path
+    benchmarks_dir: Path
 
     def make_client(self) -> GitHubReleaseClient:
         source = GitHubReleaseSource(repo_full_name=self.repo, token=self.token)
         return GitHubReleaseClient(source=source)
 
 
-def _resolve_default_output_dir() -> Path:
+def _resolve_default_benchmarks_dir() -> Path:
     benchmarks_root = os.getenv(DEFAULT_BENCHMARKS_ROOT_ENV)
     if benchmarks_root:
         return Path(benchmarks_root).expanduser().resolve()
@@ -64,6 +96,34 @@ def _resolve_default_output_dir() -> Path:
 @app.callback()
 def main_callback(
     ctx: typer.Context,
+    version: Annotated[
+        Optional[bool],
+        typer.Option(
+            "--version",
+            "-V",
+            callback=_version_callback,
+            is_eager=True,
+            help="Show the mamut-routing-lib version and exit.",
+        ),
+    ] = None,
+    benchmarks_dir: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--benchmarks-dir",
+            help=f"Local benchmark directory. Defaults to ${DEFAULT_BENCHMARKS_ROOT_ENV} "
+            f"or ${DEFAULT_MAMUT_ROUTING_ROOT_ENV}/benchmarks or ./benchmarks.",
+        ),
+    ] = None,
+) -> None:
+    resolved_benchmarks_dir = (
+        benchmarks_dir.expanduser().resolve() if benchmarks_dir is not None else _resolve_default_benchmarks_dir()
+    )
+    ctx.obj = CLIState(benchmarks_dir=resolved_benchmarks_dir)
+
+
+@remote_app.callback()
+def remote_callback(
+    ctx: typer.Context,
     repo: Annotated[
         Optional[str],
         typer.Option(
@@ -75,23 +135,15 @@ def main_callback(
         Optional[str],
         typer.Option(
             "--token",
-            help=f"GitHub token. Defaults to ${DEFAULT_GITHUB_TOKEN_ENV}.",
+            help=f"GitHub token. Defaults to ${DEFAULT_GITHUB_TOKEN_ENV}. Unnecessary for public releases with sufficient rate limits.",
         ),
     ] = None,
     tag: Annotated[
         Optional[str],
         typer.Option("--tag", help="Release tag (e.g. v0.0.1). Defaults to the latest release."),
     ] = None,
-    output_dir: Annotated[
-        Optional[Path],
-        typer.Option(
-            "--output-dir",
-            "-o",
-            help=f"Local directory for downloads/verification. Defaults to ${DEFAULT_BENCHMARKS_ROOT_ENV} "
-            f"or ${DEFAULT_MAMUT_ROUTING_ROOT_ENV}/benchmarks or ./benchmarks.",
-        ),
-    ] = None,
 ) -> None:
+    root_state: CLIState = ctx.find_root().obj
     resolved_repo = repo or os.getenv(DEFAULT_RELEASE_REPO_ENV) or "ANR-MAMUT/MAMUT-routing"
     parts = resolved_repo.split("/")
     if len(parts) != 2 or not all(parts):
@@ -102,12 +154,11 @@ def main_callback(
         )
         raise typer.Exit(code=2)
     resolved_token = token if token is not None else os.getenv(DEFAULT_GITHUB_TOKEN_ENV)
-    resolved_output_dir = (output_dir.expanduser().resolve() if output_dir is not None else _resolve_default_output_dir())
-    ctx.obj = CLIState(
+    ctx.obj = RemoteCLIState(
         repo=resolved_repo,
         token=resolved_token,
         tag=tag,
-        output_dir=resolved_output_dir,
+        benchmarks_dir=root_state.benchmarks_dir,
     )
 
 
@@ -128,7 +179,7 @@ def _select_assets(
         if missing:
             raise typer.BadParameter(
                 f"Unknown asset filename(s) in manifest: {', '.join(missing)}. "
-                f"Run `mamut-routing list` to see available assets."
+                f"Run `mamut-routing remote list` to see available assets."
             )
         return [by_name[name] for name in filenames]
     if scope is None and problem_type is None and benchmark_name is None:
@@ -152,15 +203,15 @@ def _short_sha(sha: str | None) -> str:
     return sha[:8]
 
 
-@app.command("list")
-def list_assets(
+@remote_app.command("list")
+def remote_list_assets(
     ctx: typer.Context,
     scope: Annotated[Optional[ReleaseArchiveScope], typer.Option("--scope", case_sensitive=False)] = None,
     problem_type: Annotated[Optional[ProblemType], typer.Option("--problem-type", case_sensitive=False)] = None,
     benchmark_name: Annotated[Optional[BenchmarkName], typer.Option("--benchmark-name", case_sensitive=False)] = None,
 ) -> None:
     """List benchmark archives available in the remote release manifest."""
-    state: CLIState = ctx.obj
+    state: RemoteCLIState = ctx.obj
     client = state.make_client()
     manifest = client.fetch_manifest(tag=state.tag)
     assets = manifest.select_assets(
@@ -191,8 +242,8 @@ def list_assets(
         )
 
 
-@app.command("fetch")
-def fetch_assets(
+@remote_app.command("fetch")
+def remote_fetch_assets(
     ctx: typer.Context,
     filenames: Annotated[
         Optional[list[str]],
@@ -205,7 +256,7 @@ def fetch_assets(
     extract: Annotated[bool, typer.Option("--extract/--no-extract", help="Extract zip archives after download.")] = True,
 ) -> None:
     """Download (and optionally extract) one or more benchmark archives."""
-    state: CLIState = ctx.obj
+    state: RemoteCLIState = ctx.obj
     client = state.make_client()
     manifest = client.fetch_manifest(tag=state.tag)
     selected = _select_assets(
@@ -220,8 +271,8 @@ def fetch_assets(
         typer.echo("No assets selected. Use positional filenames, --scope/--problem-type/--benchmark-name, or --all.", err=True)
         raise typer.Exit(code=2)
 
-    state.output_dir.mkdir(parents=True, exist_ok=True)
-    typer.echo(f"Downloading {len(selected)} asset(s) into {state.output_dir}")
+    state.benchmarks_dir.mkdir(parents=True, exist_ok=True)
+    typer.echo(f"Downloading {len(selected)} asset(s) into {state.benchmarks_dir}")
 
     for asset in selected:
         with tqdm(
@@ -241,22 +292,22 @@ def fetch_assets(
 
             destination = client.download_asset(
                 asset,
-                state.output_dir,
+                state.benchmarks_dir,
                 extract=extract,
                 progress_callback=_on_progress,
             )
         typer.echo(f"  -> {destination}")
 
 
-@app.command("verify")
-def verify_local(
+@remote_app.command("verify")
+def remote_verify_local(
     ctx: typer.Context,
     scope: Annotated[Optional[ReleaseArchiveScope], typer.Option("--scope", case_sensitive=False)] = None,
     problem_type: Annotated[Optional[ProblemType], typer.Option("--problem-type", case_sensitive=False)] = None,
     benchmark_name: Annotated[Optional[BenchmarkName], typer.Option("--benchmark-name", case_sensitive=False)] = None,
 ) -> None:
     """Verify sha256 of locally downloaded archives against the remote manifest."""
-    state: CLIState = ctx.obj
+    state: RemoteCLIState = ctx.obj
     client = state.make_client()
     manifest = client.fetch_manifest(tag=state.tag)
     assets = manifest.select_assets(
@@ -265,10 +316,10 @@ def verify_local(
         benchmark_name=benchmark_name,
     )
 
-    typer.echo(f"Verifying {len(assets)} asset(s) under {state.output_dir}")
+    typer.echo(f"Verifying {len(assets)} asset(s) under {state.benchmarks_dir}")
     has_failure = False
     for asset in assets:
-        local_path = state.output_dir / asset.filename
+        local_path = state.benchmarks_dir / asset.filename
         if not local_path.exists():
             typer.echo(f"  MISSING   {asset.filename}")
             has_failure = True
@@ -301,14 +352,14 @@ def _resolve_candidate_paths(state: "CLIState", instance_paths: list[Path] | Non
             raise typer.Exit(code=2)
         return candidate_paths
 
-    if not state.output_dir.is_dir():
+    if not state.benchmarks_dir.is_dir():
         typer.echo(
-            f"Error: --output-dir does not exist: {state.output_dir}. Pass positional "
-            f"INSTANCE_PATHS or fetch archives first.",
+            f"Error: --benchmarks-dir does not exist: {state.benchmarks_dir}. Pass positional "
+            f"INSTANCE_PATHS, specify a valid --benchmarks-dir or fetch archives first.",
             err=True,
         )
         raise typer.Exit(code=2)
-    return sorted(state.output_dir.rglob("*.vrp.json"))
+    return sorted(state.benchmarks_dir.rglob("*.vrp.json"))
 
 
 def _enum_value(value: Any) -> Any:
@@ -366,13 +417,13 @@ def _filter_loaded_instances(
     return selected
 
 
-@app.command("instances")
+@app.command("list")
 def list_instances(
     ctx: typer.Context,
     instance_paths: Annotated[
         Optional[list[Path]],
         typer.Argument(
-            help="One or more benchmark instance JSON paths. If omitted, --output-dir is "
+            help="One or more benchmark instance JSON paths. If omitted, --benchmarks-dir is "
             "scanned recursively for *.vrp.json files (and filter flags apply).",
         ),
     ] = None,
@@ -404,10 +455,10 @@ def list_instances(
     """List local benchmark instances available to `solve`.
 
     Mirrors the selection model of `solve`: positional INSTANCE_PATHS or a recursive
-    scan of `--output-dir` filtered by --problem-type / --benchmark-name /
+    scan of `--benchmarks-dir` filtered by --problem-type / --benchmark-name /
     --metric-variant / --instance-id. Use `--paths-only` to pipe into solve, e.g.
 
-        mamut-routing instances --problem-type CVRP --paths-only \\
+        mamut-routing list --problem-type CVRP --paths-only \\
             | xargs -r mamut-routing solve --time-limit-s 30
     """
     state: CLIState = ctx.obj
@@ -422,7 +473,7 @@ def list_instances(
 
     if not selected:
         typer.echo(
-            "No instances matched. Adjust filter flags or point --output-dir at a "
+            "No instances matched. Adjust filter flags or point --benchmarks-dir at a "
             "tree containing *.vrp.json files.",
             err=True,
         )
@@ -435,7 +486,7 @@ def list_instances(
 
     descriptors = [(path, _instance_descriptor(instance)) for path, instance in selected]
 
-    typer.echo(f"Discovered {len(selected)} instance(s) under {state.output_dir}")
+    typer.echo(f"Discovered {len(selected)} instance(s) under {state.benchmarks_dir}")
     header = (
         f"{'INSTANCE_ID':<32}  {'PROBLEM':<6}  {'BENCHMARK':<12}  "
         f"{'METRIC':<10}  {'PLACE':<14}  {'n':>5}  PATH"
@@ -491,7 +542,7 @@ def solve_instances(
     instance_paths: Annotated[
         Optional[list[Path]],
         typer.Argument(
-            help="One or more benchmark instance JSON paths. If omitted, --output-dir is "
+            help="One or more benchmark instance JSON paths. If omitted, --benchmarks-dir is "
             "scanned recursively for *.vrp.json files (and filter flags apply).",
         ),
     ] = None,
@@ -533,7 +584,7 @@ def solve_instances(
         typer.Option("--display/--no-display", help="Forward PyVRP's per-iteration display to stdout."),
     ] = False,
 ) -> None:
-    """Solve one or more benchmark instances with PyVRP's HGS.
+    """Solve one or more benchmark instances with custom PyVRP's HGS-based solver variants.
 
     Requires the 'pyvrp' optional dependency:
     pip install "mamut-routing-lib[pyvrp]"
@@ -558,7 +609,7 @@ def solve_instances(
     if not selected:
         typer.echo(
             "No instances selected. Pass positional paths, adjust filter flags, or "
-            "point --output-dir at a tree containing *.vrp.json files.",
+            "point --benchmarks-dir at a tree containing *.vrp.json files.",
             err=True,
         )
         raise typer.Exit(code=2)
@@ -615,10 +666,10 @@ def solve_instances(
         raise typer.Exit(code=1)
 
 
-@app.command("manifest")
-def show_manifest(ctx: typer.Context) -> None:
+@remote_app.command("manifest")
+def remote_show_manifest(ctx: typer.Context) -> None:
     """Print the parsed release manifest as JSON."""
-    state: CLIState = ctx.obj
+    state: RemoteCLIState = ctx.obj
     client = state.make_client()
     manifest = client.fetch_manifest(tag=state.tag)
     typer.echo(json.dumps(manifest.model_dump(mode="json"), indent=2))

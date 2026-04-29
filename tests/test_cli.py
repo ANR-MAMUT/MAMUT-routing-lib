@@ -32,12 +32,23 @@ def _runner() -> CliRunner:
     return CliRunner()
 
 
-def test_cli_list_renders_table_and_filters(manifest: ReleaseArchiveManifest) -> None:
+@pytest.mark.parametrize("flag", ["--version", "-V"])
+def test_cli_version_exits_before_remote_setup(flag: str) -> None:
+    with patch("mamut_routing_lib.cli.GitHubReleaseClient") as mock_client_cls:
+        result = _runner().invoke(app, [flag])
+
+    assert result.exit_code == 0, result.stdout + result.stderr
+    assert result.stdout.strip().startswith("mamut-routing-lib ")
+    assert result.stdout.strip().endswith("0.0.2")
+    mock_client_cls.assert_not_called()
+
+
+def test_cli_remote_list_renders_table_and_filters(manifest: ReleaseArchiveManifest) -> None:
     with patch("mamut_routing_lib.cli.GitHubReleaseClient") as mock_client_cls:
         mock_client_cls.return_value.fetch_manifest.return_value = manifest
         result = _runner().invoke(
             app,
-            ["--repo", "acme/repo", "--tag", "v0.0.1", "list", "--problem-type", "CVRP"],
+            ["remote", "--repo", "acme/repo", "--tag", "v0.0.1", "list", "--problem-type", "CVRP"],
         )
 
     assert result.exit_code == 0, result.stdout + result.stderr
@@ -47,10 +58,10 @@ def test_cli_list_renders_table_and_filters(manifest: ReleaseArchiveManifest) ->
     assert "VRPTW-Sintef2008-snapshot-2026-04-24-deadbee.zip" not in result.stdout
 
 
-def test_cli_list_shows_all_when_no_filter(manifest: ReleaseArchiveManifest) -> None:
+def test_cli_remote_list_shows_all_when_no_filter(manifest: ReleaseArchiveManifest) -> None:
     with patch("mamut_routing_lib.cli.GitHubReleaseClient") as mock_client_cls:
         mock_client_cls.return_value.fetch_manifest.return_value = manifest
-        result = _runner().invoke(app, ["--repo", "acme/repo", "list"])
+        result = _runner().invoke(app, ["remote", "--repo", "acme/repo", "list"])
 
     assert result.exit_code == 0, result.stdout + result.stderr
     for asset in manifest.assets:
@@ -66,8 +77,9 @@ def test_cli_fetch_calls_download_asset_for_each_selected(tmp_path: Path, manife
         result = _runner().invoke(
             app,
             [
+                "--benchmarks-dir", str(tmp_path),
+                "remote",
                 "--repo", "acme/repo",
-                "--output-dir", str(tmp_path),
                 "fetch",
                 "--problem-type", "CVRP",
                 "--scope", "problem_family",
@@ -91,8 +103,9 @@ def test_cli_fetch_by_filename(tmp_path: Path, manifest: ReleaseArchiveManifest)
         result = _runner().invoke(
             app,
             [
+                "--benchmarks-dir", str(tmp_path),
+                "remote",
                 "--repo", "acme/repo",
-                "--output-dir", str(tmp_path),
                 "fetch",
                 "VRPTW-Sintef2008-snapshot-2026-04-24-deadbee.zip",
                 "--no-extract",
@@ -112,8 +125,9 @@ def test_cli_fetch_unknown_filename_errors(tmp_path: Path, manifest: ReleaseArch
         result = _runner().invoke(
             app,
             [
+                "--benchmarks-dir", str(tmp_path),
+                "remote",
                 "--repo", "acme/repo",
-                "--output-dir", str(tmp_path),
                 "fetch",
                 "does-not-exist.zip",
                 "--no-extract",
@@ -132,7 +146,7 @@ def test_cli_fetch_no_selection_errors(tmp_path: Path, manifest: ReleaseArchiveM
     with patch("mamut_routing_lib.cli.GitHubReleaseClient", return_value=fake_client):
         result = _runner().invoke(
             app,
-            ["--repo", "acme/repo", "--output-dir", str(tmp_path), "fetch"],
+            ["--benchmarks-dir", str(tmp_path), "remote", "--repo", "acme/repo", "fetch"],
         )
 
     assert result.exit_code == 2
@@ -200,7 +214,7 @@ def test_cli_verify_classifies_ok_missing_mismatch(tmp_path: Path) -> None:
     with patch("mamut_routing_lib.cli.GitHubReleaseClient", return_value=fake_client):
         result = _runner().invoke(
             app,
-            ["--repo", "acme/repo", "--output-dir", str(tmp_path), "verify"],
+            ["--benchmarks-dir", str(tmp_path), "remote", "--repo", "acme/repo", "verify"],
         )
 
     assert result.exit_code == 1, result.stdout + result.stderr
@@ -214,7 +228,7 @@ def test_cli_manifest_outputs_valid_json(manifest: ReleaseArchiveManifest) -> No
     fake_client.fetch_manifest.return_value = manifest
 
     with patch("mamut_routing_lib.cli.GitHubReleaseClient", return_value=fake_client):
-        result = _runner().invoke(app, ["--repo", "acme/repo", "manifest"])
+        result = _runner().invoke(app, ["remote", "--repo", "acme/repo", "manifest"])
 
     assert result.exit_code == 0, result.stdout + result.stderr
     parsed = json.loads(result.stdout)

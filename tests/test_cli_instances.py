@@ -18,7 +18,7 @@ def _write(tmp_path: Path, instance) -> Path:
     return target
 
 
-def test_instances_lists_filtered_with_summary(
+def test_list_lists_filtered_with_summary(
     tmp_path: Path, toy_cvrp_instance, toy_vrptw_instance
 ) -> None:
     _write(tmp_path, toy_cvrp_instance)
@@ -26,7 +26,7 @@ def test_instances_lists_filtered_with_summary(
 
     result = _runner().invoke(
         app,
-        ["--output-dir", str(tmp_path), "instances", "--problem-type", "CVRP"],
+        ["--benchmarks-dir", str(tmp_path), "list", "--problem-type", "CVRP"],
     )
 
     assert result.exit_code == 0, result.stdout + result.stderr
@@ -37,7 +37,7 @@ def test_instances_lists_filtered_with_summary(
     assert "CVRP=1" in result.stdout
 
 
-def test_instances_paths_only_emits_one_path_per_line(
+def test_list_paths_only_emits_one_path_per_line(
     tmp_path: Path, toy_cvrp_instance, toy_vrptw_instance
 ) -> None:
     cvrp_path = _write(tmp_path, toy_cvrp_instance)
@@ -45,7 +45,7 @@ def test_instances_paths_only_emits_one_path_per_line(
 
     result = _runner().invoke(
         app,
-        ["--output-dir", str(tmp_path), "instances", "--paths-only"],
+        ["--benchmarks-dir", str(tmp_path), "list", "--paths-only"],
     )
 
     assert result.exit_code == 0, result.stdout + result.stderr
@@ -55,12 +55,12 @@ def test_instances_paths_only_emits_one_path_per_line(
     assert "INSTANCE_ID" not in result.stdout
 
 
-def test_instances_no_summary_skips_recap(tmp_path: Path, toy_cvrp_instance) -> None:
+def test_list_no_summary_skips_recap(tmp_path: Path, toy_cvrp_instance) -> None:
     _write(tmp_path, toy_cvrp_instance)
 
     result = _runner().invoke(
         app,
-        ["--output-dir", str(tmp_path), "instances", "--no-summary"],
+        ["--benchmarks-dir", str(tmp_path), "list", "--no-summary"],
     )
 
     assert result.exit_code == 0, result.stdout + result.stderr
@@ -68,19 +68,19 @@ def test_instances_no_summary_skips_recap(tmp_path: Path, toy_cvrp_instance) -> 
     assert "Summary:" not in result.stdout
 
 
-def test_instances_empty_selection_exits_2(tmp_path: Path) -> None:
+def test_list_empty_selection_exits_2(tmp_path: Path) -> None:
     result = _runner().invoke(
         app,
-        ["--output-dir", str(tmp_path), "instances"],
+        ["--benchmarks-dir", str(tmp_path), "list"],
     )
     assert result.exit_code == 2
     assert "No instances matched" in (result.stderr + result.stdout)
 
 
-def test_instances_with_positional_path(tmp_path: Path, toy_cvrp_instance) -> None:
+def test_list_with_positional_path(tmp_path: Path, toy_cvrp_instance) -> None:
     instance_path = _write(tmp_path, toy_cvrp_instance)
 
-    result = _runner().invoke(app, ["instances", str(instance_path)])
+    result = _runner().invoke(app, ["list", str(instance_path)])
 
     assert result.exit_code == 0, result.stdout + result.stderr
     assert toy_cvrp_instance.instance_id in result.stdout

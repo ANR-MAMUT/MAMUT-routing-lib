@@ -69,7 +69,7 @@ def test_solve_with_positional_path_calls_solver(tmp_path: Path, toy_cvrp_instan
     assert "created" in result.stdout
 
 
-def test_solve_with_filters_over_output_dir(tmp_path: Path, toy_cvrp_instance, toy_vrptw_instance) -> None:
+def test_solve_with_filters_over_benchmarks_dir(tmp_path: Path, toy_cvrp_instance, toy_vrptw_instance) -> None:
     _write_instance(tmp_path, toy_cvrp_instance)
     _write_instance(tmp_path, toy_vrptw_instance)
 
@@ -89,7 +89,7 @@ def test_solve_with_filters_over_output_dir(tmp_path: Path, toy_cvrp_instance, t
         result = _runner().invoke(
             app,
             [
-                "--output-dir", str(tmp_path),
+                "--benchmarks-dir", str(tmp_path),
                 "solve",
                 "--problem-type", "CVRP",
                 "--time-limit-s", "1",
@@ -126,7 +126,7 @@ def test_solve_no_save_bks_calls_solve_instance_only(tmp_path: Path, toy_cvrp_in
 def test_solve_no_selection_errors_with_exit_2(tmp_path: Path) -> None:
     result = _runner().invoke(
         app,
-        ["--output-dir", str(tmp_path), "solve", "--time-limit-s", "1"],
+        ["--benchmarks-dir", str(tmp_path), "solve", "--time-limit-s", "1"],
     )
     assert result.exit_code == 2
     assert "No instances selected" in (result.stderr + result.stdout) or "does not exist" in (result.stderr + result.stdout)
