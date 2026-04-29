@@ -5,16 +5,19 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated, Any, Optional
 
 import typer
 from tqdm import tqdm
 
 from mamut_routing_lib.artifacts import (
+    AnyBenchmarkInstance,
     DEFAULT_BENCHMARKS_ROOT_ENV,
     DEFAULT_MAMUT_ROUTING_ROOT_ENV,
+    load_benchmark_instance,
 )
-from mamut_routing_lib.enums import BenchmarkName, ProblemType
+from mamut_routing_lib.enums import BenchmarkName, MetricVariant, ObjectiveFunction, ProblemType
+from mamut_routing_lib.models import BenchmarkInstanceCVRP
 from mamut_routing_lib.remote import (
     DEFAULT_GITHUB_TOKEN_ENV,
     DEFAULT_RELEASE_REPO_ENV,
@@ -283,6 +286,332 @@ def verify_local(
             has_failure = True
 
     if has_failure:
+        raise typer.Exit(code=1)
+
+
+def _resolve_candidate_paths(state: "CLIState", instance_paths: list[Path] | None) -> list[Path]:
+    if instance_paths:
+        candidate_paths = [Path(p).expanduser().resolve() for p in instance_paths]
+        missing = [p for p in candidate_paths if not p.is_file()]
+        if missing:
+            typer.echo(
+                f"Error: instance file(s) not found: {', '.join(str(p) for p in missing)}",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+        return candidate_paths
+
+    if not state.output_dir.is_dir():
+        typer.echo(
+            f"Error: --output-dir does not exist: {state.output_dir}. Pass positional "
+            f"INSTANCE_PATHS or fetch archives first.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    return sorted(state.output_dir.rglob("*.vrp.json"))
+
+
+def _enum_value(value: Any) -> Any:
+    return value.value if hasattr(value, "value") else value
+
+
+def _instance_descriptor(instance: "AnyBenchmarkInstance") -> dict[str, str | int | None]:
+    is_cvrp = isinstance(instance, BenchmarkInstanceCVRP)
+    metadata = getattr(instance, "metadata", None)
+    return {
+        "instance_id": getattr(instance, "instance_id", None) or getattr(instance, "instance_name", None),
+        "problem_type": "CVRP" if is_cvrp else "VRPTW",
+        "benchmark_name": _enum_value(getattr(instance, "benchmark_name", None)),
+        "metric_variant": _enum_value(getattr(metadata, "metric_variant", None) if metadata else None),
+        "place_slug": getattr(metadata, "place_slug", None) if metadata else None,
+        "num_customers": getattr(instance, "num_customers", None),
+    }
+
+
+def _filter_loaded_instances(
+    paths: list[Path],
+    *,
+    problem_type: ProblemType | None,
+    benchmark_name: BenchmarkName | None,
+    metric_variant: MetricVariant | None,
+    instance_id: str | None,
+) -> list[tuple[Path, "AnyBenchmarkInstance"]]:
+    selected: list[tuple[Path, AnyBenchmarkInstance]] = []
+    for path in paths:
+        instance = load_benchmark_instance(path)
+
+        if problem_type is not None:
+            is_cvrp = isinstance(instance, BenchmarkInstanceCVRP)
+            inst_problem = ProblemType.CVRP if is_cvrp else ProblemType.VRPTW
+            if inst_problem != problem_type:
+                continue
+
+        if benchmark_name is not None:
+            inst_benchmark = getattr(instance, "benchmark_name", None)
+            if inst_benchmark is None or inst_benchmark != benchmark_name:
+                continue
+
+        if metric_variant is not None:
+            metadata = getattr(instance, "metadata", None)
+            inst_metric = getattr(metadata, "metric_variant", None) if metadata else None
+            if inst_metric is None or inst_metric != metric_variant:
+                continue
+
+        if instance_id is not None:
+            inst_id = getattr(instance, "instance_id", None) or getattr(instance, "instance_name", None)
+            if inst_id != instance_id:
+                continue
+
+        selected.append((path, instance))
+    return selected
+
+
+@app.command("instances")
+def list_instances(
+    ctx: typer.Context,
+    instance_paths: Annotated[
+        Optional[list[Path]],
+        typer.Argument(
+            help="One or more benchmark instance JSON paths. If omitted, --output-dir is "
+            "scanned recursively for *.vrp.json files (and filter flags apply).",
+        ),
+    ] = None,
+    problem_type: Annotated[
+        Optional[ProblemType],
+        typer.Option("--problem-type", case_sensitive=False, help="Filter by CVRP or VRPTW."),
+    ] = None,
+    benchmark_name: Annotated[
+        Optional[BenchmarkName],
+        typer.Option("--benchmark-name", case_sensitive=False, help="Filter by benchmark family."),
+    ] = None,
+    metric_variant: Annotated[
+        Optional[MetricVariant],
+        typer.Option("--metric-variant", case_sensitive=False, help="Filter by metric variant."),
+    ] = None,
+    instance_id: Annotated[
+        Optional[str],
+        typer.Option("--instance-id", help="Filter by exact instance id."),
+    ] = None,
+    paths_only: Annotated[
+        bool,
+        typer.Option("--paths-only/--no-paths-only", help="Print only matching file paths (one per line)."),
+    ] = False,
+    summary: Annotated[
+        bool,
+        typer.Option("--summary/--no-summary", help="Append a recap with counts per problem / benchmark / metric / size."),
+    ] = True,
+) -> None:
+    """List local benchmark instances available to `solve`.
+
+    Mirrors the selection model of `solve`: positional INSTANCE_PATHS or a recursive
+    scan of `--output-dir` filtered by --problem-type / --benchmark-name /
+    --metric-variant / --instance-id. Use `--paths-only` to pipe into solve, e.g.
+
+        mamut-routing instances --problem-type CVRP --paths-only \\
+            | xargs -r mamut-routing solve --time-limit-s 30
+    """
+    state: CLIState = ctx.obj
+    candidate_paths = _resolve_candidate_paths(state, list(instance_paths) if instance_paths else None)
+    selected = _filter_loaded_instances(
+        candidate_paths,
+        problem_type=problem_type,
+        benchmark_name=benchmark_name,
+        metric_variant=metric_variant,
+        instance_id=instance_id,
+    )
+
+    if not selected:
+        typer.echo(
+            "No instances matched. Adjust filter flags or point --output-dir at a "
+            "tree containing *.vrp.json files.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    if paths_only:
+        for path, _ in selected:
+            typer.echo(str(path))
+        return
+
+    descriptors = [(path, _instance_descriptor(instance)) for path, instance in selected]
+
+    typer.echo(f"Discovered {len(selected)} instance(s) under {state.output_dir}")
+    header = (
+        f"{'INSTANCE_ID':<32}  {'PROBLEM':<6}  {'BENCHMARK':<12}  "
+        f"{'METRIC':<10}  {'PLACE':<14}  {'n':>5}  PATH"
+    )
+    typer.echo(header)
+    typer.echo("-" * len(header))
+    for path, descriptor in descriptors:
+        typer.echo(
+            f"{(descriptor['instance_id'] or '-'):<32}  "
+            f"{(descriptor['problem_type'] or '-'):<6}  "
+            f"{(descriptor['benchmark_name'] or '-'):<12}  "
+            f"{(descriptor['metric_variant'] or '-'):<10}  "
+            f"{(descriptor['place_slug'] or '-'):<14}  "
+            f"{(descriptor['num_customers'] if descriptor['num_customers'] is not None else '-'):>5}  "
+            f"{path}"
+        )
+
+    if not summary:
+        return
+
+    counts_problem: dict[str, int] = {}
+    counts_benchmark: dict[str, int] = {}
+    counts_metric: dict[str, int] = {}
+    counts_size: dict[int, int] = {}
+    for _, descriptor in descriptors:
+        problem_key = str(descriptor["problem_type"] or "-")
+        benchmark_key = str(descriptor["benchmark_name"] or "-")
+        metric_key = str(descriptor["metric_variant"] or "-")
+        counts_problem[problem_key] = counts_problem.get(problem_key, 0) + 1
+        counts_benchmark[benchmark_key] = counts_benchmark.get(benchmark_key, 0) + 1
+        counts_metric[metric_key] = counts_metric.get(metric_key, 0) + 1
+        size = descriptor["num_customers"]
+        if isinstance(size, int):
+            counts_size[size] = counts_size.get(size, 0) + 1
+
+    def _fmt(counts: dict) -> str:
+        return ", ".join(f"{key}={value}" for key, value in sorted(counts.items()))
+
+    typer.echo("")
+    typer.echo("Summary:")
+    typer.echo(f"  Total          : {len(selected)}")
+    typer.echo(f"  Problem types  : {_fmt(counts_problem)}")
+    typer.echo(f"  Benchmarks     : {_fmt(counts_benchmark)}")
+    typer.echo(f"  Metric variants: {_fmt(counts_metric)}")
+    if counts_size:
+        size_fmt = ", ".join(f"n={size}: {count}" for size, count in sorted(counts_size.items()))
+        typer.echo(f"  Customer sizes : {size_fmt}")
+
+
+@app.command("solve")
+def solve_instances(
+    ctx: typer.Context,
+    instance_paths: Annotated[
+        Optional[list[Path]],
+        typer.Argument(
+            help="One or more benchmark instance JSON paths. If omitted, --output-dir is "
+            "scanned recursively for *.vrp.json files (and filter flags apply).",
+        ),
+    ] = None,
+    problem_type: Annotated[
+        Optional[ProblemType],
+        typer.Option("--problem-type", case_sensitive=False, help="Filter by CVRP or VRPTW."),
+    ] = None,
+    benchmark_name: Annotated[
+        Optional[BenchmarkName],
+        typer.Option("--benchmark-name", case_sensitive=False, help="Filter by benchmark family."),
+    ] = None,
+    metric_variant: Annotated[
+        Optional[MetricVariant],
+        typer.Option("--metric-variant", case_sensitive=False, help="Filter by metric variant."),
+    ] = None,
+    instance_id: Annotated[
+        Optional[str],
+        typer.Option("--instance-id", help="Filter by exact instance id."),
+    ] = None,
+    objective: Annotated[
+        ObjectiveFunction,
+        typer.Option(
+            "--objective",
+            case_sensitive=False,
+            help="VRPTW objective. CVRP forces MonoCost regardless.",
+        ),
+    ] = ObjectiveFunction.MONO_COST,
+    time_limit_s: Annotated[
+        int,
+        typer.Option("--time-limit-s", min=1, help="Wall-clock budget per instance, in seconds."),
+    ] = 30,
+    seed: Annotated[int, typer.Option("--seed", help="Solver random seed.")] = 42,
+    save_bks: Annotated[
+        bool,
+        typer.Option("--save-bks/--no-save-bks", help="Write a BKS file next to the instance if improved."),
+    ] = True,
+    display: Annotated[
+        bool,
+        typer.Option("--display/--no-display", help="Forward PyVRP's per-iteration display to stdout."),
+    ] = False,
+) -> None:
+    """Solve one or more benchmark instances with PyVRP's HGS.
+
+    Requires the 'pyvrp' optional dependency:
+    pip install "mamut-routing-lib[pyvrp]"
+    """
+    try:
+        from mamut_routing_lib.solvers.pyvrp import solve_and_update_bks, solve_instance
+    except ImportError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=2)
+
+    state: CLIState = ctx.obj
+
+    candidate_paths = _resolve_candidate_paths(state, list(instance_paths) if instance_paths else None)
+
+    selected = _filter_loaded_instances(
+        candidate_paths,
+        problem_type=problem_type,
+        benchmark_name=benchmark_name,
+        metric_variant=metric_variant,
+        instance_id=instance_id,
+    )
+    if not selected:
+        typer.echo(
+            "No instances selected. Pass positional paths, adjust filter flags, or "
+            "point --output-dir at a tree containing *.vrp.json files.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    typer.echo(f"Solving {len(selected)} instance(s)  time_limit={time_limit_s}s  seed={seed}  save_bks={save_bks}")
+    header = f"{'INSTANCE_ID':<32}  {'STATUS':<10}  {'COST':>10}  {'ROUTES':>6}  {'WALL_S':>7}  {'BKS':<14}"
+    typer.echo(header)
+    typer.echo("-" * len(header))
+
+    any_failure = False
+    for path, instance in selected:
+        is_cvrp = isinstance(instance, BenchmarkInstanceCVRP)
+        run_objective = ObjectiveFunction.MONO_COST if is_cvrp else objective
+        if save_bks:
+            method_result, bks_update = solve_and_update_bks(
+                instance,
+                instance_path=path,
+                time_limit_s=time_limit_s,
+                seed=seed,
+                objective_function=run_objective,
+                display=display,
+            )
+        else:
+            method_result = solve_instance(
+                instance,
+                time_limit_s=time_limit_s,
+                seed=seed,
+                objective_function=run_objective,
+                display=display,
+            )
+            bks_update = None
+
+        if method_result.solver_is_feasible:
+            status = "feasible"
+            cost = method_result.solver_cost
+        else:
+            status = "infeasible"
+            cost = None
+            any_failure = True
+
+        bks_label = bks_update.action if bks_update is not None else ("-" if save_bks else "skipped")
+        identifier = (
+            getattr(instance, "instance_id", None)
+            or getattr(instance, "instance_name", None)
+            or path.stem
+        )
+        cost_str = f"{cost:>10}" if cost is not None else f"{'-':>10}"
+        typer.echo(
+            f"{identifier:<32}  {status:<10}  {cost_str}  {method_result.route_count:>6}  "
+            f"{method_result.wall_time:>7.2f}  {bks_label:<14}"
+        )
+
+    if any_failure:
         raise typer.Exit(code=1)
 
 

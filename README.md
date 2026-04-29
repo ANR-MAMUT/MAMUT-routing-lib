@@ -94,6 +94,63 @@ Global flags `--repo`, `--token`, `--tag`, and `--output-dir` are also read from
 the environment (`MAMUT_ROUTING_RELEASE_REPO`, `MAMUT_ROUTING_GITHUB_TOKEN`,
 `MAMUT_ROUTING_BENCHMARKS_ROOT`).
 
+## Solving with PyVRP
+
+An optional `[pyvrp]` extra wraps PyVRP's HGS metaheuristic so users can solve
+CVRP and VRPTW instances directly from the library.
+
+```bash
+# Python API only
+pip install "mamut-routing-lib[pyvrp]"
+
+# Both the CLI (mamut-routing solve) and the API
+pip install "mamut-routing-lib[cli,pyvrp]"
+```
+
+Python:
+
+```python
+from mamut_routing_lib import load_benchmark_instance, ObjectiveFunction
+from mamut_routing_lib.solvers.pyvrp import solve_instance, solve_and_update_bks
+
+instance = load_benchmark_instance("path/to/instance.vrp.json")
+result = solve_instance(instance, time_limit_s=30, seed=42)
+print(result.solver_is_feasible, result.solver_cost, result.route_count)
+
+# Or solve-and-write-BKS in one call
+result, update = solve_and_update_bks(
+    instance,
+    instance_path="path/to/instance.vrp.json",
+    time_limit_s=30,
+    seed=42,
+    objective_function=ObjectiveFunction.HIERARCHICAL_VEHICLE_COST,
+)
+print(update.action if update else "infeasible")
+```
+
+CLI (requires `[cli,pyvrp]`):
+
+```bash
+# Inspect what's locally available before solving
+mamut-routing --output-dir ./benchmarks instances \
+    --problem-type CVRP --benchmark-name Mamut2026
+
+# Pipe the matching paths into solve
+mamut-routing --output-dir ./benchmarks instances \
+    --problem-type CVRP --paths-only \
+    | xargs -r mamut-routing solve --time-limit-s 30
+
+# Solve specific instances
+mamut-routing solve path/to/inst1.vrp.json path/to/inst2.vrp.json \
+    --time-limit-s 30 --seed 42
+
+# Or discover under --output-dir and filter
+mamut-routing --output-dir ./benchmarks solve \
+    --problem-type VRPTW --benchmark-name Mamut2026 \
+    --objective hierarchical_vehicle_cost \
+    --time-limit-s 60
+```
+
 ## Development
 
 ```bash
