@@ -19,12 +19,12 @@ def _runner() -> CliRunner:
 
 
 def _write_instance(tmp_path: Path, instance) -> Path:
-    target = tmp_path / f"{instance.instance_id}.vrp.json"
+    target = tmp_path / f"{instance.instance_name}.vrp.json"
     save_json_to_file(instance.model_dump(mode="json"), target)
     return target
 
 
-def _fake_method_result(*, instance_id: str, problem_type: str = "CVRP", routes=None):
+def _fake_method_result(*, instance_name: str, problem_type: str = "CVRP", routes=None):
     fake = MagicMock()
     fake.solver_is_feasible = True
     fake.routes = routes or [[1, 2]]
@@ -34,14 +34,14 @@ def _fake_method_result(*, instance_id: str, problem_type: str = "CVRP", routes=
     fake.vehicle_penalty = 0
     fake.method = "hgs-v1"
     fake.problem_type = problem_type
-    fake.instance_id = instance_id
+    fake.instance_id = instance_name
     return fake
 
 
 def test_solve_with_positional_path_calls_solver(tmp_path: Path, toy_cvrp_instance) -> None:
     instance_path = _write_instance(tmp_path, toy_cvrp_instance)
 
-    fake_method_result = _fake_method_result(instance_id=toy_cvrp_instance.instance_id)
+    fake_method_result = _fake_method_result(instance_name=toy_cvrp_instance.instance_name)
     fake_update = BKSUpdateResult(
         action="created",
         path=tmp_path / "fake.bks.MonoCost.json",
@@ -64,7 +64,7 @@ def test_solve_with_positional_path_calls_solver(tmp_path: Path, toy_cvrp_instan
     kwargs = mock_solve.call_args.kwargs
     assert kwargs["time_limit_s"] == 1
     assert kwargs["seed"] == 7
-    assert toy_cvrp_instance.instance_id in result.stdout
+    assert toy_cvrp_instance.instance_name in result.stdout
     assert "feasible" in result.stdout
     assert "created" in result.stdout
 
@@ -73,7 +73,7 @@ def test_solve_with_filters_over_benchmarks_dir(tmp_path: Path, toy_cvrp_instanc
     _write_instance(tmp_path, toy_cvrp_instance)
     _write_instance(tmp_path, toy_vrptw_instance)
 
-    fake_method_result = _fake_method_result(instance_id=toy_cvrp_instance.instance_id)
+    fake_method_result = _fake_method_result(instance_name=toy_cvrp_instance.instance_name)
     fake_update = BKSUpdateResult(
         action="created",
         path=tmp_path / "fake.bks.MonoCost.json",
@@ -99,13 +99,51 @@ def test_solve_with_filters_over_benchmarks_dir(tmp_path: Path, toy_cvrp_instanc
     assert result.exit_code == 0, result.stdout + result.stderr
     assert mock_solve.call_count == 1
     selected_instance = mock_solve.call_args.args[0]
-    assert selected_instance.instance_id == toy_cvrp_instance.instance_id
+    assert selected_instance.instance_name == toy_cvrp_instance.instance_name
+
+
+def test_solve_filters_by_derived_instance_id(tmp_path: Path, toy_cvrp_instance, toy_vrptw_instance) -> None:
+    _write_instance(tmp_path, toy_cvrp_instance)
+    _write_instance(tmp_path, toy_vrptw_instance)
+
+    fake_method_result = _fake_method_result(instance_name=toy_vrptw_instance.instance_name, problem_type="VRPTW")
+    fake_update = BKSUpdateResult(
+        action="created",
+        path=tmp_path / "fake.bks.MonoCost.json",
+        previous_path=None,
+        candidate_cost=14,
+        candidate_num_routes=1,
+    )
+
+    with patch(
+        "mamut_routing_lib.solvers.pyvrp.solve_and_update_bks",
+        return_value=(fake_method_result, fake_update),
+    ) as mock_solve:
+        result = _runner().invoke(
+            app,
+            [
+                "--benchmarks-dir",
+                str(tmp_path),
+                "solve",
+                "--instance-id",
+                "vrptw-mamut2026-fastest-testville-n2-mamut-n2-testvrptw",
+                "--time-limit-s",
+                "1",
+            ],
+        )
+
+    assert result.exit_code == 0, result.stdout + result.stderr
+    assert mock_solve.call_count == 1
+    selected_instance = mock_solve.call_args.args[0]
+    assert selected_instance.instance_name == toy_vrptw_instance.instance_name
+    assert "vrptw-mamut2026-fastest-testville-n2-mamut-n2-testvrptw" in result.stdout
+    assert toy_vrptw_instance.instance_name in result.stdout
 
 
 def test_solve_no_save_bks_calls_solve_instance_only(tmp_path: Path, toy_cvrp_instance) -> None:
     instance_path = _write_instance(tmp_path, toy_cvrp_instance)
 
-    fake_method_result = _fake_method_result(instance_id=toy_cvrp_instance.instance_id)
+    fake_method_result = _fake_method_result(instance_name=toy_cvrp_instance.instance_name)
 
     with patch(
         "mamut_routing_lib.solvers.pyvrp.solve_instance", return_value=fake_method_result

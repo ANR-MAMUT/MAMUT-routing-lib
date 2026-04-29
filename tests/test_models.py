@@ -65,7 +65,7 @@ def make_valid_historical_instance_kwargs() -> dict:
 
 def make_valid_cvrp_instance_kwargs() -> dict:
     return {
-        "instance_id": "mamut-n2-deadbee",
+        "instance_name": "mamut-n2-deadbee",
         "instance_origin": "OsmCvrpGen",
         "benchmark_name": "Mamut2026",
         "num_customers": 2,
@@ -84,7 +84,7 @@ def make_valid_cvrp_instance_kwargs() -> dict:
 
 def make_valid_vrptw_instance_kwargs() -> dict:
     payload = make_valid_cvrp_instance_kwargs()
-    payload["instance_id"] = "mamut-n2-beefdad"
+    payload["instance_name"] = "mamut-n2-beefdad"
     payload["service_times"] = [0, 10, 20]
     payload["time_windows"] = [(0, 86400), (100, 5000), (200, 6000)]
     payload["metadata"] = make_metadata_kwargs(problem_type="VRPTW", metric_variant="euclidean")

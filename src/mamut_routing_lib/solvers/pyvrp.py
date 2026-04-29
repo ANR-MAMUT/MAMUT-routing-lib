@@ -86,7 +86,7 @@ class MethodResult:
 def to_vrplib_dict(instance: AnyBenchmarkInstance) -> dict[str, Any]:
     """Convert a benchmark instance into a VRPLIB-shaped dict consumable by PyVRP's parser."""
     payload: dict[str, Any] = {
-        "name": getattr(instance, "instance_name", getattr(instance, "instance_id")),
+        "name": get_instance_identifier(instance),
         "type": "CVRPTW" if isinstance(instance, (BenchmarkInstance, BenchmarkInstanceVRPTW)) else "CVRP",
         "dimension": instance.num_customers + 1,
         "vehicles": instance.num_vehicles if instance.num_vehicles is not None else instance.num_customers,
@@ -248,7 +248,7 @@ def solve_cvrp(
         method="hgs-v1",
         problem_type="CVRP",
         objective_function=ObjectiveFunction.MONO_COST.value,
-        instance_id=instance.instance_id,
+        instance_id=instance.instance_name,
         seed=seed,
         time_limit_s=time_limit_s,
         wall_time=wall_time,

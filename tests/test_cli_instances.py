@@ -13,7 +13,7 @@ def _runner() -> CliRunner:
 
 
 def _write(tmp_path: Path, instance) -> Path:
-    target = tmp_path / f"{instance.instance_id}.vrp.json"
+    target = tmp_path / f"{instance.instance_name}.vrp.json"
     save_json_to_file(instance.model_dump(mode="json"), target)
     return target
 
@@ -30,8 +30,10 @@ def test_list_lists_filtered_with_summary(
     )
 
     assert result.exit_code == 0, result.stdout + result.stderr
-    assert toy_cvrp_instance.instance_id in result.stdout
-    assert toy_vrptw_instance.instance_id not in result.stdout
+    assert "INSTANCE_NAME" in result.stdout
+    assert "cvrp-mamut2026-fastest-testville-n2-mamut-n2-testcvrp" in result.stdout
+    assert toy_cvrp_instance.instance_name in result.stdout
+    assert toy_vrptw_instance.instance_name not in result.stdout
     assert "PATH" not in result.stdout
     assert str(cvrp_path.resolve()) not in result.stdout
     assert "Summary:" in result.stdout
@@ -80,8 +82,43 @@ def test_list_no_summary_skips_recap(tmp_path: Path, toy_cvrp_instance) -> None:
     )
 
     assert result.exit_code == 0, result.stdout + result.stderr
-    assert toy_cvrp_instance.instance_id in result.stdout
+    assert toy_cvrp_instance.instance_name in result.stdout
     assert "Summary:" not in result.stdout
+
+
+def test_list_filters_by_derived_instance_id(tmp_path: Path, toy_cvrp_instance, toy_vrptw_instance) -> None:
+    _write(tmp_path, toy_cvrp_instance)
+    _write(tmp_path, toy_vrptw_instance)
+
+    result = _runner().invoke(
+        app,
+        [
+            "--benchmarks-dir",
+            str(tmp_path),
+            "list",
+            "--instance-id",
+            "vrptw-mamut2026-fastest-testville-n2-mamut-n2-testvrptw",
+            "--no-summary",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout + result.stderr
+    assert toy_vrptw_instance.instance_name in result.stdout
+    assert toy_cvrp_instance.instance_name not in result.stdout
+
+
+def test_list_filters_by_stored_instance_name(tmp_path: Path, toy_cvrp_instance, toy_vrptw_instance) -> None:
+    _write(tmp_path, toy_cvrp_instance)
+    _write(tmp_path, toy_vrptw_instance)
+
+    result = _runner().invoke(
+        app,
+        ["--benchmarks-dir", str(tmp_path), "list", "--instance-name", toy_cvrp_instance.instance_name, "--no-summary"],
+    )
+
+    assert result.exit_code == 0, result.stdout + result.stderr
+    assert toy_cvrp_instance.instance_name in result.stdout
+    assert toy_vrptw_instance.instance_name not in result.stdout
 
 
 def test_list_empty_selection_exits_2(tmp_path: Path) -> None:
@@ -99,5 +136,5 @@ def test_list_with_positional_path(tmp_path: Path, toy_cvrp_instance) -> None:
     result = _runner().invoke(app, ["list", str(instance_path)])
 
     assert result.exit_code == 0, result.stdout + result.stderr
-    assert toy_cvrp_instance.instance_id in result.stdout
+    assert toy_cvrp_instance.instance_name in result.stdout
     assert "Total          : 1" in result.stdout

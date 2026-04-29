@@ -19,7 +19,7 @@ from mamut_routing_lib import (
 
 def make_cvrp_instance() -> BenchmarkInstanceCVRP:
     return BenchmarkInstanceCVRP(
-        instance_id="mamut-n2-testcvrp",
+        instance_name="mamut-n2-testcvrp",
         instance_origin="OsmCvrpGen",
         benchmark_name="Mamut2026",
         num_customers=2,
@@ -55,7 +55,7 @@ def make_cvrp_instance() -> BenchmarkInstanceCVRP:
 
 def make_vrptw_instance() -> BenchmarkInstanceVRPTW:
     return BenchmarkInstanceVRPTW(
-        instance_id="mamut-n2-testvrptw",
+        instance_name="mamut-n2-testvrptw",
         instance_origin="OsmCvrpGen",
         benchmark_name="Mamut2026",
         num_customers=2,
@@ -102,7 +102,11 @@ def test_discover_benchmark_instances_and_problem_specific_layout(tmp_path: Path
 
     assert len(discovered) == 2
     assert {item.problem_type.value for item in discovered} == {"CVRP", "VRPTW"}
-    assert {item.instance_id for item in discovered} == {"mamut-n2-testcvrp", "mamut-n2-testvrptw"}
+    assert {item.instance_id for item in discovered} == {
+        "cvrp-mamut2026-fastest-testville-n2-mamut-n2-testcvrp",
+        "vrptw-mamut2026-euclidean-testville-n2-mamut-n2-testvrptw",
+    }
+    assert {item.instance_name for item in discovered} == {"mamut-n2-testcvrp", "mamut-n2-testvrptw"}
 
 
 def test_cvrp_and_vrptw_checkers_validate_feasible_solutions() -> None:
@@ -125,7 +129,7 @@ def test_bks_replacement_only_happens_on_strict_improvement(tmp_path: Path) -> N
 
     first_bks = create_bks_from_solution(
         instance,
-        BenchmarkSolution(instance_name=instance.instance_id, routes=[[1, 2]], cost=14),
+        BenchmarkSolution(instance_name=instance.instance_name, routes=[[1, 2]], cost=14),
         ObjectiveFunction.MONO_COST,
         authors=DEFAULT_BKS_AUTHORS,
     )
@@ -136,7 +140,7 @@ def test_bks_replacement_only_happens_on_strict_improvement(tmp_path: Path) -> N
 
     worse_bks = create_bks_from_solution(
         instance,
-        BenchmarkSolution(instance_name=instance.instance_id, routes=[[1], [2]], cost=22),
+        BenchmarkSolution(instance_name=instance.instance_name, routes=[[1], [2]], cost=22),
         ObjectiveFunction.MONO_COST,
         authors=DEFAULT_BKS_AUTHORS,
     )
@@ -150,7 +154,7 @@ def test_create_bks_from_solution_requires_authors_metadata() -> None:
     try:
         create_bks_from_solution(
             instance,
-            BenchmarkSolution(instance_name=instance.instance_id, routes=[[1, 2]], cost=14),
+            BenchmarkSolution(instance_name=instance.instance_name, routes=[[1, 2]], cost=14),
             ObjectiveFunction.MONO_COST,
         )
     except TypeError:

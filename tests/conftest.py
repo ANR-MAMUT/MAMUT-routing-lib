@@ -39,7 +39,7 @@ _TOY_METADATA_VRPTW = {
 @pytest.fixture
 def toy_cvrp_instance() -> BenchmarkInstanceCVRP:
     return BenchmarkInstanceCVRP(
-        instance_id="mamut-n2-testcvrp",
+        instance_name="mamut-n2-testcvrp",
         instance_origin="OsmCvrpGen",
         benchmark_name="Mamut2026",
         num_customers=2,
@@ -59,7 +59,7 @@ def toy_cvrp_instance() -> BenchmarkInstanceCVRP:
 @pytest.fixture
 def toy_vrptw_instance() -> BenchmarkInstanceVRPTW:
     return BenchmarkInstanceVRPTW(
-        instance_id="mamut-n2-testvrptw",
+        instance_name="mamut-n2-testvrptw",
         instance_origin="OsmCvrpGen",
         benchmark_name="Mamut2026",
         num_customers=2,

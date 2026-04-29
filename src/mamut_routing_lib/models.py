@@ -134,6 +134,7 @@ class BenchmarkInstance(_InstanceValidationMixin):
     benchmark_name: BenchmarkName
     service_times: list[int]
     time_windows: list[tuple[int, int]]
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("service_times", "time_windows")
     @classmethod
@@ -162,14 +163,14 @@ HistoricalBenchmarkInstance = BenchmarkInstance
 
 
 class BenchmarkInstanceCVRP(_InstanceValidationMixin):
-    instance_id: str
+    instance_name: str
     instance_origin: InstanceOrigin
     benchmark_name: BenchmarkName
     metadata: InstanceMetadata
 
 
 class BenchmarkInstanceVRPTW(_InstanceValidationMixin):
-    instance_id: str
+    instance_name: str
     instance_origin: InstanceOrigin
     benchmark_name: BenchmarkName
     service_times: list[int]

@@ -13,7 +13,7 @@ from mamut_routing_lib.solvers.pyvrp import solve_and_update_bks
 
 
 def _write_instance(tmp_path: Path, instance) -> Path:
-    instance_path = tmp_path / f"{instance.instance_id}.vrp.json"
+    instance_path = tmp_path / f"{instance.instance_name}.vrp.json"
     save_json_to_file(instance.model_dump(mode="json"), instance_path)
     return instance_path
 

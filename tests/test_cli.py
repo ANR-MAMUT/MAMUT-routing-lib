@@ -39,7 +39,7 @@ def test_cli_version_exits_before_remote_setup(flag: str) -> None:
 
     assert result.exit_code == 0, result.stdout + result.stderr
     assert result.stdout.strip().startswith("mamut-routing-lib ")
-    assert result.stdout.strip().endswith("0.0.2")
+    assert result.stdout.strip().endswith("0.0.4")
     mock_client_cls.assert_not_called()
 
 

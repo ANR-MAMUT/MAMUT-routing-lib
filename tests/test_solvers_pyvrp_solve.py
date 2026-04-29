@@ -16,7 +16,7 @@ def test_solve_cvrp_returns_feasible_routes(toy_cvrp_instance) -> None:
     assert result.route_count >= 1
     assert result.method == "hgs-v1"
     assert result.objective_function == ObjectiveFunction.MONO_COST.value
-    candidate = BenchmarkSolution(instance_name=toy_cvrp_instance.instance_id, routes=result.routes)
+    candidate = BenchmarkSolution(instance_name=toy_cvrp_instance.instance_name, routes=result.routes)
     assert check_solution(toy_cvrp_instance, candidate).is_valid()
 
 
@@ -30,7 +30,7 @@ def test_solve_vrptw_mono_cost_returns_feasible_routes(toy_vrptw_instance) -> No
     assert result.solver_is_feasible
     assert result.route_count >= 1
     assert result.vehicle_penalty == 0
-    candidate = BenchmarkSolution(instance_name=toy_vrptw_instance.instance_id, routes=result.routes)
+    candidate = BenchmarkSolution(instance_name=toy_vrptw_instance.instance_name, routes=result.routes)
     assert check_solution(toy_vrptw_instance, candidate).is_valid()
 
 

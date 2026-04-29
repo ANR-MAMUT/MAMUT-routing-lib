@@ -47,8 +47,38 @@ def get_default_benchmarks_root() -> Path:
 
 def get_instance_identifier(instance: AnyBenchmarkInstance) -> str:
     if isinstance(instance, (BenchmarkInstanceCVRP, BenchmarkInstanceVRPTW)):
-        return instance.instance_id
+        return instance.instance_name
     return instance.instance_name
+
+
+def _enum_or_str(value: object) -> str:
+    return str(value.value if hasattr(value, "value") else value)
+
+
+def build_instance_id(
+    *,
+    problem_type: ProblemType | str,
+    benchmark_name: BenchmarkName | str,
+    num_customers: int,
+    instance_name: str,
+    metric_variant: MetricVariant | str | None = None,
+    place_slug: str | None = None,
+) -> str:
+    """Build a stable path-derived instance id for CLI/API selection.
+
+    Historical layouts use problem/benchmark/size/name. Variant layouts include
+    metric and place to keep IDs unique across sibling MAMUT2026 variants.
+    """
+    parts = [
+        _enum_or_str(problem_type).lower(),
+        _enum_or_str(benchmark_name).lower(),
+    ]
+    if metric_variant is not None:
+        parts.append(_enum_or_str(metric_variant).lower())
+    if place_slug is not None:
+        parts.append(str(place_slug).lower())
+    parts.extend([f"n{num_customers}", instance_name])
+    return "-".join(parts)
 
 
 @dataclass(frozen=True)
@@ -59,6 +89,7 @@ class DiscoveredBenchmarkInstance:
     place_slug: str | None
     num_customers: int | None
     instance_id: str
+    instance_name: str
     instance_path: Path
 
     def load(self) -> AnyBenchmarkInstance:
@@ -76,13 +107,23 @@ def _discover_from_relative_path(relative_path: Path, instance_path: Path) -> Di
     if len(parts) == 4:
         problem_type = ProblemType(parts[0])
         benchmark_name = parts[1]
+        num_customers = _parse_num_customers(parts[2])
+        instance_name = instance_path.stem.removesuffix(".vrp")
+        if num_customers is None:
+            raise ValueError(f"Unsupported size bucket in benchmark instance layout: {relative_path}")
         return DiscoveredBenchmarkInstance(
             problem_type=problem_type,
             benchmark_name=benchmark_name,
             metric_variant=None,
             place_slug=None,
-            num_customers=_parse_num_customers(parts[2]),
-            instance_id=instance_path.stem.removesuffix(".vrp"),
+            num_customers=num_customers,
+            instance_id=build_instance_id(
+                problem_type=problem_type,
+                benchmark_name=benchmark_name,
+                num_customers=num_customers,
+                instance_name=instance_name,
+            ),
+            instance_name=instance_name,
             instance_path=instance_path,
         )
 
@@ -92,14 +133,24 @@ def _discover_from_relative_path(relative_path: Path, instance_path: Path) -> Di
         metric_variant = MetricVariant(parts[2])
         place_slug = parts[3]
         num_customers = _parse_num_customers(parts[4])
-        instance_id = parts[5]
+        if num_customers is None:
+            raise ValueError(f"Unsupported size bucket in benchmark instance layout: {relative_path}")
+        instance_name = parts[5]
         return DiscoveredBenchmarkInstance(
             problem_type=problem_type,
             benchmark_name=benchmark_name,
             metric_variant=metric_variant,
             place_slug=place_slug,
             num_customers=num_customers,
-            instance_id=instance_id,
+            instance_id=build_instance_id(
+                problem_type=problem_type,
+                benchmark_name=benchmark_name,
+                metric_variant=metric_variant,
+                place_slug=place_slug,
+                num_customers=num_customers,
+                instance_name=instance_name,
+            ),
+            instance_name=instance_name,
             instance_path=instance_path,
         )
 
@@ -147,7 +198,7 @@ def discover_benchmark_instances(
 
 def load_benchmark_instance(instance_path: str | Path) -> AnyBenchmarkInstance:
     payload = load_json_from_file(instance_path)
-    if "metadata" in payload:
+    if payload.get("benchmark_name") == BenchmarkName.MAMUT_2026.value and "metadata" in payload:
         if "service_times" in payload:
             return BenchmarkInstanceVRPTW(**payload)
         return BenchmarkInstanceCVRP(**payload)

@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from importlib import metadata
 from pathlib import Path
-from typing import Annotated, Any, Iterator, Optional
+from typing import Annotated, Any, Callable, Iterator, Optional, TypeVar
 
 import typer
 from tqdm import tqdm
@@ -15,6 +17,7 @@ from mamut_routing_lib.artifacts import (
     AnyBenchmarkInstance,
     DEFAULT_BENCHMARKS_ROOT_ENV,
     DEFAULT_MAMUT_ROUTING_ROOT_ENV,
+    build_instance_id,
     load_benchmark_instance,
 )
 from mamut_routing_lib.enums import BenchmarkName, MetricVariant, ObjectiveFunction, ProblemType
@@ -81,6 +84,33 @@ class RemoteCLIState:
     def make_client(self) -> GitHubReleaseClient:
         source = GitHubReleaseSource(repo_full_name=self.repo, token=self.token)
         return GitHubReleaseClient(source=source)
+
+
+@dataclass(frozen=True)
+class LocalInstanceRecord:
+    path: Path
+    instance: AnyBenchmarkInstance
+    instance_id: str
+    instance_name: str
+    problem_type: ProblemType
+    benchmark_name: str
+    metric_variant: MetricVariant | str | None
+    place_slug: str | None
+    num_customers: int
+
+
+@dataclass(frozen=True)
+class SolveSummaryRow:
+    instance_id: str
+    instance_name: str
+    status: str
+    cost: int | float | None
+    route_count: int
+    wall_time: float
+    bks_label: str
+
+
+T = TypeVar("T")
 
 
 def _resolve_default_benchmarks_dir() -> Path:
@@ -389,48 +419,122 @@ def _enum_value(value: Any) -> Any:
     return value.value if hasattr(value, "value") else value
 
 
-def _instance_descriptor(instance: "AnyBenchmarkInstance") -> dict[str, str | int | None]:
-    is_cvrp = isinstance(instance, BenchmarkInstanceCVRP)
+def _metadata_value(metadata: Any, key: str) -> Any:
+    if not metadata:
+        return None
+    if isinstance(metadata, dict):
+        return metadata.get(key)
+    return getattr(metadata, key, None)
+
+
+def _coerce_metric_variant(value: Any) -> MetricVariant | str | None:
+    if value is None:
+        return None
+    if isinstance(value, MetricVariant):
+        return value
+    try:
+        return MetricVariant(str(value))
+    except ValueError:
+        return str(value)
+
+
+def _coerce_benchmark_name(value: Any) -> str:
+    return str(value.value if hasattr(value, "value") else value)
+
+
+def _problem_type_from_instance(instance: "AnyBenchmarkInstance") -> ProblemType:
+    if isinstance(instance, BenchmarkInstanceCVRP):
+        return ProblemType.CVRP
     metadata = getattr(instance, "metadata", None)
-    return {
-        "instance_id": getattr(instance, "instance_id", None) or getattr(instance, "instance_name", None),
-        "problem_type": "CVRP" if is_cvrp else "VRPTW",
-        "benchmark_name": _enum_value(getattr(instance, "benchmark_name", None)),
-        "metric_variant": _enum_value(getattr(metadata, "metric_variant", None) if metadata else None),
-        "place_slug": getattr(metadata, "place_slug", None) if metadata else None,
-        "num_customers": getattr(instance, "num_customers", None),
-    }
+    problem_type = _metadata_value(metadata, "problem_type")
+    if problem_type is not None:
+        return ProblemType(problem_type)
+    return ProblemType.VRPTW
+
+
+def _relative_instance_parts(path: Path, benchmarks_dir: Path) -> tuple[str, ...] | None:
+    try:
+        return path.resolve().relative_to(benchmarks_dir.resolve()).parts
+    except ValueError:
+        return None
+
+
+def _local_instance_record(path: Path, instance: "AnyBenchmarkInstance", benchmarks_dir: Path) -> LocalInstanceRecord:
+    metadata = getattr(instance, "metadata", None)
+    instance_name = str(getattr(instance, "instance_name"))
+    problem_type = _problem_type_from_instance(instance)
+    benchmark_name = _coerce_benchmark_name(getattr(instance, "benchmark_name"))
+    metric_variant = _coerce_metric_variant(_metadata_value(metadata, "metric_variant"))
+    place_slug = _metadata_value(metadata, "place_slug")
+    num_customers = int(getattr(instance, "num_customers"))
+
+    parts = _relative_instance_parts(path, benchmarks_dir)
+    if parts is not None and len(parts) == 4:
+        problem_type = ProblemType(parts[0])
+        benchmark_name = parts[1]
+        metric_for_id = None
+        place_for_id = None
+    elif parts is not None and len(parts) == 7:
+        problem_type = ProblemType(parts[0])
+        benchmark_name = parts[1]
+        metric_variant = MetricVariant(parts[2])
+        place_slug = parts[3]
+        metric_for_id = metric_variant
+        place_for_id = place_slug
+    else:
+        metric_for_id = metric_variant if place_slug is not None else None
+        place_for_id = place_slug
+
+    instance_id = build_instance_id(
+        problem_type=problem_type,
+        benchmark_name=benchmark_name,
+        metric_variant=metric_for_id,
+        place_slug=place_for_id,
+        num_customers=num_customers,
+        instance_name=instance_name,
+    )
+
+    return LocalInstanceRecord(
+        path=path,
+        instance=instance,
+        instance_id=instance_id,
+        instance_name=instance_name,
+        problem_type=problem_type,
+        benchmark_name=benchmark_name,
+        metric_variant=metric_variant,
+        place_slug=place_slug,
+        num_customers=num_customers,
+    )
 
 
 def _instance_matches(
-    instance: "AnyBenchmarkInstance",
+    record: LocalInstanceRecord,
     *,
     problem_type: ProblemType | None,
     benchmark_name: BenchmarkName | None,
     metric_variant: MetricVariant | None,
     instance_id: str | None,
+    instance_name: str | None,
 ) -> bool:
-    if problem_type is not None:
-        is_cvrp = isinstance(instance, BenchmarkInstanceCVRP)
-        inst_problem = ProblemType.CVRP if is_cvrp else ProblemType.VRPTW
-        if inst_problem != problem_type:
-            return False
+    if problem_type is not None and record.problem_type != problem_type:
+        return False
 
     if benchmark_name is not None:
-        inst_benchmark = getattr(instance, "benchmark_name", None)
-        if inst_benchmark is None or inst_benchmark != benchmark_name:
+        if record.benchmark_name != benchmark_name.value:
             return False
 
     if metric_variant is not None:
-        metadata = getattr(instance, "metadata", None)
-        inst_metric = getattr(metadata, "metric_variant", None) if metadata else None
-        if inst_metric is None or inst_metric != metric_variant:
+        inst_metric = record.metric_variant
+        if isinstance(inst_metric, str):
+            inst_metric = _coerce_metric_variant(inst_metric)
+        if inst_metric != metric_variant:
             return False
 
-    if instance_id is not None:
-        inst_id = getattr(instance, "instance_id", None) or getattr(instance, "instance_name", None)
-        if inst_id != instance_id:
-            return False
+    if instance_id is not None and record.instance_id != instance_id:
+        return False
+
+    if instance_name is not None and record.instance_name != instance_name:
+        return False
 
     return True
 
@@ -442,19 +546,64 @@ def _filter_loaded_instances(
     benchmark_name: BenchmarkName | None,
     metric_variant: MetricVariant | None,
     instance_id: str | None,
-) -> list[tuple[Path, "AnyBenchmarkInstance"]]:
-    selected: list[tuple[Path, AnyBenchmarkInstance]] = []
+    instance_name: str | None,
+    benchmarks_dir: Path,
+) -> list[LocalInstanceRecord]:
+    selected: list[LocalInstanceRecord] = []
     for path in paths:
         instance = load_benchmark_instance(path)
+        record = _local_instance_record(path, instance, benchmarks_dir)
         if _instance_matches(
-            instance,
+            record,
             problem_type=problem_type,
             benchmark_name=benchmark_name,
             metric_variant=metric_variant,
             instance_id=instance_id,
+            instance_name=instance_name,
         ):
-            selected.append((path, instance))
+            selected.append(record)
     return selected
+
+
+def _run_with_time_progress(
+    *,
+    record: LocalInstanceRecord,
+    time_limit_s: int,
+    enabled: bool,
+    operation: Callable[[], T],
+) -> T:
+    if not enabled:
+        return operation()
+
+    desc = record.instance_id if len(record.instance_id) <= 48 else f"{record.instance_id[:45]}..."
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(operation)
+        started_at = time.monotonic()
+        with tqdm(
+            total=float(time_limit_s),
+            desc=f"{desc} ({time_limit_s}s left)",
+            unit="s",
+            leave=False,
+            dynamic_ncols=True,
+            mininterval=0.2,
+            bar_format="{desc}: {percentage:3.0f}%|{bar}|",
+            file=sys.stderr,
+        ) as bar:
+            while not future.done():
+                elapsed = time.monotonic() - started_at
+                target = min(elapsed, float(time_limit_s))
+                remaining = max(0.0, float(time_limit_s) - elapsed)
+                bar.n = target
+                bar.set_description_str(f"{desc} ({remaining:.0f}s left)", refresh=False)
+                bar.refresh()
+                time.sleep(0.2)
+
+            elapsed = min(time.monotonic() - started_at, float(time_limit_s))
+            if elapsed > bar.n:
+                bar.n = elapsed
+                bar.refresh()
+
+        return future.result()
 
 
 @app.command("list")
@@ -481,7 +630,11 @@ def list_instances(
     ] = None,
     instance_id: Annotated[
         Optional[str],
-        typer.Option("--instance-id", help="Filter by exact instance id."),
+        typer.Option("--instance-id", help="Filter by exact derived aggregate instance ID."),
+    ] = None,
+    instance_name: Annotated[
+        Optional[str],
+        typer.Option("--instance-name", help="Filter by exact stored instance name."),
     ] = None,
     paths_only: Annotated[
         bool,
@@ -500,7 +653,7 @@ def list_instances(
 
     Mirrors the selection model of `solve`: positional INSTANCE_PATHS or a recursive
     scan of `--benchmarks-dir` filtered by --problem-type / --benchmark-name /
-    --metric-variant / --instance-id. Use `--paths-only` to pipe into solve, e.g.
+    --metric-variant / --instance-id / --instance-name. Use `--paths-only` to pipe into solve, e.g.
 
         mamut-routing list --problem-type CVRP --paths-only \\
             | xargs -r mamut-routing solve --time-limit-s 30
@@ -517,7 +670,7 @@ def list_instances(
 
     if not paths_only:
         base_header = (
-            f"{'INSTANCE_ID':<32}  {'PROBLEM':<6}  {'BENCHMARK':<12}  "
+            f"{'INSTANCE_ID':<64}  {'INSTANCE_NAME':<24}  {'PROBLEM':<6}  {'BENCHMARK':<12}  "
             f"{'METRIC':<10}  {'PLACE':<14}  {'n':>5}"
         )
         header = f"{base_header}  PATH" if show_path else base_header
@@ -527,12 +680,14 @@ def list_instances(
     for path in candidate_paths:
         scanned_count += 1
         instance = load_benchmark_instance(path)
+        record = _local_instance_record(path, instance, state.benchmarks_dir)
         if not _instance_matches(
-            instance,
+            record,
             problem_type=problem_type,
             benchmark_name=benchmark_name,
             metric_variant=metric_variant,
             instance_id=instance_id,
+            instance_name=instance_name,
         ):
             continue
 
@@ -541,24 +696,22 @@ def list_instances(
             typer.echo(str(path))
             continue
 
-        descriptor = _instance_descriptor(instance)
-        problem_key = str(descriptor["problem_type"] or "-")
-        benchmark_key = str(descriptor["benchmark_name"] or "-")
-        metric_key = str(descriptor["metric_variant"] or "-")
+        problem_key = record.problem_type.value
+        benchmark_key = record.benchmark_name
+        metric_key = str(_enum_value(record.metric_variant) or "-")
         counts_problem[problem_key] = counts_problem.get(problem_key, 0) + 1
         counts_benchmark[benchmark_key] = counts_benchmark.get(benchmark_key, 0) + 1
         counts_metric[metric_key] = counts_metric.get(metric_key, 0) + 1
-        size = descriptor["num_customers"]
-        if isinstance(size, int):
-            counts_size[size] = counts_size.get(size, 0) + 1
+        counts_size[record.num_customers] = counts_size.get(record.num_customers, 0) + 1
 
         row = (
-            f"{(descriptor['instance_id'] or '-'):<32}  "
-            f"{(descriptor['problem_type'] or '-'):<6}  "
-            f"{(descriptor['benchmark_name'] or '-'):<12}  "
-            f"{(descriptor['metric_variant'] or '-'):<10}  "
-            f"{(descriptor['place_slug'] or '-'):<14}  "
-            f"{(descriptor['num_customers'] if descriptor['num_customers'] is not None else '-'):>5}"
+            f"{record.instance_id:<64}  "
+            f"{record.instance_name:<24}  "
+            f"{record.problem_type.value:<6}  "
+            f"{record.benchmark_name:<12}  "
+            f"{(_enum_value(record.metric_variant) or '-'):<10}  "
+            f"{(record.place_slug or '-'):<14}  "
+            f"{record.num_customers:>5}"
         )
         if show_path:
             row = f"{row}  {path}"
@@ -614,7 +767,11 @@ def solve_instances(
     ] = None,
     instance_id: Annotated[
         Optional[str],
-        typer.Option("--instance-id", help="Filter by exact instance id."),
+        typer.Option("--instance-id", help="Filter by exact derived aggregate instance ID."),
+    ] = None,
+    instance_name: Annotated[
+        Optional[str],
+        typer.Option("--instance-name", help="Filter by exact stored instance name."),
     ] = None,
     objective: Annotated[
         ObjectiveFunction,
@@ -659,6 +816,8 @@ def solve_instances(
         benchmark_name=benchmark_name,
         metric_variant=metric_variant,
         instance_id=instance_id,
+        instance_name=instance_name,
+        benchmarks_dir=state.benchmarks_dir,
     )
     if not selected:
         typer.echo(
@@ -669,24 +828,24 @@ def solve_instances(
         raise typer.Exit(code=2)
 
     typer.echo(f"Solving {len(selected)} instance(s)  time_limit={time_limit_s}s  seed={seed}  save_bks={save_bks}")
-    header = f"{'INSTANCE_ID':<32}  {'STATUS':<10}  {'COST':>10}  {'ROUTES':>6}  {'WALL_S':>7}  {'BKS':<14}"
-    typer.echo(header)
-    typer.echo("-" * len(header))
-
     any_failure = False
-    for path, instance in selected:
+    rows: list[SolveSummaryRow] = []
+    for record in selected:
+        path = record.path
+        instance = record.instance
         is_cvrp = isinstance(instance, BenchmarkInstanceCVRP)
         run_objective = ObjectiveFunction.MONO_COST if is_cvrp else objective
-        if save_bks:
-            method_result, bks_update = solve_and_update_bks(
-                instance,
-                instance_path=path,
-                time_limit_s=time_limit_s,
-                seed=seed,
-                objective_function=run_objective,
-                display=display,
-            )
-        else:
+
+        def _solve_selected_instance() -> tuple[Any, Any]:
+            if save_bks:
+                return solve_and_update_bks(
+                    instance,
+                    instance_path=path,
+                    time_limit_s=time_limit_s,
+                    seed=seed,
+                    objective_function=run_objective,
+                    display=display,
+                )
             method_result = solve_instance(
                 instance,
                 time_limit_s=time_limit_s,
@@ -694,7 +853,14 @@ def solve_instances(
                 objective_function=run_objective,
                 display=display,
             )
-            bks_update = None
+            return method_result, None
+
+        method_result, bks_update = _run_with_time_progress(
+            record=record,
+            time_limit_s=time_limit_s,
+            enabled=not display,
+            operation=_solve_selected_instance,
+        )
 
         if method_result.solver_is_feasible:
             status = "feasible"
@@ -705,15 +871,30 @@ def solve_instances(
             any_failure = True
 
         bks_label = bks_update.action if bks_update is not None else ("-" if save_bks else "skipped")
-        identifier = (
-            getattr(instance, "instance_id", None)
-            or getattr(instance, "instance_name", None)
-            or path.stem
+        rows.append(
+            SolveSummaryRow(
+                instance_id=record.instance_id,
+                instance_name=record.instance_name,
+                status=status,
+                cost=cost,
+                route_count=method_result.route_count,
+                wall_time=method_result.wall_time,
+                bks_label=bks_label,
+            )
         )
-        cost_str = f"{cost:>10}" if cost is not None else f"{'-':>10}"
+
+    header = (
+        f"{'INSTANCE_ID':<64}  {'INSTANCE_NAME':<24}  {'STATUS':<10}  "
+        f"{'COST':>10}  {'ROUTES':>6}  {'WALL_S':>7}  {'BKS':<14}"
+    )
+    typer.echo(header)
+    typer.echo("-" * len(header))
+
+    for row in rows:
+        cost_str = f"{row.cost:>10}" if row.cost is not None else f"{'-':>10}"
         typer.echo(
-            f"{identifier:<32}  {status:<10}  {cost_str}  {method_result.route_count:>6}  "
-            f"{method_result.wall_time:>7.2f}  {bks_label:<14}"
+            f"{row.instance_id:<64}  {row.instance_name:<24}  {row.status:<10}  {cost_str}  {row.route_count:>6}  "
+            f"{row.wall_time:>7.2f}  {row.bks_label:<14}"
         )
 
     if any_failure:
