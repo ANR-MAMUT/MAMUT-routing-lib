@@ -196,6 +196,135 @@ def test_solve_no_save_bks_calls_solve_instance_only(tmp_path: Path, toy_cvrp_in
     assert "skipped" in result.stdout
 
 
+def test_solve_multi_instance_accepts_jobs_and_keeps_output_order(
+    tmp_path: Path, toy_cvrp_instance, toy_vrptw_instance
+) -> None:
+    _write_instance(tmp_path, toy_cvrp_instance)
+    _write_instance(tmp_path, toy_vrptw_instance)
+
+    def _fake_solve(instance, **_kwargs):
+        return _fake_method_result(
+            instance_name=instance.instance_name,
+            problem_type=instance.metadata.problem_type,
+        )
+
+    with patch("mamut_routing_lib.solvers.pyvrp.solve_instance", side_effect=_fake_solve) as mock_solve:
+        result = _runner().invoke(
+            app,
+            [
+                "--benchmarks-dir", str(tmp_path),
+                "solve",
+                "--time-limit-s", "1",
+                "--no-save-bks",
+                "--jobs", "2",
+            ],
+        )
+
+    assert result.exit_code == 0, result.stdout + result.stderr
+    assert mock_solve.call_count == 2
+    assert "jobs=2" in result.stdout
+    assert result.stdout.index(toy_cvrp_instance.instance_name) < result.stdout.index(
+        toy_vrptw_instance.instance_name
+    )
+    assert "skipped" in result.stdout
+
+
+def test_solve_multi_instance_jobs_one_processes_all(
+    tmp_path: Path, toy_cvrp_instance, toy_vrptw_instance
+) -> None:
+    _write_instance(tmp_path, toy_cvrp_instance)
+    _write_instance(tmp_path, toy_vrptw_instance)
+
+    def _fake_solve(instance, **_kwargs):
+        return _fake_method_result(
+            instance_name=instance.instance_name,
+            problem_type=instance.metadata.problem_type,
+        )
+
+    with patch("mamut_routing_lib.solvers.pyvrp.solve_instance", side_effect=_fake_solve) as mock_solve:
+        result = _runner().invoke(
+            app,
+            [
+                "--benchmarks-dir", str(tmp_path),
+                "solve",
+                "--time-limit-s", "1",
+                "--no-save-bks",
+                "--jobs", "1",
+            ],
+        )
+
+    assert result.exit_code == 0, result.stdout + result.stderr
+    assert mock_solve.call_count == 2
+    assert "jobs=1" in result.stdout
+    assert toy_cvrp_instance.instance_name in result.stdout
+    assert toy_vrptw_instance.instance_name in result.stdout
+
+
+def test_solve_single_instance_jobs_keeps_single_instance_behavior(tmp_path: Path, toy_cvrp_instance) -> None:
+    instance_path = _write_instance(tmp_path, toy_cvrp_instance)
+    fake_method_result = _fake_method_result(instance_name=toy_cvrp_instance.instance_name)
+
+    with patch("mamut_routing_lib.solvers.pyvrp.solve_instance", return_value=fake_method_result) as mock_solve:
+        result = _runner().invoke(
+            app,
+            [
+                "solve",
+                str(instance_path),
+                "--time-limit-s", "1",
+                "--no-save-bks",
+                "--jobs", "8",
+            ],
+        )
+
+    assert result.exit_code == 0, result.stdout + result.stderr
+    mock_solve.assert_called_once()
+    assert "Solving 1 instance(s)" in result.stdout
+    assert "jobs=" not in result.stdout
+    assert toy_cvrp_instance.instance_name in result.stdout
+
+
+def test_solve_display_rejected_for_multi_instance(tmp_path: Path, toy_cvrp_instance, toy_vrptw_instance) -> None:
+    _write_instance(tmp_path, toy_cvrp_instance)
+    _write_instance(tmp_path, toy_vrptw_instance)
+
+    with patch("mamut_routing_lib.solvers.pyvrp.solve_instance") as mock_solve:
+        result = _runner().invoke(
+            app,
+            [
+                "--benchmarks-dir", str(tmp_path),
+                "solve",
+                "--time-limit-s", "1",
+                "--no-save-bks",
+                "--display",
+            ],
+        )
+
+    assert result.exit_code == 2
+    mock_solve.assert_not_called()
+    assert "--display is only supported" in (result.stderr + result.stdout)
+
+
+def test_solve_duplicate_positional_paths_rejected_for_multi_instance(tmp_path: Path, toy_cvrp_instance) -> None:
+    instance_path = _write_instance(tmp_path, toy_cvrp_instance)
+
+    with patch("mamut_routing_lib.solvers.pyvrp.solve_instance") as mock_solve:
+        result = _runner().invoke(
+            app,
+            [
+                "solve",
+                str(instance_path),
+                str(instance_path),
+                "--time-limit-s", "1",
+                "--no-save-bks",
+                "--jobs", "2",
+            ],
+        )
+
+    assert result.exit_code == 2
+    mock_solve.assert_not_called()
+    assert "duplicate instance path" in (result.stderr + result.stdout)
+
+
 def test_solve_warns_when_solving_sintef_with_mono_cost(tmp_path: Path) -> None:
     benchmarks_dir = tmp_path / "benchmarks"
     _write_historical_instance(benchmarks_dir, _make_historical_vrptw(benchmark_name="Sintef2008"))

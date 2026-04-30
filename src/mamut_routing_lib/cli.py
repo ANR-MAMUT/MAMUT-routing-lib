@@ -5,7 +5,7 @@ import os
 import sys
 import time
 import tomllib
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from importlib import metadata
 from pathlib import Path
@@ -623,6 +623,25 @@ def _run_with_time_progress(
         return future.result()
 
 
+def _default_solve_jobs() -> int:
+    cpu_count = os.cpu_count()
+    if cpu_count is None:
+        return 1
+    return max(1, cpu_count - 2)
+
+
+def _duplicate_resolved_paths(records: list[LocalInstanceRecord]) -> list[Path]:
+    seen: set[Path] = set()
+    duplicates: list[Path] = []
+    for record in records:
+        resolved = record.path.resolve()
+        if resolved in seen:
+            duplicates.append(resolved)
+        else:
+            seen.add(resolved)
+    return duplicates
+
+
 @app.command("list")
 def list_instances(
     ctx: typer.Context,
@@ -811,6 +830,17 @@ def solve_instances(
         bool,
         typer.Option("--display/--no-display", help="Forward PyVRP's per-iteration display to stdout."),
     ] = False,
+    jobs: Annotated[
+        Optional[int],
+        typer.Option(
+            "--jobs",
+            min=1,
+            help=(
+                "Parallel solve workers for multi-instance selections. Defaults to max(1, CPU count - 2). "
+                "Single-instance solves keep the time progress bar."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Solve one or more benchmark instances with custom PyVRP's HGS-based solver variants.
 
@@ -856,10 +886,35 @@ def solve_instances(
 
     _warn_on_non_base_objectives(selected, objective)
 
-    typer.echo(f"Solving {len(selected)} instance(s)  time_limit={time_limit_s}s  seed={seed}  save_bks={save_bks}")
-    any_failure = False
-    rows: list[SolveSummaryRow] = []
-    for record in selected:
+    multi_instance = len(selected) >= 2
+    if multi_instance and display:
+        typer.echo(
+            "Error: --display is only supported when solving a single selected instance. "
+            "Narrow the selection or omit --display for parallel batch solves.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    if multi_instance:
+        duplicate_paths = _duplicate_resolved_paths(selected)
+        if duplicate_paths:
+            typer.echo(
+                "Error: duplicate instance path(s) selected for a parallel solve: "
+                f"{', '.join(str(path) for path in duplicate_paths)}",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+
+    resolved_jobs = jobs if jobs is not None else _default_solve_jobs()
+    effective_jobs = min(resolved_jobs, len(selected))
+
+    solve_message = f"Solving {len(selected)} instance(s)  time_limit={time_limit_s}s  seed={seed}  save_bks={save_bks}"
+    if multi_instance:
+        solve_message = f"{solve_message}  jobs={effective_jobs}"
+    typer.echo(solve_message)
+    rows: list[SolveSummaryRow | None] = [None] * len(selected)
+
+    def _solve_record(record: LocalInstanceRecord) -> SolveSummaryRow:
         path = record.path
         instance = record.instance
         run_objective = objective
@@ -883,12 +938,15 @@ def solve_instances(
             )
             return method_result, None
 
-        method_result, bks_update = _run_with_time_progress(
-            record=record,
-            time_limit_s=time_limit_s,
-            enabled=not display,
-            operation=_solve_selected_instance,
-        )
+        if multi_instance:
+            method_result, bks_update = _solve_selected_instance()
+        else:
+            method_result, bks_update = _run_with_time_progress(
+                record=record,
+                time_limit_s=time_limit_s,
+                enabled=not display,
+                operation=_solve_selected_instance,
+            )
 
         if method_result.solver_is_feasible:
             status = "feasible"
@@ -896,20 +954,40 @@ def solve_instances(
         else:
             status = "infeasible"
             cost = None
-            any_failure = True
 
         bks_label = bks_update.action if bks_update is not None else ("-" if save_bks else "skipped")
-        rows.append(
-            SolveSummaryRow(
-                instance_id=record.instance_id,
-                instance_name=record.instance_name,
-                status=status,
-                cost=cost,
-                route_count=method_result.route_count,
-                wall_time=method_result.wall_time,
-                bks_label=bks_label,
-            )
+        return SolveSummaryRow(
+            instance_id=record.instance_id,
+            instance_name=record.instance_name,
+            status=status,
+            cost=cost,
+            route_count=method_result.route_count,
+            wall_time=method_result.wall_time,
+            bks_label=bks_label,
         )
+
+    if multi_instance:
+        future_indices = {}
+        with ThreadPoolExecutor(max_workers=effective_jobs) as executor:
+            for index, record in enumerate(selected):
+                future_indices[executor.submit(_solve_record, record)] = index
+            with tqdm(
+                total=len(selected),
+                desc=f"Solving ({effective_jobs} jobs)",
+                unit="run",
+                leave=True,
+                dynamic_ncols=True,
+                file=sys.stderr,
+            ) as bar:
+                for future in as_completed(future_indices):
+                    index = future_indices[future]
+                    rows[index] = future.result()
+                    bar.update(1)
+    else:
+        rows[0] = _solve_record(selected[0])
+
+    solved_rows = [row for row in rows if row is not None]
+    any_failure = any(row.status != "feasible" for row in solved_rows)
 
     header = (
         f"{'INSTANCE_ID':<64}  {'INSTANCE_NAME':<24}  {'STATUS':<10}  "
@@ -918,7 +996,7 @@ def solve_instances(
     typer.echo(header)
     typer.echo("-" * len(header))
 
-    for row in rows:
+    for row in solved_rows:
         cost_str = f"{row.cost:>10}" if row.cost is not None else f"{'-':>10}"
         typer.echo(
             f"{row.instance_id:<64}  {row.instance_name:<24}  {row.status:<10}  {cost_str}  {row.route_count:>6}  "
