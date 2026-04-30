@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import time
+import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from importlib import metadata
@@ -19,6 +20,7 @@ from mamut_routing_lib.artifacts import (
     DEFAULT_MAMUT_ROUTING_ROOT_ENV,
     build_instance_id,
     load_benchmark_instance,
+    parse_layout,
 )
 from mamut_routing_lib.enums import BenchmarkName, MetricVariant, ObjectiveFunction, ProblemType
 from mamut_routing_lib.models import BenchmarkInstanceCVRP
@@ -53,14 +55,13 @@ def _get_package_version() -> str:
     try:
         return metadata.version(package_name)
     except metadata.PackageNotFoundError:
-        try:
-            import tomllib
-
-            pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
-            pyproject_data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
-            return str(pyproject_data["project"]["version"])
-        except Exception:
-            return "unknown"
+        pass
+    try:
+        pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
+        pyproject_data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+        return str(pyproject_data["project"]["version"])
+    except (OSError, KeyError, tomllib.TOMLDecodeError):
+        return "unknown"
 
 
 def _version_callback(value: bool) -> None:
@@ -370,29 +371,14 @@ def remote_verify_local(
         raise typer.Exit(code=1)
 
 
-def _resolve_candidate_paths(state: "CLIState", instance_paths: list[Path] | None) -> list[Path]:
-    if instance_paths:
-        candidate_paths = [Path(p).expanduser().resolve() for p in instance_paths]
-        missing = [p for p in candidate_paths if not p.is_file()]
-        if missing:
-            typer.echo(
-                f"Error: instance file(s) not found: {', '.join(str(p) for p in missing)}",
-                err=True,
-            )
-            raise typer.Exit(code=2)
-        return candidate_paths
-
-    if not state.benchmarks_dir.is_dir():
-        typer.echo(
-            f"Error: --benchmarks-dir does not exist: {state.benchmarks_dir}. Pass positional "
-            f"INSTANCE_PATHS, specify a valid --benchmarks-dir or fetch archives first.",
-            err=True,
-        )
-        raise typer.Exit(code=2)
-    return sorted(state.benchmarks_dir.rglob("*.vrp.json"))
-
-
 def _iter_candidate_paths(state: "CLIState", instance_paths: list[Path] | None) -> Iterator[Path]:
+    """Yield instance paths in deterministic (sorted) order.
+
+    With explicit `instance_paths`, paths are validated and yielded in the given order.
+    Without, the configured `--benchmarks-dir` is walked recursively and the matching
+    `*.vrp.json` files are sorted before iteration so that callers (`list`, `solve`)
+    process the same tree in the same order.
+    """
     if instance_paths:
         candidate_paths = [Path(p).expanduser().resolve() for p in instance_paths]
         missing = [p for p in candidate_paths if not p.is_file()]
@@ -412,7 +398,7 @@ def _iter_candidate_paths(state: "CLIState", instance_paths: list[Path] | None) 
             err=True,
         )
         raise typer.Exit(code=2)
-    yield from state.benchmarks_dir.rglob("*.vrp.json")
+    yield from sorted(state.benchmarks_dir.rglob("*.vrp.json"))
 
 
 def _enum_value(value: Any) -> Any:
@@ -452,9 +438,16 @@ def _problem_type_from_instance(instance: "AnyBenchmarkInstance") -> ProblemType
     return ProblemType.VRPTW
 
 
-def _relative_instance_parts(path: Path, benchmarks_dir: Path) -> tuple[str, ...] | None:
+def _resolve_layout_under(path: Path, benchmarks_dir: Path):
+    """Return the parsed layout if `path` lives under `benchmarks_dir` and matches one
+    of the supported layouts, otherwise None.
+    """
     try:
-        return path.resolve().relative_to(benchmarks_dir.resolve()).parts
+        relative = path.resolve().relative_to(benchmarks_dir.resolve())
+    except ValueError:
+        return None
+    try:
+        return parse_layout(relative, path)
     except ValueError:
         return None
 
@@ -468,19 +461,15 @@ def _local_instance_record(path: Path, instance: "AnyBenchmarkInstance", benchma
     place_slug = _metadata_value(metadata, "place_slug")
     num_customers = int(getattr(instance, "num_customers"))
 
-    parts = _relative_instance_parts(path, benchmarks_dir)
-    if parts is not None and len(parts) == 4:
-        problem_type = ProblemType(parts[0])
-        benchmark_name = parts[1]
-        metric_for_id = None
-        place_for_id = None
-    elif parts is not None and len(parts) == 7:
-        problem_type = ProblemType(parts[0])
-        benchmark_name = parts[1]
-        metric_variant = MetricVariant(parts[2])
-        place_slug = parts[3]
-        metric_for_id = metric_variant
-        place_for_id = place_slug
+    layout = _resolve_layout_under(path, benchmarks_dir)
+    if layout is not None:
+        # Path is the source of truth when the file lives under a recognised layout.
+        problem_type = layout.problem_type
+        benchmark_name = layout.benchmark_name
+        metric_variant = layout.metric_variant
+        place_slug = layout.place_slug
+        metric_for_id = layout.metric_variant
+        place_for_id = layout.place_slug
     else:
         metric_for_id = metric_variant if place_slug is not None else None
         place_for_id = place_slug
@@ -808,7 +797,7 @@ def solve_instances(
 
     state: CLIState = ctx.obj
 
-    candidate_paths = _resolve_candidate_paths(state, list(instance_paths) if instance_paths else None)
+    candidate_paths = list(_iter_candidate_paths(state, list(instance_paths) if instance_paths else None))
 
     selected = _filter_loaded_instances(
         candidate_paths,
@@ -827,14 +816,23 @@ def solve_instances(
         )
         raise typer.Exit(code=2)
 
+    if objective != ObjectiveFunction.MONO_COST:
+        cvrp_in_batch = [r for r in selected if isinstance(r.instance, BenchmarkInstanceCVRP)]
+        if cvrp_in_batch:
+            raise typer.BadParameter(
+                f"--objective {objective.value} is VRPTW-only but the selection includes "
+                f"{len(cvrp_in_batch)} CVRP instance(s) (e.g. {cvrp_in_batch[0].instance_id}). "
+                "Run CVRP and VRPTW in separate invocations.",
+                param_hint="--objective",
+            )
+
     typer.echo(f"Solving {len(selected)} instance(s)  time_limit={time_limit_s}s  seed={seed}  save_bks={save_bks}")
     any_failure = False
     rows: list[SolveSummaryRow] = []
     for record in selected:
         path = record.path
         instance = record.instance
-        is_cvrp = isinstance(instance, BenchmarkInstanceCVRP)
-        run_objective = ObjectiveFunction.MONO_COST if is_cvrp else objective
+        run_objective = objective
 
         def _solve_selected_instance() -> tuple[Any, Any]:
             if save_bks:

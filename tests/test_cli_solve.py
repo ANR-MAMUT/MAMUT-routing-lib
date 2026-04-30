@@ -161,6 +161,29 @@ def test_solve_no_save_bks_calls_solve_instance_only(tmp_path: Path, toy_cvrp_in
     assert "skipped" in result.stdout
 
 
+def test_solve_rejects_hierarchical_objective_against_cvrp_in_batch(
+    tmp_path: Path, toy_cvrp_instance, toy_vrptw_instance
+) -> None:
+    _write_instance(tmp_path, toy_cvrp_instance)
+    _write_instance(tmp_path, toy_vrptw_instance)
+
+    with patch(
+        "mamut_routing_lib.solvers.pyvrp.solve_and_update_bks"
+    ) as mock_solve_and_update:
+        result = _runner().invoke(
+            app,
+            [
+                "--benchmarks-dir", str(tmp_path),
+                "solve",
+                "--objective", "hierarchical_vehicle_cost",
+                "--time-limit-s", "1",
+            ],
+        )
+
+    assert result.exit_code == 2
+    mock_solve_and_update.assert_not_called()
+
+
 def test_solve_no_selection_errors_with_exit_2(tmp_path: Path) -> None:
     result = _runner().invoke(
         app,

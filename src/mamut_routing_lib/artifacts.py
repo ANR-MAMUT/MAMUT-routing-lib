@@ -11,14 +11,14 @@ from mamut_routing_lib.models import (
     BenchmarkBKS,
     BenchmarkInstance,
     BenchmarkInstanceCVRP,
-    BenchmarkInstanceVRPTW,
+    InstanceMetadata,
 )
 
 
 DEFAULT_MAMUT_ROUTING_ROOT_ENV = "MAMUT_ROUTING_ROOT"
 DEFAULT_BENCHMARKS_ROOT_ENV = "MAMUT_ROUTING_BENCHMARKS_ROOT"
 
-AnyBenchmarkInstance = BenchmarkInstance | BenchmarkInstanceCVRP | BenchmarkInstanceVRPTW
+AnyBenchmarkInstance = BenchmarkInstance | BenchmarkInstanceCVRP
 
 
 def _path_from_env(env_name: str) -> Path | None:
@@ -46,8 +46,6 @@ def get_default_benchmarks_root() -> Path:
 
 
 def get_instance_identifier(instance: AnyBenchmarkInstance) -> str:
-    if isinstance(instance, (BenchmarkInstanceCVRP, BenchmarkInstanceVRPTW)):
-        return instance.instance_name
     return instance.instance_name
 
 
@@ -102,59 +100,81 @@ def _parse_num_customers(part: str) -> int | None:
     return int(part.removeprefix("n="))
 
 
-def _discover_from_relative_path(relative_path: Path, instance_path: Path) -> DiscoveredBenchmarkInstance:
+@dataclass(frozen=True)
+class LayoutInfo:
+    """Path-layout-derived view of a benchmark instance.
+
+    Two on-disk layouts are supported under ``benchmarks/``:
+
+    - 4-part historical:
+      ``<problem>/<benchmark>/n=<N>/<file>.vrp.json``
+    - 7-part Mamut2026:
+      ``<problem>/<benchmark>/<metric>/<place>/n=<N>/<instance_name>/<file>.vrp.json``
+
+    The historical layout has neither ``metric_variant`` nor ``place_slug``.
+    """
+
+    problem_type: ProblemType
+    benchmark_name: str
+    metric_variant: MetricVariant | None
+    place_slug: str | None
+    num_customers: int
+    instance_name: str
+
+
+def parse_layout(relative_path: Path, instance_path: Path) -> LayoutInfo:
     parts = relative_path.parts
     if len(parts) == 4:
         problem_type = ProblemType(parts[0])
         benchmark_name = parts[1]
         num_customers = _parse_num_customers(parts[2])
-        instance_name = instance_path.stem.removesuffix(".vrp")
         if num_customers is None:
             raise ValueError(f"Unsupported size bucket in benchmark instance layout: {relative_path}")
-        return DiscoveredBenchmarkInstance(
+        instance_name = instance_path.stem.removesuffix(".vrp")
+        return LayoutInfo(
             problem_type=problem_type,
             benchmark_name=benchmark_name,
             metric_variant=None,
             place_slug=None,
             num_customers=num_customers,
-            instance_id=build_instance_id(
-                problem_type=problem_type,
-                benchmark_name=benchmark_name,
-                num_customers=num_customers,
-                instance_name=instance_name,
-            ),
             instance_name=instance_name,
-            instance_path=instance_path,
         )
 
     if len(parts) == 7:
-        problem_type = ProblemType(parts[0])
-        benchmark_name = parts[1]
-        metric_variant = MetricVariant(parts[2])
-        place_slug = parts[3]
         num_customers = _parse_num_customers(parts[4])
         if num_customers is None:
             raise ValueError(f"Unsupported size bucket in benchmark instance layout: {relative_path}")
-        instance_name = parts[5]
-        return DiscoveredBenchmarkInstance(
-            problem_type=problem_type,
-            benchmark_name=benchmark_name,
-            metric_variant=metric_variant,
-            place_slug=place_slug,
+        return LayoutInfo(
+            problem_type=ProblemType(parts[0]),
+            benchmark_name=parts[1],
+            metric_variant=MetricVariant(parts[2]),
+            place_slug=parts[3],
             num_customers=num_customers,
-            instance_id=build_instance_id(
-                problem_type=problem_type,
-                benchmark_name=benchmark_name,
-                metric_variant=metric_variant,
-                place_slug=place_slug,
-                num_customers=num_customers,
-                instance_name=instance_name,
-            ),
-            instance_name=instance_name,
-            instance_path=instance_path,
+            instance_name=parts[5],
         )
 
     raise ValueError(f"Unsupported benchmark instance layout: {relative_path}")
+
+
+def _discover_from_relative_path(relative_path: Path, instance_path: Path) -> DiscoveredBenchmarkInstance:
+    layout = parse_layout(relative_path, instance_path)
+    return DiscoveredBenchmarkInstance(
+        problem_type=layout.problem_type,
+        benchmark_name=layout.benchmark_name,
+        metric_variant=layout.metric_variant,
+        place_slug=layout.place_slug,
+        num_customers=layout.num_customers,
+        instance_id=build_instance_id(
+            problem_type=layout.problem_type,
+            benchmark_name=layout.benchmark_name,
+            metric_variant=layout.metric_variant,
+            place_slug=layout.place_slug,
+            num_customers=layout.num_customers,
+            instance_name=layout.instance_name,
+        ),
+        instance_name=layout.instance_name,
+        instance_path=instance_path,
+    )
 
 
 def discover_benchmark_instances(
@@ -198,11 +218,23 @@ def discover_benchmark_instances(
 
 def load_benchmark_instance(instance_path: str | Path) -> AnyBenchmarkInstance:
     payload = load_json_from_file(instance_path)
-    if payload.get("benchmark_name") == BenchmarkName.MAMUT_2026.value and "metadata" in payload:
-        if "service_times" in payload:
-            return BenchmarkInstanceVRPTW(**payload)
+    if (
+        payload.get("benchmark_name") == BenchmarkName.MAMUT_2026.value
+        and "metadata" in payload
+        and "service_times" not in payload
+    ):
         return BenchmarkInstanceCVRP(**payload)
     return BenchmarkInstance(**payload)
+
+
+def has_structured_metadata(instance: AnyBenchmarkInstance) -> bool:
+    """Return True if the instance carries a validated InstanceMetadata payload.
+
+    BenchmarkInstanceCVRP always does. Unified BenchmarkInstance does for Mamut2026
+    (pydantic Union resolves to InstanceMetadata when the structured fields match);
+    historical Sintef/Dimacs instances carry a plain dict.
+    """
+    return isinstance(getattr(instance, "metadata", None), InstanceMetadata)
 
 
 def get_bks_path_for_instance(

@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict
 
 from mamut_routing_lib.artifacts import AnyBenchmarkInstance
 from mamut_routing_lib.enums import ObjectiveFunction
-from mamut_routing_lib.models import BenchmarkBKS, BenchmarkInstance, BenchmarkInstanceCVRP, BenchmarkInstanceVRPTW, BenchmarkSolution
+from mamut_routing_lib.models import BenchmarkBKS, BenchmarkInstance, BenchmarkInstanceCVRP, BenchmarkSolution
 
 
 class SolutionCheckStatus(str, Enum):
@@ -102,7 +102,7 @@ def _check_common_route_constraints(
             total_cost += travel_cost
 
             if validate_time_windows:
-                assert isinstance(instance, (BenchmarkInstance, BenchmarkInstanceVRPTW))
+                assert isinstance(instance, BenchmarkInstance)
                 arrival_time = current_time + travel_cost
                 ready_time, due_date = instance.time_windows[customer]
                 if arrival_time < ready_time:
@@ -119,7 +119,7 @@ def _check_common_route_constraints(
         total_cost += instance.arc_costs[previous_node][instance.depot]
 
         if validate_time_windows:
-            assert isinstance(instance, (BenchmarkInstance, BenchmarkInstanceVRPTW))
+            assert isinstance(instance, BenchmarkInstance)
             arrival_time = current_time + instance.arc_costs[previous_node][instance.depot]
             depot_ready_time, depot_due_date = instance.time_windows[instance.depot]
             if arrival_time < depot_ready_time:
@@ -160,7 +160,7 @@ def check_cvrp_solution(
 
 
 def check_vrptw_solution(
-    instance: BenchmarkInstance | BenchmarkInstanceVRPTW,
+    instance: BenchmarkInstance,
     solution: BenchmarkSolution | BenchmarkBKS,
 ) -> SolutionCheckResult:
     result = _check_common_route_constraints(instance, solution.routes, validate_time_windows=True)

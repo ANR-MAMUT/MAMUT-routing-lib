@@ -3,13 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from mamut_routing_lib import (
+    BenchmarkInstance,
     BenchmarkInstanceCVRP,
-    BenchmarkInstanceVRPTW,
     BenchmarkSolution,
     DEFAULT_BKS_AUTHORS,
     ObjectiveFunction,
     check_cvrp_solution,
     check_vrptw_solution,
+    compute_solution_cost,
     create_bks_from_solution,
     discover_benchmark_instances,
     save_bks_if_improved,
@@ -53,8 +54,8 @@ def make_cvrp_instance() -> BenchmarkInstanceCVRP:
     )
 
 
-def make_vrptw_instance() -> BenchmarkInstanceVRPTW:
-    return BenchmarkInstanceVRPTW(
+def make_vrptw_instance() -> BenchmarkInstance:
+    return BenchmarkInstance(
         instance_name="mamut-n2-testvrptw",
         instance_origin="OsmCvrpGen",
         benchmark_name="Mamut2026",
@@ -146,6 +147,16 @@ def test_bks_replacement_only_happens_on_strict_improvement(tmp_path: Path) -> N
     )
     kept = save_bks_if_improved(instance, worse_bks, instance_path)
     assert kept.action == "kept_existing"
+
+
+def test_compute_solution_cost_accepts_raw_list_of_routes() -> None:
+    instance = make_cvrp_instance()
+    raw_routes = [[1, 2]]
+
+    cost = compute_solution_cost(instance, raw_routes)
+
+    # depot(0) -> 1 (5) -> 2 (3) -> depot (6) = 14
+    assert cost == 14
 
 
 def test_create_bks_from_solution_requires_authors_metadata() -> None:

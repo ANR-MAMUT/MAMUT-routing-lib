@@ -43,7 +43,6 @@ from mamut_routing_lib.enums import ObjectiveFunction
 from mamut_routing_lib.models import (
     BenchmarkInstance,
     BenchmarkInstanceCVRP,
-    BenchmarkInstanceVRPTW,
     BenchmarkSolution,
 )
 
@@ -87,7 +86,7 @@ def to_vrplib_dict(instance: AnyBenchmarkInstance) -> dict[str, Any]:
     """Convert a benchmark instance into a VRPLIB-shaped dict consumable by PyVRP's parser."""
     payload: dict[str, Any] = {
         "name": get_instance_identifier(instance),
-        "type": "CVRPTW" if isinstance(instance, (BenchmarkInstance, BenchmarkInstanceVRPTW)) else "CVRP",
+        "type": "CVRPTW" if isinstance(instance, BenchmarkInstance) else "CVRP",
         "dimension": instance.num_customers + 1,
         "vehicles": instance.num_vehicles if instance.num_vehicles is not None else instance.num_customers,
         "capacity": instance.vehicle_capacity,
@@ -99,7 +98,7 @@ def to_vrplib_dict(instance: AnyBenchmarkInstance) -> dict[str, Any]:
         "edge_weight": np.asarray(instance.arc_costs, dtype=int),
     }
 
-    if isinstance(instance, (BenchmarkInstance, BenchmarkInstanceVRPTW)):
+    if isinstance(instance, BenchmarkInstance):
         payload["time_window"] = np.asarray(instance.time_windows, dtype=int)
         payload["service_time"] = np.asarray(instance.service_times, dtype=int)
 
@@ -267,7 +266,7 @@ def solve_cvrp(
 
 
 def solve_vrptw(
-    instance: BenchmarkInstance | BenchmarkInstanceVRPTW,
+    instance: BenchmarkInstance,
     *,
     objective_function: ObjectiveFunction,
     time_limit_s: int,
@@ -361,7 +360,7 @@ def solve_instance(
     if isinstance(instance, BenchmarkInstanceCVRP):
         return solve_cvrp(instance, time_limit_s=time_limit_s, seed=seed, display=display)
 
-    if isinstance(instance, (BenchmarkInstance, BenchmarkInstanceVRPTW)):
+    if isinstance(instance, BenchmarkInstance):
         objective = objective_function or ObjectiveFunction.MONO_COST
         return solve_vrptw(
             instance,

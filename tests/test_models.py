@@ -9,7 +9,6 @@ from mamut_routing_lib.models import (
     BenchmarkBKS,
     BenchmarkInstance,
     BenchmarkInstanceCVRP,
-    BenchmarkInstanceVRPTW,
     InstanceMetadata,
 )
 
@@ -128,10 +127,28 @@ def test_cvrp_instance_accepts_structured_metadata_and_float_coordinates() -> No
 
 
 def test_vrptw_instance_accepts_time_fields_and_relative_paths() -> None:
-    instance = BenchmarkInstanceVRPTW(**make_valid_vrptw_instance_kwargs())
+    instance = BenchmarkInstance(**make_valid_vrptw_instance_kwargs())
 
+    assert isinstance(instance.metadata, InstanceMetadata)
     assert instance.metadata.problem_type == ProblemType.VRPTW
     assert instance.time_windows[0] == (0, 86400)
+
+
+def test_benchmark_instance_metadata_union_resolves_to_dict_for_historical() -> None:
+    payload = make_valid_historical_instance_kwargs()
+    payload["metadata"] = {"foo": "bar"}
+
+    instance = BenchmarkInstance(**payload)
+
+    assert isinstance(instance.metadata, dict)
+    assert instance.metadata == {"foo": "bar"}
+
+
+def test_benchmark_instance_metadata_union_resolves_to_structured_for_mamut2026() -> None:
+    instance = BenchmarkInstance(**make_valid_vrptw_instance_kwargs())
+
+    assert isinstance(instance.metadata, InstanceMetadata)
+    assert instance.metadata.place_slug == "brest"
 
 
 def test_metadata_rejects_absolute_artifact_paths() -> None:

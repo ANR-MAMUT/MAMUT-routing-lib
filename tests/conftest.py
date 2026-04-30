@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from mamut_routing_lib.models import BenchmarkInstanceCVRP, BenchmarkInstanceVRPTW
+from mamut_routing_lib.models import BenchmarkInstance, BenchmarkInstanceCVRP
 
 
 _TOY_METADATA_CVRP = {
@@ -57,8 +57,8 @@ def toy_cvrp_instance() -> BenchmarkInstanceCVRP:
 
 
 @pytest.fixture
-def toy_vrptw_instance() -> BenchmarkInstanceVRPTW:
-    return BenchmarkInstanceVRPTW(
+def toy_vrptw_instance() -> BenchmarkInstance:
+    return BenchmarkInstance(
         instance_name="mamut-n2-testvrptw",
         instance_origin="OsmCvrpGen",
         benchmark_name="Mamut2026",

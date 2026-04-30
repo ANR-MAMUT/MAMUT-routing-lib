@@ -134,7 +134,10 @@ class BenchmarkInstance(_InstanceValidationMixin):
     benchmark_name: BenchmarkName
     service_times: list[int]
     time_windows: list[tuple[int, int]]
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: InstanceMetadata | dict[str, Any] = Field(
+        default_factory=dict,
+        union_mode="left_to_right",
+    )
 
     @field_validator("service_times", "time_windows")
     @classmethod
@@ -159,34 +162,11 @@ class BenchmarkInstance(_InstanceValidationMixin):
         return cls(**migrated)
 
 
-HistoricalBenchmarkInstance = BenchmarkInstance
-
-
 class BenchmarkInstanceCVRP(_InstanceValidationMixin):
     instance_name: str
     instance_origin: InstanceOrigin
     benchmark_name: BenchmarkName
     metadata: InstanceMetadata
-
-
-class BenchmarkInstanceVRPTW(_InstanceValidationMixin):
-    instance_name: str
-    instance_origin: InstanceOrigin
-    benchmark_name: BenchmarkName
-    service_times: list[int]
-    time_windows: list[tuple[int, int]]
-    metadata: InstanceMetadata
-
-    @field_validator("service_times", "time_windows")
-    @classmethod
-    def validate_vrptw_node_vector_lengths(cls, value: list[Any], info: Any) -> list[Any]:
-        expected_length = info.data["num_customers"] + 1
-        if len(value) != expected_length:
-            raise ValueError(
-                f"Length of {info.field_name} must be {expected_length} "
-                f"(based on num_customers={info.data['num_customers']} + 1 for depot)"
-            )
-        return value
 
 
 class _SolutionValidationMixin(BaseModel):
