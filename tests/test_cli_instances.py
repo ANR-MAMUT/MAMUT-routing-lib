@@ -4,8 +4,10 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from mamut_routing_lib.cli import app
+from mamut_routing_lib.cli import app, _local_instance_record
+from mamut_routing_lib.enums import MetricVariant
 from mamut_routing_lib.json_utils import save_json_to_file
+from mamut_routing_lib.models import BenchmarkInstance
 
 
 def _runner() -> CliRunner:
@@ -16,6 +18,28 @@ def _write(tmp_path: Path, instance) -> Path:
     target = tmp_path / f"{instance.instance_name}.vrp.json"
     save_json_to_file(instance.model_dump(mode="json"), target)
     return target
+
+
+def _make_historical_vrptw_with_metric_metadata() -> BenchmarkInstance:
+    return BenchmarkInstance(
+        instance_name="C101",
+        instance_origin="Solomon1987",
+        benchmark_name="Sintef2008",
+        num_customers=2,
+        num_vehicles=2,
+        vehicle_capacity=10,
+        coordinates=[(0, 0), (1, 1), (2, 2)],
+        demands=[0, 1, 2],
+        service_times=[0, 10, 10],
+        time_windows=[(0, 100), (0, 100), (0, 100)],
+        depot=0,
+        arc_costs=[
+            [0, 1, 2],
+            [1, 0, 3],
+            [2, 3, 0],
+        ],
+        metadata={"metric_variant": "euclidean", "authors": "Marius M. Solomon"},
+    )
 
 
 def test_list_lists_filtered_with_summary(
@@ -138,3 +162,45 @@ def test_list_with_positional_path(tmp_path: Path, toy_cvrp_instance) -> None:
     assert result.exit_code == 0, result.stdout + result.stderr
     assert toy_cvrp_instance.instance_name in result.stdout
     assert "Total          : 1" in result.stdout
+
+
+def test_local_instance_record_preserves_metadata_metric_variant_for_historical_layout(
+    tmp_path: Path,
+) -> None:
+    """4-part historical layouts (Sintef/Dimacs) don't carry a metric segment in the path,
+    but enriched metadata may carry `metric_variant`. Path overrides metadata only for
+    fields the path actually provides — historical paths must not clobber the metadata's
+    `metric_variant`/`place_slug` to None.
+    """
+    benchmarks_dir = tmp_path / "benchmarks"
+    instance_path = (
+        benchmarks_dir / "VRPTW" / "Sintef2008" / "n=2" / "C101.vrp.json"
+    )
+    instance = _make_historical_vrptw_with_metric_metadata()
+    save_json_to_file(instance.model_dump(mode="json"), instance_path)
+
+    record = _local_instance_record(instance_path, instance, benchmarks_dir)
+
+    assert record.metric_variant == MetricVariant.EUCLIDEAN
+    # ID stays in 4-part historical form: no metric segment in the path → no metric in ID.
+    assert record.instance_id == "vrptw-sintef2008-n2-C101"
+
+
+def test_list_displays_metadata_metric_variant_for_historical_instance(tmp_path: Path) -> None:
+    benchmarks_dir = tmp_path / "benchmarks"
+    instance_path = (
+        benchmarks_dir / "VRPTW" / "Sintef2008" / "n=2" / "C101.vrp.json"
+    )
+    instance = _make_historical_vrptw_with_metric_metadata()
+    save_json_to_file(instance.model_dump(mode="json"), instance_path)
+
+    result = _runner().invoke(
+        app,
+        ["--benchmarks-dir", str(benchmarks_dir), "list", "--no-summary"],
+    )
+
+    assert result.exit_code == 0, result.stdout + result.stderr
+    # The METRIC column should print 'euclidean' for this row, not '-'.
+    rows = [line for line in result.stdout.splitlines() if "C101" in line]
+    assert rows, result.stdout
+    assert any("euclidean" in row for row in rows), result.stdout

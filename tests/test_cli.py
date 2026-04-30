@@ -34,12 +34,14 @@ def _runner() -> CliRunner:
 
 @pytest.mark.parametrize("flag", ["--version", "-V"])
 def test_cli_version_exits_before_remote_setup(flag: str) -> None:
+    from importlib import metadata
+
     with patch("mamut_routing_lib.cli.GitHubReleaseClient") as mock_client_cls:
         result = _runner().invoke(app, [flag])
 
+    expected_version = metadata.version("mamut-routing-lib")
     assert result.exit_code == 0, result.stdout + result.stderr
-    assert result.stdout.strip().startswith("mamut-routing-lib ")
-    assert result.stdout.strip().endswith("0.0.4")
+    assert result.stdout.strip() == f"mamut-routing-lib {expected_version}"
     mock_client_cls.assert_not_called()
 
 

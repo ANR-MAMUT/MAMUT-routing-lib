@@ -463,11 +463,16 @@ def _local_instance_record(path: Path, instance: "AnyBenchmarkInstance", benchma
 
     layout = _resolve_layout_under(path, benchmarks_dir)
     if layout is not None:
-        # Path is the source of truth when the file lives under a recognised layout.
+        # Path overrides metadata for fields the path actually carries. Historical
+        # 4-part layouts have neither metric_variant nor place_slug — fall back to
+        # whatever metadata supplies (e.g. enriched Dimacs/Sintef instances now
+        # carry `metric_variant: "euclidean"` in their metadata).
         problem_type = layout.problem_type
         benchmark_name = layout.benchmark_name
-        metric_variant = layout.metric_variant
-        place_slug = layout.place_slug
+        if layout.metric_variant is not None:
+            metric_variant = layout.metric_variant
+        if layout.place_slug is not None:
+            place_slug = layout.place_slug
         metric_for_id = layout.metric_variant
         place_for_id = layout.place_slug
     else:
@@ -554,6 +559,29 @@ def _filter_loaded_instances(
     return selected
 
 
+def _base_objective_for_record(record: LocalInstanceRecord) -> ObjectiveFunction | None:
+    if record.problem_type != ProblemType.VRPTW:
+        return None
+    if record.benchmark_name == BenchmarkName.SINTEF_2008.value:
+        return ObjectiveFunction.HIERARCHICAL_VEHICLE_COST
+    if record.benchmark_name == BenchmarkName.DIMACS_2021.value:
+        return ObjectiveFunction.MONO_COST
+    return None
+
+
+def _warn_on_non_base_objectives(records: list[LocalInstanceRecord], objective: ObjectiveFunction) -> None:
+    for record in records:
+        base_objective = _base_objective_for_record(record)
+        if base_objective is None or base_objective == objective:
+            continue
+        typer.echo(
+            "Warning: "
+            f"{record.instance_id} belongs to {record.benchmark_name}, whose base objective is "
+            f"{base_objective.value}; solving with {objective.value}.",
+            err=True,
+        )
+
+
 def _run_with_time_progress(
     *,
     record: LocalInstanceRecord,
@@ -619,11 +647,11 @@ def list_instances(
     ] = None,
     instance_id: Annotated[
         Optional[str],
-        typer.Option("--instance-id", help="Filter by exact derived aggregate instance ID."),
+        typer.Option("--instance-id", help="Filter by exact path-derived aggregate instance ID."),
     ] = None,
     instance_name: Annotated[
         Optional[str],
-        typer.Option("--instance-name", help="Filter by exact stored instance name."),
+        typer.Option("--instance-name", help="Filter by exact stored instance name. Note that instance names have no uniqueness guaranty."),
     ] = None,
     paths_only: Annotated[
         bool,
@@ -773,7 +801,7 @@ def solve_instances(
     time_limit_s: Annotated[
         int,
         typer.Option("--time-limit-s", min=1, help="Wall-clock budget per instance, in seconds."),
-    ] = 30,
+    ] = 15,
     seed: Annotated[int, typer.Option("--seed", help="Solver random seed.")] = 42,
     save_bks: Annotated[
         bool,
@@ -825,6 +853,8 @@ def solve_instances(
                 "Run CVRP and VRPTW in separate invocations.",
                 param_hint="--objective",
             )
+
+    _warn_on_non_base_objectives(selected, objective)
 
     typer.echo(f"Solving {len(selected)} instance(s)  time_limit={time_limit_s}s  seed={seed}  save_bks={save_bks}")
     any_failure = False
