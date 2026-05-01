@@ -63,6 +63,7 @@ ANR-MAMUT = "https://anr.fr/Project-ANR-22-CE22-0016"
 Organization = "https://github.com/ANR-MAMUT"
 Source = "https://github.com/ANR-MAMUT/MAMUT-routing-lib"
 Issues = "https://github.com/ANR-MAMUT/MAMUT-routing-lib/issues"
+MAMUT-routing = "https://github.com/ANR-MAMUT/MAMUT-routing"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mamut_routing_lib"]

@@ -574,10 +574,12 @@ def _warn_on_non_base_objectives(records: list[LocalInstanceRecord], objective: 
         base_objective = _base_objective_for_record(record)
         if base_objective is None or base_objective == objective:
             continue
-        typer.echo(
+        typer.secho(
             "Warning: "
             f"{record.instance_id} belongs to {record.benchmark_name}, whose base objective is "
             f"{base_objective.value}; solving with {objective.value}.",
+            fg=typer.colors.YELLOW,
+            bold=True,
             err=True,
         )
 

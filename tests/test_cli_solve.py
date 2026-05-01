@@ -342,9 +342,11 @@ def test_solve_warns_when_solving_sintef_with_mono_cost(tmp_path: Path) -> None:
                 "--time-limit-s", "1",
                 "--no-save-bks",
             ],
+            color=True,
         )
 
     assert result.exit_code == 0, result.stdout + result.stderr
+    assert "\x1b[" in result.stderr
     assert "Warning:" in result.stderr
     assert "Sintef2008" in result.stderr
     assert "base objective is HierarchicalVehicleCost" in result.stderr
