@@ -74,6 +74,14 @@ class InstanceMetadata(BaseModel):
         return value
 
 
+class ReferenceLLA(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lat: float
+    lon: float
+    alt: float = 0.0
+
+
 class _InstanceValidationMixin(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -84,6 +92,7 @@ class _InstanceValidationMixin(BaseModel):
     demands: list[int]
     depot: int = Field(default=0, ge=0)
     arc_costs: list[list[ArcCost]]
+    reference_lla: ReferenceLLA | None = None
 
     @field_validator("num_customers", "vehicle_capacity")
     @classmethod
