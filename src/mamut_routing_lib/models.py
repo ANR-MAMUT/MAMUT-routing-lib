@@ -58,6 +58,8 @@ class InstanceMetadata(BaseModel):
     sibling_variant_paths: dict[str, str] = Field(default_factory=dict)
     derived_problem_paths: dict[str, str] = Field(default_factory=dict)
     source_problem_paths: dict[str, str] = Field(default_factory=dict)
+    license: str | None = None
+    license_url: str | None = None
 
     @field_validator("sibling_variant_paths", "derived_problem_paths", "source_problem_paths")
     @classmethod

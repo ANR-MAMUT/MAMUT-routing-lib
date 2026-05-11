@@ -98,6 +98,7 @@ class LocalInstanceRecord:
     metric_variant: MetricVariant | str | None
     place_slug: str | None
     num_customers: int
+    subset: str | None = None
 
 
 @dataclass(frozen=True)
@@ -459,6 +460,7 @@ def _local_instance_record(path: Path, instance: "AnyBenchmarkInstance", benchma
     benchmark_name = _coerce_benchmark_name(getattr(instance, "benchmark_name"))
     metric_variant = _coerce_metric_variant(_metadata_value(metadata, "metric_variant"))
     place_slug = _metadata_value(metadata, "place_slug")
+    subset = _metadata_value(metadata, "subset")
     num_customers = int(getattr(instance, "num_customers"))
 
     layout = _resolve_layout_under(path, benchmarks_dir)
@@ -466,25 +468,38 @@ def _local_instance_record(path: Path, instance: "AnyBenchmarkInstance", benchma
         # Path overrides metadata for fields the path actually carries. Historical
         # 4-part layouts have neither metric_variant nor place_slug — fall back to
         # whatever metadata supplies (e.g. enriched Dimacs/Sintef instances now
-        # carry `metric_variant: "euclidean"` in their metadata).
+        # carry `metric_variant: "euclidean"` in their metadata). 5-part subset
+        # layouts (e.g. Ortec2022) carry ``subset`` and override the metadata's
+        # value for ID purposes.
         problem_type = layout.problem_type
         benchmark_name = layout.benchmark_name
         if layout.metric_variant is not None:
             metric_variant = layout.metric_variant
         if layout.place_slug is not None:
             place_slug = layout.place_slug
+        if layout.subset is not None:
+            subset = layout.subset
         metric_for_id = layout.metric_variant
         place_for_id = layout.place_slug
+        subset_for_id = layout.subset
+        # When the path resolves, the bucket label is the canonical n for IDs —
+        # matches ``_discover_from_relative_path`` and keeps catalogue-derived
+        # IDs consistent. For Ortec2022 the bucket (e.g. 200) intentionally
+        # differs from the per-instance ``num_customers`` (e.g. 212).
+        num_for_id = layout.num_customers
     else:
         metric_for_id = metric_variant if place_slug is not None else None
         place_for_id = place_slug
+        subset_for_id = subset
+        num_for_id = num_customers
 
     instance_id = build_instance_id(
         problem_type=problem_type,
         benchmark_name=benchmark_name,
         metric_variant=metric_for_id,
         place_slug=place_for_id,
-        num_customers=num_customers,
+        subset=subset_for_id,
+        num_customers=num_for_id,
         instance_name=instance_name,
     )
 
@@ -498,6 +513,7 @@ def _local_instance_record(path: Path, instance: "AnyBenchmarkInstance", benchma
         metric_variant=metric_variant,
         place_slug=place_slug,
         num_customers=num_customers,
+        subset=subset,
     )
 
 

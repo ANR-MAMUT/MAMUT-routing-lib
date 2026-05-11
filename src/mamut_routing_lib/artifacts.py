@@ -61,16 +61,21 @@ def build_instance_id(
     instance_name: str,
     metric_variant: MetricVariant | str | None = None,
     place_slug: str | None = None,
+    subset: str | None = None,
 ) -> str:
     """Build a stable path-derived instance id for CLI/API selection.
 
     Historical layouts use problem/benchmark/size/name. Variant layouts include
     metric and place to keep IDs unique across sibling MAMUT2026 variants.
+    Ortec2022-style layouts insert a ``subset`` segment between benchmark and
+    size to keep IDs unique across the ``final``/``public`` partitions.
     """
     parts = [
         _enum_or_str(problem_type).lower(),
         _enum_or_str(benchmark_name).lower(),
     ]
+    if subset is not None:
+        parts.append(str(subset).lower())
     if metric_variant is not None:
         parts.append(_enum_or_str(metric_variant).lower())
     if place_slug is not None:
@@ -89,6 +94,7 @@ class DiscoveredBenchmarkInstance:
     instance_id: str
     instance_name: str
     instance_path: Path
+    subset: str | None = None
 
     def load(self) -> AnyBenchmarkInstance:
         return load_benchmark_instance(self.instance_path)
@@ -104,14 +110,18 @@ def _parse_num_customers(part: str) -> int | None:
 class LayoutInfo:
     """Path-layout-derived view of a benchmark instance.
 
-    Two on-disk layouts are supported under ``benchmarks/``:
+    Three on-disk layouts are supported under ``benchmarks/``:
 
     - 4-part historical:
       ``<problem>/<benchmark>/n=<N>/<file>.vrp.json``
+    - 5-part subset-partitioned (e.g. Ortec2022):
+      ``<problem>/<benchmark>/<subset>/n=<N>/<file>.vrp.json``
     - 7-part Mamut2026:
       ``<problem>/<benchmark>/<metric>/<place>/n=<N>/<instance_name>/<file>.vrp.json``
 
     The historical layout has neither ``metric_variant`` nor ``place_slug``.
+    The subset-partitioned layout has neither ``metric_variant`` nor
+    ``place_slug`` either, but adds ``subset`` (e.g. ``final``/``public``).
     """
 
     problem_type: ProblemType
@@ -120,6 +130,7 @@ class LayoutInfo:
     place_slug: str | None
     num_customers: int
     instance_name: str
+    subset: str | None = None
 
 
 def parse_layout(relative_path: Path, instance_path: Path) -> LayoutInfo:
@@ -138,6 +149,26 @@ def parse_layout(relative_path: Path, instance_path: Path) -> LayoutInfo:
             place_slug=None,
             num_customers=num_customers,
             instance_name=instance_name,
+        )
+
+    if len(parts) == 5:
+        # Subset-partitioned historical-like layout, e.g. Ortec2022:
+        # <problem>/<benchmark>/<subset>/n=<N>/<file>.vrp.json
+        problem_type = ProblemType(parts[0])
+        benchmark_name = parts[1]
+        subset = parts[2]
+        num_customers = _parse_num_customers(parts[3])
+        if num_customers is None:
+            raise ValueError(f"Unsupported size bucket in benchmark instance layout: {relative_path}")
+        instance_name = instance_path.stem.removesuffix(".vrp")
+        return LayoutInfo(
+            problem_type=problem_type,
+            benchmark_name=benchmark_name,
+            metric_variant=None,
+            place_slug=None,
+            num_customers=num_customers,
+            instance_name=instance_name,
+            subset=subset,
         )
 
     if len(parts) == 7:
@@ -171,9 +202,11 @@ def _discover_from_relative_path(relative_path: Path, instance_path: Path) -> Di
             place_slug=layout.place_slug,
             num_customers=layout.num_customers,
             instance_name=layout.instance_name,
+            subset=layout.subset,
         ),
         instance_name=layout.instance_name,
         instance_path=instance_path,
+        subset=layout.subset,
     )
 
 
