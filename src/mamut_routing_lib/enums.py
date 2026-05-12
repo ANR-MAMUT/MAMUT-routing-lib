@@ -18,6 +18,7 @@ class InstanceOrigin(str, Enum):
 class ProblemType(str, Enum):
     CVRP = "CVRP"
     VRPTW = "VRPTW"
+    TDVRP = "TDVRP"
 
 
 class MetricVariant(str, Enum):

@@ -42,7 +42,9 @@ from mamut_routing_lib.models import (
     BenchmarkBKS,
     BenchmarkInstance,
     BenchmarkInstanceCVRP,
+    BenchmarkInstanceTDVRP,
     BenchmarkSolution,
+    INSTANCE_MODEL_SCHEMA_VERSION,
     InstanceMetadata,
 )
 from mamut_routing_lib.remote import (
@@ -67,7 +69,9 @@ __all__ = [
     "BenchmarkBKS",
     "BenchmarkInstance",
     "BenchmarkInstanceCVRP",
+    "BenchmarkInstanceTDVRP",
     "BenchmarkName",
+    "INSTANCE_MODEL_SCHEMA_VERSION",
     "BenchmarkSolution",
     "DEFAULT_BENCHMARKS_ROOT_ENV",
     "DEFAULT_BKS_AUTHORS",

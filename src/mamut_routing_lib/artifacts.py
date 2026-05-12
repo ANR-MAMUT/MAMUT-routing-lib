@@ -11,6 +11,7 @@ from mamut_routing_lib.models import (
     BenchmarkBKS,
     BenchmarkInstance,
     BenchmarkInstanceCVRP,
+    BenchmarkInstanceTDVRP,
     InstanceMetadata,
 )
 
@@ -18,7 +19,7 @@ from mamut_routing_lib.models import (
 DEFAULT_MAMUT_ROUTING_ROOT_ENV = "MAMUT_ROUTING_ROOT"
 DEFAULT_BENCHMARKS_ROOT_ENV = "MAMUT_ROUTING_BENCHMARKS_ROOT"
 
-AnyBenchmarkInstance = BenchmarkInstance | BenchmarkInstanceCVRP
+AnyBenchmarkInstance = BenchmarkInstance | BenchmarkInstanceCVRP | BenchmarkInstanceTDVRP
 
 
 def _path_from_env(env_name: str) -> Path | None:
@@ -251,6 +252,8 @@ def discover_benchmark_instances(
 
 def load_benchmark_instance(instance_path: str | Path) -> AnyBenchmarkInstance:
     payload = load_json_from_file(instance_path)
+    if "arc_costs_time_dependent" in payload:
+        return BenchmarkInstanceTDVRP(**payload)
     if (
         payload.get("benchmark_name") == BenchmarkName.MAMUT_2026.value
         and "metadata" in payload

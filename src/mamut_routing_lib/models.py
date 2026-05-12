@@ -16,6 +16,11 @@ from mamut_routing_lib.enums import (
 Coordinate: TypeAlias = tuple[int | float, int | float]
 ArcCost: TypeAlias = int | float
 
+# Instance-model schema version. Bumped from 1.0.0 -> 1.1.0 when
+# BenchmarkInstanceTDVRP was added as an additive optional model; existing
+# CVRP/VRPTW instances remain valid without modification.
+INSTANCE_MODEL_SCHEMA_VERSION = "1.1.0"
+
 
 def _validate_relative_path(path_value: str) -> str:
     if path_value.startswith("/"):
@@ -178,6 +183,76 @@ class BenchmarkInstanceCVRP(_InstanceValidationMixin):
     instance_origin: InstanceOrigin
     benchmark_name: BenchmarkName
     metadata: InstanceMetadata
+
+
+class BenchmarkInstanceTDVRP(_InstanceValidationMixin):
+    """Time-Dependent VRP instance.
+
+    arc_costs_time_dependent[h][i][j] is the travel time from node i to node j
+    when departing during hour bin h. The horizon is num_time_bins * bin_seconds.
+    arc_costs is the static fallback (typically the mean across bins) so naive
+    consumers can treat the instance as a VRPTW.
+    """
+
+    instance_name: str
+    instance_origin: InstanceOrigin
+    benchmark_name: BenchmarkName
+    service_times: list[int]
+    time_windows: list[tuple[int, int]]
+    arc_costs_time_dependent: list[list[list[ArcCost]]]
+    num_time_bins: int = 24
+    bin_seconds: int = 3600
+    problem_type: ProblemType = ProblemType.TDVRP
+    schema_version: str = INSTANCE_MODEL_SCHEMA_VERSION
+    metadata: InstanceMetadata | dict[str, Any] = Field(
+        default_factory=dict,
+        union_mode="left_to_right",
+    )
+
+    @field_validator("service_times", "time_windows")
+    @classmethod
+    def validate_tdvrp_node_vector_lengths(cls, value: list[Any], info: Any) -> list[Any]:
+        expected_length = info.data["num_customers"] + 1
+        if len(value) != expected_length:
+            raise ValueError(
+                f"Length of {info.field_name} must be {expected_length} "
+                f"(based on num_customers={info.data['num_customers']} + 1 for depot)"
+            )
+        return value
+
+    @field_validator("num_time_bins", "bin_seconds")
+    @classmethod
+    def validate_positive_time_params(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("must be positive")
+        return value
+
+    @field_validator("arc_costs_time_dependent")
+    @classmethod
+    def validate_tdvrp_tensor(
+        cls,
+        value: list[list[list[ArcCost]]],
+        info: Any,
+    ) -> list[list[list[ArcCost]]]:
+        expected_n = info.data["num_customers"] + 1
+        num_time_bins = info.data.get("num_time_bins", 24)
+        if len(value) != num_time_bins:
+            raise ValueError(
+                f"arc_costs_time_dependent must have num_time_bins={num_time_bins} entries "
+                f"(got {len(value)})"
+            )
+        for h, layer in enumerate(value):
+            if len(layer) != expected_n:
+                raise ValueError(
+                    f"arc_costs_time_dependent[{h}] must have {expected_n} rows "
+                    f"(based on num_customers={info.data['num_customers']} + 1)"
+                )
+            for row in layer:
+                if len(row) != expected_n:
+                    raise ValueError(
+                        f"arc_costs_time_dependent[{h}] rows must have {expected_n} columns"
+                    )
+        return value
 
 
 class _SolutionValidationMixin(BaseModel):
