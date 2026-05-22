@@ -17,13 +17,14 @@ def make_manifest_payload() -> dict:
         "release_tag": "snapshot-2026-04-24",
         "assets": [
             {
-                "scope": "problem",
-                "filename": "CVRP-snapshot-2026-04-24-deadbee.zip",
-                "download_url": "https://example.invalid/CVRP-snapshot-2026-04-24-deadbee.zip",
+                "scope": "problem_family",
+                "filename": "CVRP-Mamut2026-snapshot-2026-04-24-deadbee.zip",
+                "download_url": "https://example.invalid/CVRP-Mamut2026-snapshot-2026-04-24-deadbee.zip",
                 "problem_type": "CVRP",
+                "benchmark_name": "Mamut2026",
                 "checksum_sha256": "abc123",
                 "size_bytes": 123,
-                "archive_root": "benchmarks/CVRP",
+                "archive_root": "benchmarks/CVRP/Mamut2026",
             },
             {
                 "scope": "problem_family",
@@ -52,12 +53,20 @@ def test_load_release_manifest_from_file(tmp_path: Path) -> None:
 def test_select_assets_filters_by_scope_and_family() -> None:
     manifest = ReleaseArchiveManifest(**make_manifest_payload())
 
-    problem_assets = manifest.select_assets(scope=ReleaseArchiveScope.PROBLEM, problem_type=ProblemType.CVRP)
-    family_assets = manifest.select_assets(
+    cvrp_family_assets = manifest.select_assets(
+        scope=ReleaseArchiveScope.PROBLEM_FAMILY,
+        problem_type=ProblemType.CVRP,
+        benchmark_name=BenchmarkName.MAMUT_2026,
+    )
+    vrptw_family_assets = manifest.select_assets(
         scope=ReleaseArchiveScope.PROBLEM_FAMILY,
         problem_type=ProblemType.VRPTW,
         benchmark_name=BenchmarkName.SINTEF_2008,
     )
 
-    assert [asset.filename for asset in problem_assets] == ["CVRP-snapshot-2026-04-24-deadbee.zip"]
-    assert [asset.filename for asset in family_assets] == ["VRPTW-Sintef2008-snapshot-2026-04-24-deadbee.zip"]
+    assert [asset.filename for asset in cvrp_family_assets] == [
+        "CVRP-Mamut2026-snapshot-2026-04-24-deadbee.zip"
+    ]
+    assert [asset.filename for asset in vrptw_family_assets] == [
+        "VRPTW-Sintef2008-snapshot-2026-04-24-deadbee.zip"
+    ]

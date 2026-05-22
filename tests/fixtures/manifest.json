@@ -7,16 +7,6 @@
     "release_tag": "v0.0.1",
     "assets": [
         {
-            "scope": "problem",
-            "filename": "CVRP-snapshot-2026-04-24-deadbee.zip",
-            "download_url": "https://example.invalid/CVRP-snapshot-2026-04-24-deadbee.zip",
-            "problem_type": "CVRP",
-            "benchmark_name": null,
-            "checksum_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-            "size_bytes": 1024,
-            "archive_root": "benchmarks/CVRP"
-        },
-        {
             "scope": "problem_family",
             "filename": "CVRP-Mamut2026-snapshot-2026-04-24-deadbee.zip",
             "download_url": "https://example.invalid/CVRP-Mamut2026-snapshot-2026-04-24-deadbee.zip",

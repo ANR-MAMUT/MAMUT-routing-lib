@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import http.client
 import urllib.error
 import zipfile
 from pathlib import Path
@@ -65,7 +66,12 @@ class _FakeHTTPResponse:
         self._stream.close()
 
 
-def _patch_urlopen(responses_by_url: Mapping[str, _FakeHTTPResponse | Exception]):
+def _patch_urlopen(
+    responses_by_url: Mapping[
+        str,
+        _FakeHTTPResponse | Exception | list[_FakeHTTPResponse | Exception],
+    ],
+):
     seen_urls: list[str] = []
     seen_headers: list[dict[str, str]] = []
 
@@ -74,6 +80,8 @@ def _patch_urlopen(responses_by_url: Mapping[str, _FakeHTTPResponse | Exception]
         seen_urls.append(url)
         seen_headers.append(dict(request.header_items()))
         result = responses_by_url[url]
+        if isinstance(result, list):
+            result = result.pop(0)
         if isinstance(result, Exception):
             raise result
         return result
@@ -83,15 +91,15 @@ def _patch_urlopen(responses_by_url: Mapping[str, _FakeHTTPResponse | Exception]
 
 def test_fetch_manifest_with_explicit_tag_uses_direct_release_asset_url() -> None:
     manifest_payload = _load_fixture_manifest_payload()
-    expected_url = "https://github.com/ANR-MAMUT/MAMUT-routing-dummy/releases/download/v0.0.1/snapshot-manifest.json"
+    expected_url = "https://github.com/ANR-MAMUT/MAMUT-routing/releases/download/snapshot-2026-05-22/snapshot-manifest.json"
     responses = {expected_url: _FakeHTTPResponse(json.dumps(manifest_payload).encode("utf-8"))}
 
     patcher, seen_urls, seen_headers = _patch_urlopen(responses)
     with patcher:
         client = GitHubReleaseClient(
-            GitHubReleaseSource(repo_full_name="ANR-MAMUT/MAMUT-routing-dummy", token="ghp_secret")
+            GitHubReleaseSource(repo_full_name="ANR-MAMUT/MAMUT-routing", token="ghp_secret")
         )
-        manifest = client.fetch_manifest(tag="v0.0.1")
+        manifest = client.fetch_manifest(tag="snapshot-2026-05-22")
 
     assert isinstance(manifest, ReleaseArchiveManifest)
     assert manifest.snapshot_id == manifest_payload["snapshot_id"]
@@ -103,9 +111,9 @@ def test_fetch_manifest_with_explicit_tag_uses_direct_release_asset_url() -> Non
 
 def test_fetch_manifest_resolves_latest_tag_via_redirect() -> None:
     manifest_payload = _load_fixture_manifest_payload()
-    latest_url = "https://github.com/ANR-MAMUT/MAMUT-routing-dummy/releases/latest"
-    redirected_url = "https://github.com/ANR-MAMUT/MAMUT-routing-dummy/releases/tag/v0.0.1"
-    manifest_url = "https://github.com/ANR-MAMUT/MAMUT-routing-dummy/releases/download/v0.0.1/snapshot-manifest.json"
+    latest_url = "https://github.com/ANR-MAMUT/MAMUT-routing/releases/latest"
+    redirected_url = "https://github.com/ANR-MAMUT/MAMUT-routing/releases/tag/snapshot-2026-05-22"
+    manifest_url = "https://github.com/ANR-MAMUT/MAMUT-routing/releases/download/snapshot-2026-05-22/snapshot-manifest.json"
     responses = {
         latest_url: _FakeHTTPResponse(b"<html/>", final_url=redirected_url),
         manifest_url: _FakeHTTPResponse(json.dumps(manifest_payload).encode("utf-8")),
@@ -113,7 +121,7 @@ def test_fetch_manifest_resolves_latest_tag_via_redirect() -> None:
 
     patcher, seen_urls, _ = _patch_urlopen(responses)
     with patcher:
-        client = GitHubReleaseClient(GitHubReleaseSource(repo_full_name="ANR-MAMUT/MAMUT-routing-dummy"))
+        client = GitHubReleaseClient(GitHubReleaseSource(repo_full_name="ANR-MAMUT/MAMUT-routing"))
         manifest = client.fetch_manifest()
 
     assert manifest.snapshot_id == manifest_payload["snapshot_id"]
@@ -122,11 +130,11 @@ def test_fetch_manifest_resolves_latest_tag_via_redirect() -> None:
 
 def test_release_source_rejects_repo_without_owner() -> None:
     with pytest.raises(ValueError, match="owner/name"):
-        GitHubReleaseSource(repo_full_name="MAMUT-routing-dummy")
+        GitHubReleaseSource(repo_full_name="MAMUT-routing")
 
 
 def test_fetch_manifest_404_is_runtime_error() -> None:
-    expected_url = "https://github.com/ANR-MAMUT/MAMUT-routing-dummy/releases/download/v9.9.9/snapshot-manifest.json"
+    expected_url = "https://github.com/ANR-MAMUT/MAMUT-routing/releases/download/v9.9.9/snapshot-manifest.json"
     http_error = urllib.error.HTTPError(
         url=expected_url, code=404, msg="Not Found", hdrs=None, fp=io.BytesIO(b"")
     )
@@ -134,9 +142,51 @@ def test_fetch_manifest_404_is_runtime_error() -> None:
 
     patcher, _, _ = _patch_urlopen(responses)
     with patcher:
-        client = GitHubReleaseClient(GitHubReleaseSource(repo_full_name="ANR-MAMUT/MAMUT-routing-dummy"))
+        client = GitHubReleaseClient(GitHubReleaseSource(repo_full_name="ANR-MAMUT/MAMUT-routing"))
         with pytest.raises(RuntimeError, match="HTTP 404"):
             client.fetch_manifest(tag="v9.9.9")
+
+
+def test_fetch_manifest_retries_transient_disconnect() -> None:
+    manifest_payload = _load_fixture_manifest_payload()
+    expected_url = "https://github.com/ANR-MAMUT/MAMUT-routing/releases/download/snapshot-2026-05-22/snapshot-manifest.json"
+    responses: dict[str, list[_FakeHTTPResponse | Exception]] = {
+        expected_url: [
+            http.client.RemoteDisconnected("transient disconnect"),
+            _FakeHTTPResponse(json.dumps(manifest_payload).encode("utf-8")),
+        ]
+    }
+
+    patcher, seen_urls, _ = _patch_urlopen(responses)
+    with patcher:
+        client = GitHubReleaseClient(
+            GitHubReleaseSource(repo_full_name="ANR-MAMUT/MAMUT-routing"),
+            retry_delay_seconds=0,
+        )
+        manifest = client.fetch_manifest(tag="snapshot-2026-05-22")
+
+    assert manifest.snapshot_id == manifest_payload["snapshot_id"]
+    assert seen_urls == [expected_url, expected_url]
+
+
+def test_fetch_manifest_wraps_repeated_disconnect() -> None:
+    expected_url = "https://github.com/ANR-MAMUT/MAMUT-routing/releases/download/snapshot-2026-05-22/snapshot-manifest.json"
+    responses: dict[str, list[Exception]] = {
+        expected_url: [
+            http.client.RemoteDisconnected("first"),
+            http.client.RemoteDisconnected("second"),
+        ]
+    }
+
+    patcher, _, _ = _patch_urlopen(responses)
+    with patcher:
+        client = GitHubReleaseClient(
+            GitHubReleaseSource(repo_full_name="ANR-MAMUT/MAMUT-routing"),
+            retry_attempts=2,
+            retry_delay_seconds=0,
+        )
+        with pytest.raises(RuntimeError, match="after 2 attempt"):
+            client.fetch_manifest(tag="snapshot-2026-05-22")
 
 
 def _make_archive_asset(*, filename: str, sha256: str, size_bytes: int, download_url: str) -> ReleaseArchiveAsset:
@@ -279,5 +329,3 @@ def test_progress_callback_receives_increasing_byte_counts(tmp_path: Path) -> No
     assert progress_events[-1] == (len(payload), len(payload))
     assert all(total == len(payload) for _, total in progress_events)
     assert progress_events == sorted(progress_events, key=lambda evt: evt[0])
-
-

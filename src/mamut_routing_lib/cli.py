@@ -31,7 +31,6 @@ from mamut_routing_lib.remote import (
     GitHubReleaseSource,
     ReleaseArchiveAsset,
     ReleaseArchiveManifest,
-    ReleaseArchiveScope,
     compute_sha256,
 )
 
@@ -172,7 +171,10 @@ def remote_callback(
     ] = None,
     tag: Annotated[
         Optional[str],
-        typer.Option("--tag", help="Release tag (e.g. v0.0.1). Defaults to the latest release."),
+        typer.Option(
+            "--tag",
+            help="Release tag (e.g. snapshot-2026-05-22-28f9199). Defaults to the latest release.",
+        ),
     ] = None,
 ) -> None:
     root_state: CLIState = ctx.find_root().obj
@@ -181,7 +183,7 @@ def remote_callback(
     if len(parts) != 2 or not all(parts):
         typer.echo(
             f"Error: --repo must be in 'owner/name' format, got: {resolved_repo!r}. "
-            f"Example: --repo ANR-MAMUT/MAMUT-routing-dummy",
+            f"Example: --repo ANR-MAMUT/MAMUT-routing",
             err=True,
         )
         raise typer.Exit(code=2)
@@ -199,7 +201,6 @@ def _select_assets(
     *,
     filenames: list[str],
     select_all: bool,
-    scope: ReleaseArchiveScope | None,
     problem_type: ProblemType | None,
     benchmark_name: BenchmarkName | None,
 ) -> list[ReleaseArchiveAsset]:
@@ -214,10 +215,9 @@ def _select_assets(
                 f"Run `mamut-routing remote list` to see available assets."
             )
         return [by_name[name] for name in filenames]
-    if scope is None and problem_type is None and benchmark_name is None:
+    if problem_type is None and benchmark_name is None:
         return []
     return manifest.select_assets(
-        scope=scope,
         problem_type=problem_type,
         benchmark_name=benchmark_name,
     )
@@ -238,7 +238,6 @@ def _short_sha(sha: str | None) -> str:
 @remote_app.command("list")
 def remote_list_assets(
     ctx: typer.Context,
-    scope: Annotated[Optional[ReleaseArchiveScope], typer.Option("--scope", case_sensitive=False)] = None,
     problem_type: Annotated[Optional[ProblemType], typer.Option("--problem-type", case_sensitive=False)] = None,
     benchmark_name: Annotated[Optional[BenchmarkName], typer.Option("--benchmark-name", case_sensitive=False)] = None,
 ) -> None:
@@ -247,7 +246,6 @@ def remote_list_assets(
     client = state.make_client()
     manifest = client.fetch_manifest(tag=state.tag)
     assets = manifest.select_assets(
-        scope=scope,
         problem_type=problem_type,
         benchmark_name=benchmark_name,
     )
@@ -281,7 +279,6 @@ def remote_fetch_assets(
         Optional[list[str]],
         typer.Argument(help="One or more asset filenames to download. Omit to use filter flags or --all."),
     ] = None,
-    scope: Annotated[Optional[ReleaseArchiveScope], typer.Option("--scope", case_sensitive=False)] = None,
     problem_type: Annotated[Optional[ProblemType], typer.Option("--problem-type", case_sensitive=False)] = None,
     benchmark_name: Annotated[Optional[BenchmarkName], typer.Option("--benchmark-name", case_sensitive=False)] = None,
     select_all: Annotated[bool, typer.Option("--all", help="Download every asset in the manifest.")] = False,
@@ -295,12 +292,11 @@ def remote_fetch_assets(
         manifest,
         filenames=filenames or [],
         select_all=select_all,
-        scope=scope,
         problem_type=problem_type,
         benchmark_name=benchmark_name,
     )
     if not selected:
-        typer.echo("No assets selected. Use positional filenames, --scope/--problem-type/--benchmark-name, or --all.", err=True)
+        typer.echo("No assets selected. Use positional filenames, --problem-type/--benchmark-name, or --all.", err=True)
         raise typer.Exit(code=2)
 
     state.benchmarks_dir.mkdir(parents=True, exist_ok=True)
@@ -334,7 +330,6 @@ def remote_fetch_assets(
 @remote_app.command("verify")
 def remote_verify_local(
     ctx: typer.Context,
-    scope: Annotated[Optional[ReleaseArchiveScope], typer.Option("--scope", case_sensitive=False)] = None,
     problem_type: Annotated[Optional[ProblemType], typer.Option("--problem-type", case_sensitive=False)] = None,
     benchmark_name: Annotated[Optional[BenchmarkName], typer.Option("--benchmark-name", case_sensitive=False)] = None,
 ) -> None:
@@ -343,7 +338,6 @@ def remote_verify_local(
     client = state.make_client()
     manifest = client.fetch_manifest(tag=state.tag)
     assets = manifest.select_assets(
-        scope=scope,
         problem_type=problem_type,
         benchmark_name=benchmark_name,
     )

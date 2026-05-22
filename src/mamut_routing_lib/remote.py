@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
 import shutil
+import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -23,14 +25,15 @@ DEFAULT_GITHUB_TOKEN_ENV = "MAMUT_ROUTING_GITHUB_TOKEN"
 DEFAULT_MANIFEST_FILENAME = "snapshot-manifest.json"
 MANIFEST_SCHEMA_VERSION = "1.0.0"
 DOWNLOAD_CHUNK_SIZE = 1024 * 1024
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 30
+DEFAULT_RETRY_ATTEMPTS = 3
+DEFAULT_RETRY_DELAY_SECONDS = 0.5
 
 ProgressCallback: TypeAlias = Callable[[int, int | None], None]
 
 
 class ReleaseArchiveScope(str, Enum):
-    PROBLEM = "problem"
     PROBLEM_FAMILY = "problem_family"
-    FAMILY = "family"
 
 
 class ReleaseArchiveAsset(BaseModel):
@@ -85,7 +88,7 @@ class GitHubReleaseSource:
         if len(parts) != 2 or not all(parts):
             raise ValueError(
                 f"repo_full_name must be in 'owner/name' format, got: {self.repo_full_name!r}. "
-                f"Example: 'ANR-MAMUT/MAMUT-routing-dummy'."
+                f"Example: 'ANR-MAMUT/MAMUT-routing'."
             )
 
     @classmethod
@@ -114,8 +117,18 @@ def verify_sha256(filepath: str | Path, expected_sha256: str) -> None:
 
 
 class GitHubReleaseClient:
-    def __init__(self, source: GitHubReleaseSource | None = None) -> None:
+    def __init__(
+        self,
+        source: GitHubReleaseSource | None = None,
+        *,
+        retry_attempts: int = DEFAULT_RETRY_ATTEMPTS,
+        retry_delay_seconds: float = DEFAULT_RETRY_DELAY_SECONDS,
+        request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    ) -> None:
         self.source = source or GitHubReleaseSource.from_env()
+        self.retry_attempts = max(1, retry_attempts)
+        self.retry_delay_seconds = max(0.0, retry_delay_seconds)
+        self.request_timeout_seconds = request_timeout_seconds
 
     def fetch_manifest(self, tag: str | None = None) -> ReleaseArchiveManifest:
         resolved_tag = tag if tag is not None else self._resolve_latest_tag()
@@ -172,9 +185,40 @@ class GitHubReleaseClient:
 
     def _download_json(self, url: str) -> dict:
         with self._open_url(url) as response:
-            return json.loads(response.read().decode("utf-8"))
+            try:
+                return json.loads(response.read().decode("utf-8"))
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(f"Failed to parse JSON response from {url}: {exc}") from exc
 
     def _download_file(
+        self,
+        url: str,
+        destination_path: Path,
+        *,
+        expected_total_bytes: int | None = None,
+        progress_callback: ProgressCallback | None = None,
+    ) -> None:
+        for attempt in range(1, self.retry_attempts + 1):
+            try:
+                self._download_file_once(
+                    url,
+                    destination_path,
+                    expected_total_bytes=expected_total_bytes,
+                    progress_callback=progress_callback,
+                )
+                return
+            except Exception as exc:
+                if isinstance(exc, RuntimeError) and not self._is_retryable_runtime_error(exc):
+                    raise
+                if not self._is_retryable_exception(exc) or attempt >= self.retry_attempts:
+                    raise RuntimeError(
+                        f"Failed to download {url} after {attempt} attempt(s): {exc}"
+                    ) from exc
+                if destination_path.exists():
+                    destination_path.unlink()
+                time.sleep(self.retry_delay_seconds * attempt)
+
+    def _download_file_once(
         self,
         url: str,
         destination_path: Path,
@@ -205,10 +249,37 @@ class GitHubReleaseClient:
 
     def _open_url(self, url: str):
         request = urllib.request.Request(url, headers=self._build_headers())
-        try:
-            return urllib.request.urlopen(request)
-        except urllib.error.HTTPError as exc:
-            raise RuntimeError(f"Failed to fetch {url}: HTTP {exc.code}") from exc
+        for attempt in range(1, self.retry_attempts + 1):
+            try:
+                return urllib.request.urlopen(request, timeout=self.request_timeout_seconds)
+            except urllib.error.HTTPError as exc:
+                raise RuntimeError(f"Failed to fetch {url}: HTTP {exc.code}") from exc
+            except Exception as exc:
+                if not self._is_retryable_exception(exc) or attempt >= self.retry_attempts:
+                    raise RuntimeError(
+                        f"Failed to fetch {url} after {attempt} attempt(s): {exc}"
+                    ) from exc
+                time.sleep(self.retry_delay_seconds * attempt)
+
+        raise RuntimeError(f"Failed to fetch {url}")
+
+    @staticmethod
+    def _is_retryable_exception(exc: Exception) -> bool:
+        return isinstance(
+            exc,
+            (
+                TimeoutError,
+                ConnectionError,
+                OSError,
+                urllib.error.URLError,
+                http.client.RemoteDisconnected,
+                http.client.IncompleteRead,
+            ),
+        )
+
+    @staticmethod
+    def _is_retryable_runtime_error(exc: RuntimeError) -> bool:
+        return exc.__cause__ is not None and GitHubReleaseClient._is_retryable_exception(exc.__cause__)
 
     def _build_headers(self) -> dict[str, str]:
         headers = {

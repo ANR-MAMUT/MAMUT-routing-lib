@@ -55,7 +55,6 @@ def test_cli_remote_list_renders_table_and_filters(manifest: ReleaseArchiveManif
 
     assert result.exit_code == 0, result.stdout + result.stderr
     assert "Snapshot 2026-04-24-deadbee" in result.stdout
-    assert "CVRP-snapshot-2026-04-24-deadbee.zip" in result.stdout
     assert "CVRP-Mamut2026-snapshot-2026-04-24-deadbee.zip" in result.stdout
     assert "VRPTW-Sintef2008-snapshot-2026-04-24-deadbee.zip" not in result.stdout
 
@@ -84,7 +83,6 @@ def test_cli_fetch_calls_download_asset_for_each_selected(tmp_path: Path, manife
                 "--repo", "acme/repo",
                 "fetch",
                 "--problem-type", "CVRP",
-                "--scope", "problem_family",
                 "--no-extract",
             ],
         )
@@ -176,22 +174,24 @@ def test_cli_verify_classifies_ok_missing_mismatch(tmp_path: Path) -> None:
         "release_tag": "v0.0.1",
         "assets": [
             {
-                "scope": "problem",
+                "scope": "problem_family",
                 "filename": "ok.zip",
                 "download_url": "https://example.invalid/ok.zip",
                 "problem_type": "CVRP",
+                "benchmark_name": "Mamut2026",
                 "checksum_sha256": ok_sha,
                 "size_bytes": len(ok_bytes),
-                "archive_root": "benchmarks/CVRP",
+                "archive_root": "benchmarks/CVRP/Mamut2026",
             },
             {
-                "scope": "problem",
+                "scope": "problem_family",
                 "filename": "mismatch.zip",
                 "download_url": "https://example.invalid/mismatch.zip",
                 "problem_type": "VRPTW",
+                "benchmark_name": "Sintef2008",
                 "checksum_sha256": expected_sha_for_mismatch,
                 "size_bytes": len(mismatch_bytes),
-                "archive_root": "benchmarks/VRPTW",
+                "archive_root": "benchmarks/VRPTW/Sintef2008",
             },
             {
                 "scope": "problem_family",

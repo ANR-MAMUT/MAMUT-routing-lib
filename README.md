@@ -71,24 +71,29 @@ backed by the remote retrieval module:
 
 ```bash
 # List archives available in the latest release of the configured repo
-mamut-routing remote --repo ANR-MAMUT/MAMUT-routing-dummy --tag v0.0.1 list
+mamut-routing remote --repo ANR-MAMUT/MAMUT-routing list
 
-# Filter by scope/problem-type/benchmark-name
-mamut-routing remote --tag v0.0.1 list --problem-type CVRP --scope problem_family
+# Filter by problem-type/benchmark-name
+mamut-routing remote list --problem-type CVRP --benchmark-name Mamut2026
 
 # Download (and extract) one or more archives into --benchmarks-dir
-mamut-routing --benchmarks-dir ./benchmarks remote --tag v0.0.1 \
-    fetch CVRP-Mamut2026-snapshot-2026-04-24-621056e.zip
+mamut-routing --benchmarks-dir ./benchmarks remote \
+    fetch CVRP-Mamut2026-snapshot-2026-05-22-28f9199.zip
 
 # Or fetch by filter:
-mamut-routing remote --tag v0.0.1 fetch --problem-type CVRP --benchmark-name Mamut2026
+mamut-routing remote fetch --problem-type CVRP --benchmark-name Mamut2026
 
 # Verify local zip checksums against the remote manifest
-mamut-routing --benchmarks-dir ./benchmarks remote --tag v0.0.1 verify
+mamut-routing --benchmarks-dir ./benchmarks remote verify
 
 # Print the parsed manifest as JSON
-mamut-routing remote --tag v0.0.1 manifest | jq .snapshot_id
+mamut-routing remote manifest | jq .snapshot_id
 ```
+
+Release archives are published at the problem-family level, for example
+`CVRP-Mamut2026` or `VRPTW-Sintef2008`. Extracted archives are placed in a
+directory named after the archive stem, containing the archived `benchmarks/...`
+tree.
 
 The `--benchmarks-dir` flag is also read from `MAMUT_ROUTING_BENCHMARKS_ROOT`
 or `MAMUT_ROUTING_ROOT`. Remote flags `--repo`, `--token`, and `--tag` are read
@@ -165,6 +170,6 @@ uv pip install pytest
 # Hermetic offline test suite (no network)
 pytest -v tests/
 
-# Opt-in real-network smoke test (downloads ~1.8 MB from a public release)
+# Opt-in real-network smoke test (downloads ~1.6 MB from the public MAMUT-routing release)
 MAMUT_ROUTING_TEST_NETWORK=1 pytest -v tests/test_remote_network.py
 ```

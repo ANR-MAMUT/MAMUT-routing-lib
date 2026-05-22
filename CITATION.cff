@@ -15,18 +15,7 @@ authors:
     alias: Anzury
     affiliation: Université Bretagne Sud
     orcid: "https://orcid.org/0009-0005-8630-3962"
-identifiers:
-  - type: swh
-    value: "swh:1:dir:1384e1ddbc4e97972fb6a230276d57468af2fcd9"
-    description: >-
-      Software Heritage archived source directory for MAMUT-routing-lib
-      v0.0.5
-  - type: swh
-    value: "swh:1:rev:21c9cbe8a75f1dc0e79577a1e73717a6b174bca8"
-    description: >-
-      Software Heritage archived revision anchoring MAMUT-routing-lib
-      v0.0.5
-url: "https://archive.softwareheritage.org/swh:1:dir:1384e1ddbc4e97972fb6a230276d57468af2fcd9;origin=https://github.com/ANR-MAMUT/MAMUT-routing-lib;visit=swh:1:snp:10079b54c2501c81a77ef2de9cba06cf7ab758d1;anchor=swh:1:rev:21c9cbe8a75f1dc0e79577a1e73717a6b174bca8"
+url: "https://github.com/ANR-MAMUT/MAMUT-routing-lib"
 repository-code: "https://github.com/ANR-MAMUT/MAMUT-routing-lib"
 abstract: >-
   MAMUT-routing-lib is an open-source Python library for working with
@@ -53,5 +42,5 @@ keywords:
   - routing
   - research software
 license: MIT
-version: 0.0.5
+version: 0.1.0
 date-released: "2026-05-22"
