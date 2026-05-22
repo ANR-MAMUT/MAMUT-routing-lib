@@ -1,0 +1,57 @@
+cff-version: 1.2.0
+title: MAMUT-routing-lib
+message: >-
+  If you use MAMUT-routing-lib, please cite it using the metadata
+  from this file.
+type: software
+authors:
+  - given-names: Florian
+    family-names: Rascoussier
+    alias: Onyr
+    affiliation: IMT Atlantique; INSA Lyon
+    orcid: "https://orcid.org/0009-0005-3253-9814"
+  - given-names: Adrien
+    family-names: Pichon
+    alias: Anzury
+    affiliation: Université Bretagne Sud
+    orcid: "https://orcid.org/0009-0005-8630-3962"
+identifiers:
+  - type: swh
+    value: "swh:1:dir:1384e1ddbc4e97972fb6a230276d57468af2fcd9"
+    description: >-
+      Software Heritage archived source directory for MAMUT-routing-lib
+      v0.0.5
+  - type: swh
+    value: "swh:1:rev:21c9cbe8a75f1dc0e79577a1e73717a6b174bca8"
+    description: >-
+      Software Heritage archived revision anchoring MAMUT-routing-lib
+      v0.0.5
+url: "https://archive.softwareheritage.org/swh:1:dir:1384e1ddbc4e97972fb6a230276d57468af2fcd9;origin=https://github.com/ANR-MAMUT/MAMUT-routing-lib;visit=swh:1:snp:10079b54c2501c81a77ef2de9cba06cf7ab758d1;anchor=swh:1:rev:21c9cbe8a75f1dc0e79577a1e73717a6b174bca8"
+repository-code: "https://github.com/ANR-MAMUT/MAMUT-routing-lib"
+abstract: >-
+  MAMUT-routing-lib is an open-source Python library for working with
+  CVRP and VRPTW benchmark artifacts. It provides typed data models,
+  serialization helpers, validation routines, best-known-solution
+  management, optional command-line tools, and snapshot retrieval
+  utilities for benchmark repositories such as MAMUT-routing. The
+  library is designed as the contract and runtime layer supporting
+  reproducible benchmark curation, solution checking, and computational
+  experiments in routing research.
+keywords:
+  - vehicle routing problem
+  - CVRP
+  - VRPTW
+  - benchmarking
+  - best-known solutions
+  - BKS
+  - solution validation
+  - data models
+  - benchmark contracts
+  - reproducibility
+  - operations research
+  - combinatorial optimization
+  - routing
+  - research software
+license: MIT
+version: 0.0.5
+date-released: "2026-05-22"
