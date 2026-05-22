@@ -51,7 +51,7 @@ cli = [
     "tqdm>=4.66",
 ]
 pyvrp = [
-    "pyvrp==0.12.2", # last version with HGS solver (before the switch to ILS)
+    "pyvrp>=0.12.2,<0.13", # last 0.12.x; 0.13+ dropped HGS solver (switch to ILS) and renamed private APIs we depend on
     "numpy>=2.0.0",
 ]
 
@@ -83,6 +83,6 @@ dev = [
     "pytest>=9.0.0",
     "typer>=0.12",
     "tqdm>=4.66",
-    "pyvrp==0.12.2",
+    "pyvrp>=0.12.2,<0.13",
     "numpy>=2.0.0",
 ]

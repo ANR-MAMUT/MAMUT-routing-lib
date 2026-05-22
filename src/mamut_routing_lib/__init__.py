@@ -1,3 +1,10 @@
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
+
+try:
+    __version__ = _pkg_version("mamut-routing-lib")
+except PackageNotFoundError:
+    __version__ = "0.0.0+unknown"
+
 from mamut_routing_lib.artifacts import (
     DEFAULT_BENCHMARKS_ROOT_ENV,
     DEFAULT_MAMUT_ROUTING_ROOT_ENV,
@@ -62,6 +69,7 @@ from mamut_routing_lib.remote import (
 )
 
 __all__ = [
+    "__version__",
     "ArtifactPaths",
     "BKSUpdateResult",
     "BenchmarkBKS",

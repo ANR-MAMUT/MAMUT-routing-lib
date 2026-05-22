@@ -331,7 +331,7 @@ dev = [
 requires-dist = [
     { name = "numpy", marker = "extra == 'pyvrp'", specifier = ">=2.0.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
-    { name = "pyvrp", marker = "extra == 'pyvrp'", specifier = "==0.12.2" },
+    { name = "pyvrp", marker = "extra == 'pyvrp'", specifier = ">=0.12.2,<0.13" },
     { name = "tqdm", marker = "extra == 'cli'", specifier = ">=4.66" },
     { name = "typer", marker = "extra == 'cli'", specifier = ">=0.12" },
 ]
@@ -341,7 +341,7 @@ provides-extras = ["cli", "pyvrp"]
 dev = [
     { name = "numpy", specifier = ">=2.0.0" },
     { name = "pytest", specifier = ">=9.0.0" },
-    { name = "pyvrp", specifier = "==0.12.2" },
+    { name = "pyvrp", specifier = ">=0.12.2,<0.13" },
     { name = "tqdm", specifier = ">=4.66" },
     { name = "typer", specifier = ">=0.12" },
 ]
