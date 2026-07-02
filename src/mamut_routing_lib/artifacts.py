@@ -3,7 +3,10 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable
+
+if TYPE_CHECKING:
+    from mamut_routing_lib.td.models import AnyTDBenchmarkInstance
 
 from mamut_routing_lib.enums import BenchmarkName, MetricVariant, ObjectiveFunction, ProblemType
 from mamut_routing_lib.json_utils import load_json_from_file, save_json_to_file
@@ -249,8 +252,14 @@ def discover_benchmark_instances(
     return discovered
 
 
-def load_benchmark_instance(instance_path: str | Path) -> AnyBenchmarkInstance:
+def load_benchmark_instance(instance_path: str | Path) -> "AnyBenchmarkInstance | AnyTDBenchmarkInstance":
     payload = load_json_from_file(instance_path)
+    if "td" in payload:
+        # Time-dependent instance: travel is described by the ATF sidecar
+        # referenced by the "td" block (see mamut_routing_lib.td).
+        from mamut_routing_lib.td.artifacts import td_instance_from_payload
+
+        return td_instance_from_payload(payload)
     if (
         payload.get("benchmark_name") == BenchmarkName.MAMUT_2026.value
         and "metadata" in payload

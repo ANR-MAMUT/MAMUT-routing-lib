@@ -18,6 +18,7 @@ class SolutionCheckStatus(str, Enum):
     NOT_ALL_CUSTOMERS_SERVED = "not_all_customers_served"
     TOO_MANY_VEHICLES_USED = "too_many_vehicles_used"
     OBJECTIVE_VALUE_MISMATCH = "objective_value_mismatch"
+    ROUTE_TIMING_INFEASIBLE = "route_timing_infeasible"
 
 
 class SolutionCheckResult(BaseModel):
@@ -176,6 +177,11 @@ def check_solution(
     instance: AnyBenchmarkInstance,
     solution: BenchmarkSolution | BenchmarkBKS,
 ) -> SolutionCheckResult:
+    if not isinstance(instance, (BenchmarkInstance, BenchmarkInstanceCVRP)):
+        raise TypeError(
+            "Time-dependent instances require the ATF sidecar; "
+            "use mamut_routing_lib.td.check_td_solution instead."
+        )
     if isinstance(instance, BenchmarkInstanceCVRP):
         return check_cvrp_solution(instance, solution)
     return check_vrptw_solution(instance, solution)
@@ -186,7 +192,7 @@ def get_objective_tuple(
     cost: int | float,
     objective_function: ObjectiveFunction,
 ) -> tuple[int | float, ...]:
-    if objective_function == ObjectiveFunction.MONO_COST:
+    if objective_function in (ObjectiveFunction.MONO_COST, ObjectiveFunction.DURATION):
         return (cost,)
     return (len(routes), cost)
 
