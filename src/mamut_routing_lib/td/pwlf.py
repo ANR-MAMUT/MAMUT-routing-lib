@@ -10,9 +10,13 @@ bit-identical results.
 Representation: a function is the list of its breakpoints, split into two
 parallel arrays ``xs`` (non-decreasing) and ``ys`` (non-decreasing). Between
 two consecutive breakpoints the function is linear. Duplicate ``xs`` entries
-encode a vertical step (a floating-point rounding artifact of composition);
-evaluation at a step returns the smallest value. Duplicate ``ys`` entries
-encode a plateau (e.g. waiting for a time window to open).
+encode a vertical step; evaluation at a step returns the smallest value.
+Steps arise both as floating-point rounding artifacts of composition and as
+genuine content of canonical ATFs consolidated from stepwise travel-time data
+(e.g. Rifki2020, FIFO-restored by the arrival-time lower envelope: surviving
+upward jumps are real steps, and the smallest-value convention is exactly the
+envelope's value at the boundary). Duplicate ``ys`` entries encode a plateau
+(e.g. waiting for a time window to open).
 
 Composition follows the two-pointer event merge of Visser & Spliet (2020),
 with two deliberate deviations that keep the canonical spec simple:
