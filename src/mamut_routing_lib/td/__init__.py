@@ -20,6 +20,10 @@ from mamut_routing_lib.td.artifacts import (
     save_instance_atfs,
     td_instance_from_payload,
 )
+from mamut_routing_lib.td.bks import (
+    create_td_bks_from_solution,
+    save_td_solution_as_bks_if_improved,
+)
 from mamut_routing_lib.td.checker import (
     TDRouteEvaluation,
     TDSolutionCheckResult,
@@ -64,11 +68,13 @@ __all__ = [
     "compute_route_duration",
     "compute_route_ready_time_function",
     "compute_solution_cost",
+    "create_td_bks_from_solution",
     "get_atf_path_for_instance",
     "load_instance_atfs",
     "load_td_benchmark_instance",
     "load_td_instance",
     "make_theta",
     "save_instance_atfs",
+    "save_td_solution_as_bks_if_improved",
     "td_instance_from_payload",
 ]
