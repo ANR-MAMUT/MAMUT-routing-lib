@@ -26,10 +26,12 @@ Three responsibilities:
 
 from __future__ import annotations
 
+import gc
 import gzip
 import hashlib
 import json
 import math
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -58,6 +60,24 @@ IGP_MATERIALIZER_GENERATOR: dict[str, Any] = {"name": "igp-profile-materializer"
 
 class IGPFormatError(ValueError):
     """Raised when an IGP categories sidecar violates the canonical format."""
+
+
+@contextmanager
+def _gc_paused():
+    """Pause the cyclic GC around bulk allocations, restoring the prior state.
+
+    Materializing a large instance allocates millions of small acyclic
+    objects (one NDCPWLF per arc of the complete graph); with the collector
+    enabled the repeated full-heap scans dominate the runtime (~10x observed
+    at n=800). Nothing allocated here is cyclic, so pausing is safe.
+    """
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        yield
+    finally:
+        if was_enabled:
+            gc.enable()
 
 
 def ichoua_travel_time(zones, speeds, distance, t0):
@@ -281,12 +301,13 @@ def materialize_instance_atfs(
     num_vertices = instance.num_customers + 1
 
     arcs: dict[tuple[int, int], NDCPWLF] = {}
-    for i in range(num_vertices):
-        for j in range(num_vertices):
-            if i == j:
-                continue
-            distance = euclidean_distance(coordinates[i], coordinates[j])
-            arcs[(i, j)] = build_arc_atf(zones, speeds[categories.category(i, j)], distance, horizon)
+    with _gc_paused():
+        for i in range(num_vertices):
+            for j in range(num_vertices):
+                if i == j:
+                    continue
+                distance = euclidean_distance(coordinates[i], coordinates[j])
+                arcs[(i, j)] = build_arc_atf(zones, speeds[categories.category(i, j)], distance, horizon)
 
     return InstanceATFs(
         instance_name=instance.instance_name,
