@@ -9,16 +9,27 @@ same ATF sidecar content.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from mamut_routing_lib.enums import BenchmarkName, InstanceOrigin
 from mamut_routing_lib.models import Coordinate
 
 TD_ATF_MODEL = "atf-ndcpwlf"
+TD_IGP_MODEL = "igp-profile"
 ATF_FORMAT = "mamut-td-atf"
 ATF_FORMAT_VERSION = 1
+IGP_CATEGORIES_FORMAT = "mamut-td-igp-categories"
+IGP_CATEGORIES_FORMAT_VERSION = 1
+
+
+def _validate_sidecar_path(value: str, field_name: str) -> str:
+    if not value:
+        raise ValueError(f"{field_name} must be non-empty")
+    if value.startswith("/") or ".." in value.split("/"):
+        raise ValueError(f"{field_name} must be a plain relative path next to the instance file")
+    return value
 
 
 class TDArrivalFunctionsRef(BaseModel):
@@ -38,11 +49,76 @@ class TDArrivalFunctionsRef(BaseModel):
     @field_validator("atf_path")
     @classmethod
     def validate_atf_path(cls, value: str) -> str:
+        return _validate_sidecar_path(value, "atf_path")
+
+
+class TDIGPProfileRef(BaseModel):
+    """Compact IGP (Ichoua-Gendreau-Potvin 2003) time-dependent travel model.
+
+    Instead of shipping a consolidated ATF sidecar, the instance stores the
+    IGP data that fully determines it: contiguous ``time_periods`` (stored
+    absolute floats are canonical — never recomputed), a strictly positive
+    ``speeds`` matrix (``num_categories x num_periods``; FIFO by
+    construction), and a reference to the arc-category sidecar. The canonical
+    ATFs are materialized deterministically on load
+    (``mamut_routing_lib.td.igp``); ``atf_sha256`` pins the materialized
+    canonical ATF bytes exactly as it would for a committed sidecar. See the
+    TD benchmark standard and the Lera2026 family design note.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: Literal["igp-profile"] = TD_IGP_MODEL
+    time_periods: list[tuple[float, float]]
+    speeds: list[list[float]]
+    categories_path: str
+    categories_sha256: str | None = None
+    atf_sha256: str | None = None
+
+    @field_validator("categories_path")
+    @classmethod
+    def validate_categories_path(cls, value: str) -> str:
+        return _validate_sidecar_path(value, "categories_path")
+
+    @field_validator("time_periods")
+    @classmethod
+    def validate_time_periods(cls, value: list[tuple[float, float]]) -> list[tuple[float, float]]:
         if not value:
-            raise ValueError("atf_path must be non-empty")
-        if value.startswith("/") or ".." in value.split("/"):
-            raise ValueError("atf_path must be a plain relative path next to the instance file")
+            raise ValueError("time_periods must be non-empty")
+        for index, (start, end) in enumerate(value):
+            if start >= end:
+                raise ValueError(f"time period {index} is empty or reversed: [{start}, {end}]")
+            if index > 0 and value[index - 1][1] != start:
+                raise ValueError(
+                    f"time periods must be contiguous: period {index} starts at {start}, "
+                    f"previous ends at {value[index - 1][1]}"
+                )
         return value
+
+    @field_validator("speeds")
+    @classmethod
+    def validate_speeds(cls, value: list[list[float]], info: Any) -> list[list[float]]:
+        if not value:
+            raise ValueError("speeds must have at least one category row")
+        num_periods = len(info.data.get("time_periods", []))
+        for c, row in enumerate(value):
+            if num_periods and len(row) != num_periods:
+                raise ValueError(
+                    f"speeds row {c} has {len(row)} entries, expected one per time period ({num_periods})"
+                )
+            for p, speed in enumerate(row):
+                if speed <= 0:
+                    raise ValueError(f"speeds[{c}][{p}] = {speed} must be strictly positive (FIFO)")
+        return value
+
+    def num_categories(self) -> int:
+        return len(self.speeds)
+
+
+AnyTDTravelModelRef = Annotated[
+    TDArrivalFunctionsRef | TDIGPProfileRef,
+    Field(discriminator="model"),
+]
 
 
 class _TDInstanceValidationMixin(BaseModel):
@@ -59,7 +135,7 @@ class _TDInstanceValidationMixin(BaseModel):
     service_times: list[int | float]
     depot: int = Field(default=0, ge=0)
     horizon: tuple[int | float, int | float]
-    td: TDArrivalFunctionsRef
+    td: AnyTDTravelModelRef
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("num_customers", "vehicle_capacity")
@@ -93,6 +169,18 @@ class _TDInstanceValidationMixin(BaseModel):
         if value[0] >= value[1]:
             raise ValueError("horizon must be a non-empty interval [start, end]")
         return value
+
+    @model_validator(mode="after")
+    def validate_igp_periods_span_horizon(self) -> "_TDInstanceValidationMixin":
+        if isinstance(self.td, TDIGPProfileRef):
+            start, end = float(self.horizon[0]), float(self.horizon[1])
+            periods = self.td.time_periods
+            if periods[0][0] != start or periods[-1][1] != end:
+                raise ValueError(
+                    f"igp-profile time_periods [{periods[0][0]}, {periods[-1][1]}] "
+                    f"must span exactly the horizon [{start}, {end}]"
+                )
+        return self
 
 
 class BenchmarkInstanceTDVRPTW(_TDInstanceValidationMixin):

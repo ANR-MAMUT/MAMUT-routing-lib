@@ -10,6 +10,7 @@ class BenchmarkName(str, Enum):
     ARI_2018 = "Ari2018"
     VU_2020 = "Vu2020"
     RIFKI_2020 = "Rifki2020"
+    LERA_2026 = "Lera2026"
 
 
 class InstanceOrigin(str, Enum):

@@ -25,6 +25,7 @@ from mamut_routing_lib.td.models import (
     AnyTDBenchmarkInstance,
     BenchmarkInstanceTDVRP,
     BenchmarkInstanceTDVRPTW,
+    TDIGPProfileRef,
 )
 from mamut_routing_lib.td.pwlf import NDCPWLF, PWLFError
 
@@ -199,12 +200,66 @@ def td_instance_from_payload(payload: dict[str, Any]) -> AnyTDBenchmarkInstance:
 
 @dataclass
 class LoadedTDInstance:
-    """A TD instance paired with its arrival-time functions."""
+    """A TD instance paired with its arrival-time functions.
+
+    ``atf_path`` is the on-disk ATF sidecar for ``atf-ndcpwlf`` instances and
+    ``None`` for ``igp-profile`` instances (whose ATFs are materialized);
+    ``categories_path`` is the exact mirror of that situation.
+    """
 
     instance: AnyTDBenchmarkInstance
     atfs: InstanceATFs
     instance_path: Path
-    atf_path: Path
+    atf_path: Path | None
+    categories_path: Path | None = None
+
+
+def _load_td_instance_igp(
+    source: Path,
+    instance: AnyTDBenchmarkInstance,
+    *,
+    verify_sha256: bool,
+) -> LoadedTDInstance:
+    """igp-profile branch: load categories, materialize the canonical ATFs."""
+    from mamut_routing_lib.td.igp import (
+        compute_categories_sha256,
+        load_instance_categories,
+        materialize_instance_atfs,
+    )
+
+    td = instance.td
+    categories_path = source.parent / td.categories_path
+    categories = load_instance_categories(categories_path)
+    if categories.num_customers != instance.num_customers:
+        raise ATFFormatError(
+            f"categories num_customers {categories.num_customers} does not match "
+            f"{instance.num_customers}"
+        )
+    if categories.benchmark_name != instance.benchmark_name.value:
+        raise ATFFormatError(
+            f"categories benchmark_name {categories.benchmark_name!r} does not match "
+            f"{instance.benchmark_name.value!r}"
+        )
+    if verify_sha256 and td.categories_sha256 is not None:
+        digest = compute_categories_sha256(categories)
+        if digest != td.categories_sha256:
+            raise ATFFormatError(
+                f"categories sha256 mismatch: computed {digest}, instance declares {td.categories_sha256}"
+            )
+    atfs = materialize_instance_atfs(instance, categories)
+    if verify_sha256 and td.atf_sha256 is not None:
+        digest = compute_atf_sha256(atfs)
+        if digest != td.atf_sha256:
+            raise ATFFormatError(
+                f"materialized ATF sha256 mismatch: computed {digest}, instance declares {td.atf_sha256}"
+            )
+    return LoadedTDInstance(
+        instance=instance,
+        atfs=atfs,
+        instance_path=source,
+        atf_path=None,
+        categories_path=categories_path,
+    )
 
 
 def load_td_instance(
@@ -213,9 +268,19 @@ def load_td_instance(
     verify_sha256: bool = True,
     validate_complete: bool = True,
 ) -> LoadedTDInstance:
-    """Load instance + sidecar, checking their mutual consistency."""
+    """Load instance + sidecar, checking their mutual consistency.
+
+    For ``igp-profile`` instances the ATFs are materialized deterministically
+    from the td block and the categories sidecar; ``verify_sha256`` then
+    covers both ``categories_sha256`` (cheap) and ``atf_sha256`` (a full
+    canonical serialization of the materialized ATFs -- minutes at n=1000;
+    pass ``verify_sha256=False`` in solver hot paths, materialization is
+    deterministic either way).
+    """
     source = Path(instance_path)
     instance = load_td_benchmark_instance(source)
+    if isinstance(instance.td, TDIGPProfileRef):
+        return _load_td_instance_igp(source, instance, verify_sha256=verify_sha256)
     atf_path = get_atf_path_for_instance(source, instance.td.atf_path)
     atfs = load_instance_atfs(atf_path, validate_complete=validate_complete)
 
