@@ -1,6 +1,6 @@
 # MAMUT-routing-lib
 
-Modern Python library for CVRP and VRPTW benchmark models, validation, BKS management, and snapshot retrieval.
+Modern Python library for CVRP, VRPTW and time-dependent (TDVRPTW/TDVRP) benchmark models, validation, BKS management, and snapshot retrieval.
 
 ## MAMUT project context
 
@@ -14,10 +14,13 @@ It provides:
 
 - historical VRPTW benchmark models
 - generated CVRP and VRPTW benchmark models
+- time-dependent (TDVRPTW/TDVRP) benchmark models with arrival-time-function sidecars and an exact, epsilon-free Duration checker (`mamut_routing_lib.td`)
 - local benchmark discovery and JSON I/O
 - solution checking
 - BKS creation and replacement logic
 - optional remote snapshot archive retrieval
+
+The time-dependent layer is the pricing authority of [KAYROS](https://github.com/0nyr/kayros), the MAMUT time-dependent VRP solver: KAYROS finds routes, this library's checker defines and validates their cost.
 
 This repository does not own site generation, publication-history generation, migration pipelines, or solver integrations. It is a pure contract and runtime library for benchmark data management intended to be used by researchers and practitioners alike, both inside and outside the MAMUT project.
 
