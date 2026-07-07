@@ -18,7 +18,7 @@ from mamut_routing_lib.artifacts import get_bks_path_for_instance, load_bks, sav
 from mamut_routing_lib.bks import BKSUpdateResult
 from mamut_routing_lib.checker import is_better_solution
 from mamut_routing_lib.enums import ObjectiveFunction
-from mamut_routing_lib.models import BenchmarkBKS, BenchmarkSolution
+from mamut_routing_lib.models import BenchmarkBKS, BenchmarkSolution, OptimalityMetadata
 from mamut_routing_lib.td.artifacts import LoadedTDInstance, load_td_instance
 from mamut_routing_lib.td.checker import check_td_solution
 
@@ -125,3 +125,63 @@ def save_td_solution_as_bks_if_improved(
         candidate_cost=candidate_cost,
         candidate_num_routes=bks.num_routes,
     )
+
+
+#: Tolerance for the ``proven_optimum``-vs-stored-cost consistency guard in
+#: :func:`annotate_td_bks_optimality`. A dust-level difference (fold-order
+#: float noise between two equally optimal solutions) is acceptable when the
+#: stamp carries an explanatory ``note``; anything larger means the proof and
+#: the stored solution disagree and the stamp is refused.
+OPTIMALITY_COST_TOLERANCE = 1e-6
+
+
+def annotate_td_bks_optimality(
+    loaded: LoadedTDInstance | str | Path,
+    optimality: OptimalityMetadata | dict[str, Any],
+) -> Path:
+    """Stamp the stored Duration BKS of ``loaded`` with an optimality proof.
+
+    The stored BKS is re-validated by the TD checker before being rewritten
+    with ``metadata["optimality"]`` set. When the stamp declares a
+    ``proven_optimum``, it must match the stored cost: an absolute difference
+    beyond :data:`OPTIMALITY_COST_TOLERANCE` raises, and a dust-level
+    difference is accepted only when the stamp's ``note`` explains it.
+    Everything else in the stored file (routes, cost, authorship, other
+    metadata) is left untouched — the proof stamp records who *proved* the
+    solution optimal, which is independent of who *found* it.
+    """
+    loaded = _as_loaded(loaded)
+    if not isinstance(optimality, OptimalityMetadata):
+        optimality = OptimalityMetadata.model_validate(optimality)
+
+    bks_path = get_bks_path_for_instance(loaded.instance_path, ObjectiveFunction.DURATION)
+    if not bks_path.exists():
+        raise FileNotFoundError(f"No stored Duration BKS to annotate at {bks_path}")
+
+    existing_bks = load_bks(bks_path)
+    existing_check = check_td_solution(loaded, existing_bks)
+    if not existing_check.is_valid():
+        raise ValueError(f"Stored BKS is invalid at {bks_path}: {existing_check.error_message}")
+
+    stored_cost = existing_bks.cost
+    if optimality.proven_optimum is not None and stored_cost is not None:
+        deviation = abs(optimality.proven_optimum - stored_cost)
+        if deviation > OPTIMALITY_COST_TOLERANCE:
+            raise ValueError(
+                f"proven_optimum {optimality.proven_optimum!r} does not match the stored "
+                f"cost {stored_cost!r} at {bks_path} (|diff| = {deviation})"
+            )
+        if deviation != 0.0 and not optimality.note:
+            raise ValueError(
+                f"proven_optimum {optimality.proven_optimum!r} differs from the stored "
+                f"cost {stored_cost!r} at {bks_path} by dust ({deviation}); a "
+                "self-contained `note` explaining the difference is required"
+            )
+
+    metadata = dict(existing_bks.metadata)
+    metadata["optimality"] = optimality.model_dump(mode="json", exclude_none=True)
+    # Reconstruct (rather than model_copy) so the metadata validator runs on the
+    # stamped payload before it reaches the store.
+    stamped = BenchmarkBKS(**{**existing_bks.model_dump(mode="json"), "metadata": metadata})
+    save_bks(stamped, bks_path)
+    return bks_path

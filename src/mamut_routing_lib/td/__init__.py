@@ -21,6 +21,7 @@ from mamut_routing_lib.td.artifacts import (
     td_instance_from_payload,
 )
 from mamut_routing_lib.td.bks import (
+    annotate_td_bks_optimality,
     create_td_bks_from_solution,
     save_td_solution_as_bks_if_improved,
 )
@@ -89,6 +90,7 @@ __all__ = [
     "TDSolutionCheckResult",
     "TD_ATF_MODEL",
     "TD_IGP_MODEL",
+    "annotate_td_bks_optimality",
     "atfs_to_canonical_json_bytes",
     "build_arc_atf",
     "canonical_route_order",

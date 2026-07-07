@@ -10,6 +10,7 @@ from mamut_routing_lib.models import (
     BenchmarkInstance,
     BenchmarkInstanceCVRP,
     InstanceMetadata,
+    OptimalityMetadata,
 )
 
 
@@ -194,3 +195,60 @@ def test_benchmark_bks_rejects_unknown_objective() -> None:
             cost=12,
             metadata={},
         )
+
+
+def _optimality_payload(**overrides) -> dict:
+    payload = {
+        "proven": True,
+        "prover": "exact solver 1.0",
+        "certificate": "optimal under test arithmetic",
+        "date": "2026-07-07",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _bks_with_metadata(metadata: dict) -> BenchmarkBKS:
+    return BenchmarkBKS(
+        instance_name="C101",
+        objective_function="Duration",
+        routes=[[1, 2]],
+        cost=12,
+        metadata=metadata,
+    )
+
+
+def test_optimality_metadata_requires_core_fields() -> None:
+    OptimalityMetadata(**_optimality_payload())
+    for missing in ("proven", "prover", "certificate", "date"):
+        payload = _optimality_payload()
+        del payload[missing]
+        with pytest.raises(ValidationError):
+            OptimalityMetadata(**payload)
+
+
+def test_optimality_metadata_proven_must_be_true() -> None:
+    with pytest.raises(ValidationError):
+        OptimalityMetadata(**_optimality_payload(proven=False))
+
+
+def test_optimality_metadata_forbids_extra_keys() -> None:
+    with pytest.raises(ValidationError):
+        OptimalityMetadata(**_optimality_payload(surprise="key"))
+
+
+def test_solution_metadata_validates_optimality_key() -> None:
+    bks = _bks_with_metadata({"optimality": _optimality_payload(proven_optimum=12.0)})
+    assert bks.metadata["optimality"]["proven"] is True
+    assert bks.metadata["optimality"]["proven_optimum"] == 12.0
+    # None-valued optionals are normalized away.
+    assert "note" not in bks.metadata["optimality"]
+
+    with pytest.raises(ValidationError):
+        _bks_with_metadata({"optimality": {"proven": True}})
+
+
+def test_solution_metadata_without_optimality_is_untouched() -> None:
+    metadata = {"authors": "someone", "source": "somewhere", "seed": 3}
+    bks = _bks_with_metadata(metadata)
+    assert bks.metadata == metadata

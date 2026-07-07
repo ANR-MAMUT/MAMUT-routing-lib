@@ -51,6 +51,7 @@ from mamut_routing_lib.models import (
     BenchmarkInstanceCVRP,
     BenchmarkSolution,
     InstanceMetadata,
+    OptimalityMetadata,
 )
 from mamut_routing_lib.remote import (
     DEFAULT_GITHUB_TOKEN_ENV,
@@ -91,6 +92,7 @@ __all__ = [
     "MANIFEST_SCHEMA_VERSION",
     "MetricVariant",
     "ObjectiveFunction",
+    "OptimalityMetadata",
     "ProblemType",
     "ProgressCallback",
     "ReleaseArchiveAsset",

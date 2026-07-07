@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, TypeAlias
+from typing import Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -180,6 +180,32 @@ class BenchmarkInstanceCVRP(_InstanceValidationMixin):
     metadata: InstanceMetadata
 
 
+class OptimalityMetadata(BaseModel):
+    """Structured record of an optimality proof, stored under ``metadata["optimality"]``.
+
+    The stamp asserts that the stored solution's cost is a proven optimum. The
+    required fields identify the claim (who proved it, under which caveats,
+    when); the optional fields carry the proof numerics and provenance. All
+    free-text fields must be self-contained — meaningful to an external reader
+    of the benchmark repository without access to any private context.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    proven: Literal[True]
+    prover: str
+    certificate: str
+    date: str
+    arithmetic: str | None = None
+    proven_optimum: int | float | None = None
+    dual_bound: int | float | None = None
+    wall_time_s: float | None = None
+    time_limit_s: float | None = None
+    checker: str | None = None
+    campaign: str | None = None
+    note: str | None = None
+
+
 class _SolutionValidationMixin(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -187,6 +213,15 @@ class _SolutionValidationMixin(BaseModel):
     routes: list[list[int]]
     cost: int | float | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("metadata")
+    @classmethod
+    def validate_optimality_metadata(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if "optimality" in value:
+            optimality = OptimalityMetadata.model_validate(value["optimality"])
+            value = dict(value)
+            value["optimality"] = optimality.model_dump(mode="json", exclude_none=True)
+        return value
 
     @field_validator("routes")
     @classmethod
