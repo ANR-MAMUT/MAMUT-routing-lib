@@ -26,6 +26,7 @@ from mamut_routing_lib.td.models import (
     BenchmarkInstanceTDVRP,
     BenchmarkInstanceTDVRPTW,
     TDIGPProfileRef,
+    TDRoadGraphRef,
 )
 from mamut_routing_lib.td.pwlf import NDCPWLF, PWLFError
 
@@ -203,8 +204,9 @@ class LoadedTDInstance:
     """A TD instance paired with its arrival-time functions.
 
     ``atf_path`` is the on-disk ATF sidecar for ``atf-ndcpwlf`` instances and
-    ``None`` for ``igp-profile`` instances (whose ATFs are materialized);
-    ``categories_path`` is the exact mirror of that situation.
+    ``None`` for the materialized models; ``categories_path``
+    (``igp-profile``) and ``road_graph_path`` (``road-graph``) point to the
+    respective compact sidecars in the materialized cases.
     """
 
     instance: AnyTDBenchmarkInstance
@@ -212,6 +214,7 @@ class LoadedTDInstance:
     instance_path: Path
     atf_path: Path | None
     categories_path: Path | None = None
+    road_graph_path: Path | None = None
 
 
 def _load_td_instance_igp(
@@ -262,6 +265,59 @@ def _load_td_instance_igp(
     )
 
 
+def _load_td_instance_roadgraph(
+    source: Path,
+    instance: AnyTDBenchmarkInstance,
+    *,
+    verify_sha256: bool,
+) -> LoadedTDInstance:
+    """road-graph branch: load the graph sidecar, materialize the canonical ATFs."""
+    from mamut_routing_lib.td.roadgraph import (
+        compute_road_graph_sha256,
+        load_instance_road_graph,
+        materialize_instance_atfs_roadgraph,
+    )
+
+    td = instance.td
+    road_graph_path = source.parent / td.graph_path
+    road = load_instance_road_graph(road_graph_path)
+    if road.num_customers != instance.num_customers:
+        raise ATFFormatError(
+            f"road-graph num_customers {road.num_customers} does not match "
+            f"{instance.num_customers}"
+        )
+    if road.benchmark_name != instance.benchmark_name.value:
+        raise ATFFormatError(
+            f"road-graph benchmark_name {road.benchmark_name!r} does not match "
+            f"{instance.benchmark_name.value!r}"
+        )
+    if (float(instance.horizon[0]), float(instance.horizon[1])) != road.horizon:
+        raise ATFFormatError(
+            f"road-graph horizon {road.horizon} does not match instance horizon "
+            f"{tuple(instance.horizon)}"
+        )
+    if verify_sha256 and td.graph_sha256 is not None:
+        digest = compute_road_graph_sha256(road)
+        if digest != td.graph_sha256:
+            raise ATFFormatError(
+                f"road-graph sha256 mismatch: computed {digest}, instance declares {td.graph_sha256}"
+            )
+    atfs = materialize_instance_atfs_roadgraph(instance, road)
+    if verify_sha256 and td.atf_sha256 is not None:
+        digest = compute_atf_sha256(atfs)
+        if digest != td.atf_sha256:
+            raise ATFFormatError(
+                f"materialized ATF sha256 mismatch: computed {digest}, instance declares {td.atf_sha256}"
+            )
+    return LoadedTDInstance(
+        instance=instance,
+        atfs=atfs,
+        instance_path=source,
+        atf_path=None,
+        road_graph_path=road_graph_path,
+    )
+
+
 def load_td_instance(
     instance_path: str | Path,
     *,
@@ -270,17 +326,19 @@ def load_td_instance(
 ) -> LoadedTDInstance:
     """Load instance + sidecar, checking their mutual consistency.
 
-    For ``igp-profile`` instances the ATFs are materialized deterministically
-    from the td block and the categories sidecar; ``verify_sha256`` then
-    covers both ``categories_sha256`` (cheap) and ``atf_sha256`` (a full
-    canonical serialization of the materialized ATFs -- minutes at n=1000;
-    pass ``verify_sha256=False`` in solver hot paths, materialization is
-    deterministic either way).
+    For ``igp-profile`` and ``road-graph`` instances the ATFs are
+    materialized deterministically from the td block and the compact sidecar;
+    ``verify_sha256`` then covers both the sidecar hash (cheap) and
+    ``atf_sha256`` (a full canonical serialization of the materialized ATFs
+    -- minutes at n=1000; pass ``verify_sha256=False`` in solver hot paths,
+    materialization is deterministic either way).
     """
     source = Path(instance_path)
     instance = load_td_benchmark_instance(source)
     if isinstance(instance.td, TDIGPProfileRef):
         return _load_td_instance_igp(source, instance, verify_sha256=verify_sha256)
+    if isinstance(instance.td, TDRoadGraphRef):
+        return _load_td_instance_roadgraph(source, instance, verify_sha256=verify_sha256)
     atf_path = get_atf_path_for_instance(source, instance.td.atf_path)
     atfs = load_instance_atfs(atf_path, validate_complete=validate_complete)
 

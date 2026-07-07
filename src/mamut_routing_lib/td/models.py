@@ -18,10 +18,13 @@ from mamut_routing_lib.models import Coordinate
 
 TD_ATF_MODEL = "atf-ndcpwlf"
 TD_IGP_MODEL = "igp-profile"
+TD_ROAD_MODEL = "road-graph"
 ATF_FORMAT = "mamut-td-atf"
 ATF_FORMAT_VERSION = 1
 IGP_CATEGORIES_FORMAT = "mamut-td-igp-categories"
 IGP_CATEGORIES_FORMAT_VERSION = 1
+ROAD_GRAPH_FORMAT = "mamut-td-road-graph"
+ROAD_GRAPH_FORMAT_VERSION = 1
 
 
 def _validate_sidecar_path(value: str, field_name: str) -> str:
@@ -115,8 +118,38 @@ class TDIGPProfileRef(BaseModel):
         return len(self.speeds)
 
 
+class TDRoadGraphRef(BaseModel):
+    """Compact road-network time-dependent travel model.
+
+    The instance references a road-graph sidecar (``<Base>.road.json[.gz]``)
+    carrying the trimmed road subgraph the instance lives on: directed edges
+    with a physical length and a strictly positive piecewise-constant speed
+    profile over the horizon bins (FIFO by construction), plus the mapping
+    from instance nodes to graph vertices. The canonical ATFs are materialized
+    deterministically on load (``mamut_routing_lib.td.roadgraph``): pinned
+    Dijkstra over free-flow times, exact per-edge arrival functions sampled
+    exactly along the fastest paths on a fixed departure grid, then
+    deterministic decimation. ``graph_sha256`` pins the sidecar's
+    uncompressed canonical bytes; ``atf_sha256`` pins the materialized
+    canonical ATF bytes exactly as it would for a committed sidecar. See the
+    TD benchmark standard.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: Literal["road-graph"] = TD_ROAD_MODEL
+    graph_path: str
+    graph_sha256: str | None = None
+    atf_sha256: str | None = None
+
+    @field_validator("graph_path")
+    @classmethod
+    def validate_graph_path(cls, value: str) -> str:
+        return _validate_sidecar_path(value, "graph_path")
+
+
 AnyTDTravelModelRef = Annotated[
-    TDArrivalFunctionsRef | TDIGPProfileRef,
+    TDArrivalFunctionsRef | TDIGPProfileRef | TDRoadGraphRef,
     Field(discriminator="model"),
 ]
 
