@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -11,6 +11,7 @@ from mamut_routing_lib.enums import (
     ObjectiveFunction,
     ProblemType,
 )
+from mamut_routing_lib.sidecars import SidecarRef
 
 
 Coordinate: TypeAlias = tuple[int | float, int | float]
@@ -178,6 +179,128 @@ class BenchmarkInstanceCVRP(_InstanceValidationMixin):
     instance_origin: InstanceOrigin
     benchmark_name: BenchmarkName
     metadata: InstanceMetadata
+
+
+ARC_COSTS_DISTANCES_MODEL = "distances-sidecar"
+ARC_COSTS_EUCLIDEAN_MODEL = "euclidean"
+
+
+class ArcCostsDistancesRef(BaseModel):
+    """Arc costs by sha-pinned reference to a collection distances sidecar."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: Literal["distances-sidecar"] = ARC_COSTS_DISTANCES_MODEL
+    distances: SidecarRef
+
+
+class ArcCostsEuclidean(BaseModel):
+    """Arc costs materialized from the instance coordinates on load.
+
+    The canonical definition is ``round(hypot(dx, dy), decimals)`` on the
+    stored ENU coordinates (IEEE-754 doubles, Python round-half-to-even), so
+    no sidecar is needed for the euclidean metric variant.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: Literal["euclidean"] = ARC_COSTS_EUCLIDEAN_MODEL
+    decimals: int = 3
+
+    @field_validator("decimals")
+    @classmethod
+    def validate_decimals(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("decimals must be >= 0")
+        return value
+
+
+AnyArcCostsSource = Annotated[
+    ArcCostsDistancesRef | ArcCostsEuclidean,
+    Field(discriminator="model"),
+]
+
+
+class _SlimInstanceValidationMixin(BaseModel):
+    """Static (CVRP/VRPTW) collection instance core: matrix by source, not embedded.
+
+    Collection instances (Mamut2026 v2) reference their arc-cost matrix
+    through ``arc_costs_source`` instead of embedding it; use
+    ``mamut_routing_lib.artifacts.resolve_arc_costs`` to hydrate the matrix.
+    ``metric_variant`` names the metric slot the instance is published under.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    instance_name: str
+    instance_origin: InstanceOrigin
+    benchmark_name: BenchmarkName
+    num_customers: int
+    num_vehicles: int | None = None
+    vehicle_capacity: int
+    coordinates: list[Coordinate]
+    demands: list[int]
+    depot: int = Field(default=0, ge=0)
+    reference_lla: ReferenceLLA | None = None
+    metric_variant: MetricVariant
+    arc_costs_source: AnyArcCostsSource
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("num_customers", "vehicle_capacity")
+    @classmethod
+    def validate_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("must be positive")
+        return value
+
+    @field_validator("num_vehicles")
+    @classmethod
+    def validate_positive_optional(cls, value: int | None) -> int | None:
+        if value is not None and value <= 0:
+            raise ValueError("must be positive")
+        return value
+
+    @field_validator("coordinates", "demands")
+    @classmethod
+    def validate_node_vector_lengths(cls, value: list[Any], info: Any) -> list[Any]:
+        expected_length = info.data["num_customers"] + 1
+        if len(value) != expected_length:
+            raise ValueError(
+                f"Length of {info.field_name} must be {expected_length} "
+                f"(based on num_customers={info.data['num_customers']} + 1 for depot)"
+            )
+        return value
+
+
+class BenchmarkInstanceCVRPCollection(_SlimInstanceValidationMixin):
+    pass
+
+
+class BenchmarkInstanceVRPTWCollection(_SlimInstanceValidationMixin):
+    service_times: list[int | float]
+    time_windows: list[tuple[int | float, int | float]]
+
+    @field_validator("service_times", "time_windows")
+    @classmethod
+    def validate_vrptw_node_vector_lengths(cls, value: list[Any], info: Any) -> list[Any]:
+        expected_length = info.data["num_customers"] + 1
+        if len(value) != expected_length:
+            raise ValueError(
+                f"Length of {info.field_name} must be {expected_length} "
+                f"(based on num_customers={info.data['num_customers']} + 1 for depot)"
+            )
+        return value
+
+    @field_validator("time_windows")
+    @classmethod
+    def validate_time_windows(cls, value: list[Any]) -> list[Any]:
+        for index, (earliest, latest) in enumerate(value):
+            if earliest > latest:
+                raise ValueError(f"time window at index {index} has earliest > latest")
+        return value
+
+
+AnyCollectionStaticInstance = BenchmarkInstanceCVRPCollection | BenchmarkInstanceVRPTWCollection
 
 
 class OptimalityMetadata(BaseModel):

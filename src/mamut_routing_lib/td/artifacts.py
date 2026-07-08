@@ -205,8 +205,10 @@ class LoadedTDInstance:
 
     ``atf_path`` is the on-disk ATF sidecar for ``atf-ndcpwlf`` instances and
     ``None`` for the materialized models; ``categories_path``
-    (``igp-profile``) and ``road_graph_path`` (``road-graph``) point to the
-    respective compact sidecars in the materialized cases.
+    (``igp-profile``) and ``road_graph_path`` + ``traffic_path``
+    (``road-graph`` v2) point to the respective compact sidecars in the
+    materialized cases. ``collection_root`` is set for instances living in a
+    marker-rooted collection (road-graph sidecar paths resolve against it).
     """
 
     instance: AnyTDBenchmarkInstance
@@ -215,6 +217,8 @@ class LoadedTDInstance:
     atf_path: Path | None
     categories_path: Path | None = None
     road_graph_path: Path | None = None
+    traffic_path: Path | None = None
+    collection_root: Path | None = None
 
 
 def _load_td_instance_igp(
@@ -270,17 +274,26 @@ def _load_td_instance_roadgraph(
     instance: AnyTDBenchmarkInstance,
     *,
     verify_sha256: bool,
+    collection_root: Path | None = None,
 ) -> LoadedTDInstance:
-    """road-graph branch: load the graph sidecar, materialize the canonical ATFs."""
+    """road-graph branch (v2): resolve both sidecars against the collection
+    root, cross-check the graph/traffic pair, materialize the canonical ATFs."""
+    from mamut_routing_lib.sidecars import require_collection_root
     from mamut_routing_lib.td.roadgraph import (
         compute_road_graph_sha256,
+        compute_traffic_overlay_sha256,
         load_instance_road_graph,
+        load_traffic_overlay,
         materialize_instance_atfs_roadgraph,
+        validate_overlay_against_road,
     )
 
     td = instance.td
-    road_graph_path = source.parent / td.graph_path
+    root = require_collection_root(source, collection_root)
+    road_graph_path = root / td.graph.path
+    traffic_path = root / td.traffic.path
     road = load_instance_road_graph(road_graph_path)
+    overlay = load_traffic_overlay(traffic_path)
     if road.num_customers != instance.num_customers:
         raise ATFFormatError(
             f"road-graph num_customers {road.num_customers} does not match "
@@ -296,13 +309,21 @@ def _load_td_instance_roadgraph(
             f"road-graph horizon {road.horizon} does not match instance horizon "
             f"{tuple(instance.horizon)}"
         )
-    if verify_sha256 and td.graph_sha256 is not None:
+    validate_overlay_against_road(overlay, road)
+    if verify_sha256 and td.graph.sha256 is not None:
         digest = compute_road_graph_sha256(road)
-        if digest != td.graph_sha256:
+        if digest != td.graph.sha256:
             raise ATFFormatError(
-                f"road-graph sha256 mismatch: computed {digest}, instance declares {td.graph_sha256}"
+                f"road-graph sha256 mismatch: computed {digest}, instance declares {td.graph.sha256}"
             )
-    atfs = materialize_instance_atfs_roadgraph(instance, road)
+    if verify_sha256 and td.traffic.sha256 is not None:
+        digest = compute_traffic_overlay_sha256(overlay)
+        if digest != td.traffic.sha256:
+            raise ATFFormatError(
+                f"traffic-overlay sha256 mismatch: computed {digest}, "
+                f"instance declares {td.traffic.sha256}"
+            )
+    atfs = materialize_instance_atfs_roadgraph(instance, road, overlay)
     if verify_sha256 and td.atf_sha256 is not None:
         digest = compute_atf_sha256(atfs)
         if digest != td.atf_sha256:
@@ -315,6 +336,8 @@ def _load_td_instance_roadgraph(
         instance_path=source,
         atf_path=None,
         road_graph_path=road_graph_path,
+        traffic_path=traffic_path,
+        collection_root=root,
     )
 
 
@@ -323,22 +346,31 @@ def load_td_instance(
     *,
     verify_sha256: bool = True,
     validate_complete: bool = True,
+    collection_root: str | Path | None = None,
 ) -> LoadedTDInstance:
     """Load instance + sidecar, checking their mutual consistency.
 
     For ``igp-profile`` and ``road-graph`` instances the ATFs are
-    materialized deterministically from the td block and the compact sidecar;
-    ``verify_sha256`` then covers both the sidecar hash (cheap) and
-    ``atf_sha256`` (a full canonical serialization of the materialized ATFs
-    -- minutes at n=1000; pass ``verify_sha256=False`` in solver hot paths,
-    materialization is deterministic either way).
+    materialized deterministically from the td block and the compact
+    sidecar(s); ``verify_sha256`` then covers both the sidecar hashes (cheap)
+    and ``atf_sha256`` (a full canonical serialization of the materialized
+    ATFs -- minutes at n=1000; pass ``verify_sha256=False`` in solver hot
+    paths, materialization is deterministic either way). ``road-graph``
+    sidecar paths are collection-root-relative: the root is found by walking
+    up to the ``mamut-collection.json`` marker, or passed explicitly via
+    ``collection_root``.
     """
     source = Path(instance_path)
     instance = load_td_benchmark_instance(source)
     if isinstance(instance.td, TDIGPProfileRef):
         return _load_td_instance_igp(source, instance, verify_sha256=verify_sha256)
     if isinstance(instance.td, TDRoadGraphRef):
-        return _load_td_instance_roadgraph(source, instance, verify_sha256=verify_sha256)
+        return _load_td_instance_roadgraph(
+            source,
+            instance,
+            verify_sha256=verify_sha256,
+            collection_root=Path(collection_root) if collection_root is not None else None,
+        )
     atf_path = get_atf_path_for_instance(source, instance.td.atf_path)
     atfs = load_instance_atfs(atf_path, validate_complete=validate_complete)
 

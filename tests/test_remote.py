@@ -70,3 +70,32 @@ def test_select_assets_filters_by_scope_and_family() -> None:
     assert [asset.filename for asset in vrptw_family_assets] == [
         "VRPTW-Sintef2008-snapshot-2026-04-24-deadbee.zip"
     ]
+
+
+def test_family_collection_scope_selects_by_benchmark_name() -> None:
+    payload = make_manifest_payload()
+    payload["assets"].append(
+        {
+            "scope": "family_collection",
+            "filename": "Mamut2026-collection-snapshot-2026-04-24-deadbee.zip",
+            "download_url": "https://example.invalid/Mamut2026-collection.zip",
+            "problem_type": None,
+            "benchmark_name": "Mamut2026",
+            "checksum_sha256": "fed789",
+            "size_bytes": 789,
+            "archive_root": "benchmarks/Mamut2026",
+        }
+    )
+    manifest = ReleaseArchiveManifest(**payload)
+
+    collection_assets = manifest.select_assets(scope=ReleaseArchiveScope.FAMILY_COLLECTION)
+    assert [asset.filename for asset in collection_assets] == [
+        "Mamut2026-collection-snapshot-2026-04-24-deadbee.zip"
+    ]
+    # A benchmark-name-only selection surfaces the collection alongside the
+    # per-problem archives of the same family.
+    by_family = manifest.select_assets(benchmark_name=BenchmarkName.MAMUT_2026)
+    assert {asset.scope for asset in by_family} == {
+        ReleaseArchiveScope.PROBLEM_FAMILY,
+        ReleaseArchiveScope.FAMILY_COLLECTION,
+    }

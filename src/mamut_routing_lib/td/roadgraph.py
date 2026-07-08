@@ -1,45 +1,52 @@
-"""Road-network engine for the ``road-graph`` td model.
+"""Road-network engine for the ``road-graph`` td model (format v2).
 
-Three responsibilities, mirroring the ``igp-profile`` engine (``td/igp.py``):
+Format v2 splits the v1 monolithic sidecar in two, mirroring the base /
+subinstance structure of the Mamut2026 family:
 
-1. The road-graph sidecar (``<Base>.road.json[.gz]``, format
-   ``mamut-td-road-graph``): the trimmed road subgraph an instance lives on —
-   directed edges with a physical length and a strictly positive
-   piecewise-constant speed profile over the horizon bins (FIFO by
-   construction), plus the instance-node -> graph-vertex mapping. Hashed over
-   its uncompressed canonical JSON bytes like every other TD sidecar.
+1. The **road-graph sidecar** (``<base>.road.json[.gz]``, format
+   ``mamut-road-graph`` v2), one per base instance: the trimmed road subgraph
+   every traffic subinstance lives on — directed edges with a physical length
+   and a static free-flow ``speed_limit`` (the pinned Dijkstra weight is
+   ``length / speed_limit``, so the trim and the pinned paths are properties
+   of the base, independent of traffic), ``vertex_lonlat`` WGS84 coordinates
+   (route polylines and traffic heatmaps are derivable from published data
+   alone), and the instance-node -> graph-vertex mapping.
 
-2. The pinned deterministic algorithms that turn the sidecar into canonical
-   per-arc arrival-time functions:
+2. The **traffic overlay sidecar**
+   (``<base>.traffic-<model>-<intensity>.json[.gz]``, format
+   ``mamut-traffic-overlay``), one per subinstance: per-edge piecewise-
+   constant speeds over the horizon bins, rows aligned with the road
+   sidecar's edge order, strictly positive (FIFO by construction) and clamped
+   at the edge's free-flow limit (overlays are slowdowns by contract).
 
-   - a tie-break-pinned Dijkstra over free-flow times
-     (``compute_fastest_path_tree``) fixing one canonical fastest path per
-     ordered vertex pair;
-   - exact per-edge arrival functions (``build_arc_atf`` reused from the IGP
-     engine with the bins as speed zones, extended to ``extension_end``);
-   - **exact grid sampling** along the fastest-path tree: a fixed departure
-     grid (``sample_step`` spacing over the horizon) is propagated down the
-     tree by evaluating each edge ATF at the parent's arrival values, so
-     every sample is the *exact* arrival of the exact edge-by-edge
-     composition — pointwise error cannot accumulate along the path;
-   - deterministic decimation of the sampled arc function: one simultaneous
-     drop of interior points exactly collinear with their original
-     neighbours, then Douglas-Peucker simplification with
-     ``simplify_tolerance`` (``simplify_ndcpwlf`` spec). Kept points are a
-     subset of the exact samples, so the result is non-decreasing (FIFO) and
-     ``ys >= xs`` structurally, and it spans exactly the horizon.
+Both are hashed over their uncompressed canonical JSON bytes like every other
+TD sidecar. The pinned deterministic materialization is unchanged from the
+M12.1 sampling spec:
 
-   Every step is plain IEEE-754 double arithmetic on the stored floats with
-   no epsilon comparisons, so the result is a pure function of the sidecar
-   content. An optional numpy fast path evaluates the same formulas
-   elementwise and is required to be bit-identical to the pure-Python
-   reference (gate-tested); materialization therefore does not depend on
-   whether numpy is installed.
+- a tie-break-pinned Dijkstra over static free-flow times
+  (``compute_fastest_path_tree``) fixing one canonical fastest path per
+  ordered vertex pair, shared by all subinstances of the base;
+- exact per-edge arrival functions from the overlay speeds (``build_arc_atf``
+  reused from the IGP engine with the bins as speed zones, extended to
+  ``extension_end``);
+- **exact grid sampling** along the fastest-path tree: a fixed departure grid
+  (``sample_step`` spacing over the horizon) is propagated down the tree by
+  evaluating each edge ATF at the parent's arrival values, so every sample is
+  the *exact* arrival of the exact edge-by-edge composition — pointwise error
+  cannot accumulate along the path;
+- deterministic decimation of the sampled arc function: one simultaneous drop
+  of interior points exactly collinear with their original neighbours, then
+  Douglas-Peucker simplification with ``simplify_tolerance``
+  (``simplify_ndcpwlf`` spec). Kept points are a subset of the exact samples,
+  so the result is non-decreasing (FIFO) and ``ys >= xs`` structurally, and
+  it spans exactly the horizon.
 
-3. The deterministic materialization of the canonical ``InstanceATFs`` from a
-   ``road-graph`` instance (``materialize_instance_atfs_roadgraph``), with a
-   fixed materializer ``generator`` constant so the resulting ``atf_sha256``
-   is reproducible from the published data alone.
+Every step is plain IEEE-754 double arithmetic on the stored floats with no
+epsilon comparisons, so the result is a pure function of the two sidecars'
+content. An optional numpy fast path evaluates the same formulas elementwise
+and is required to be bit-identical to the pure-Python reference
+(gate-tested); materialization therefore does not depend on whether numpy is
+installed.
 """
 
 from __future__ import annotations
@@ -56,6 +63,8 @@ from mamut_routing_lib.td.igp import _gc_paused, build_arc_atf
 from mamut_routing_lib.td.models import (
     ROAD_GRAPH_FORMAT,
     ROAD_GRAPH_FORMAT_VERSION,
+    TRAFFIC_OVERLAY_FORMAT,
+    TRAFFIC_OVERLAY_FORMAT_VERSION,
     AnyTDBenchmarkInstance,
     TDRoadGraphRef,
 )
@@ -71,33 +80,41 @@ if TYPE_CHECKING:
 
 ROAD_PLAIN_SUFFIX = ".road.json"
 ROAD_GZIP_SUFFIX = ".road.json.gz"
+TRAFFIC_PLAIN_SUFFIX = ".json"
+TRAFFIC_GZIP_SUFFIX = ".json.gz"
+TRAFFIC_INFIX = ".traffic-"
 
 #: Fixed header constant of materialized sidecars. Materialization is defined
-#: by the road-graph sidecar plus the TD benchmark standard, not by the tool
-#: that generated the instance (tool provenance lives in the instance
+#: by the road-graph + traffic sidecars plus the TD benchmark standard, not by
+#: the tool that generated the instance (tool provenance lives in the instance
 #: ``metadata`` and the sidecar ``generator``) -- this is what makes
 #: ``atf_sha256`` reproducible from the published data alone.
-ROAD_MATERIALIZER_GENERATOR: dict[str, Any] = {"name": "road-graph-materializer", "version": 1}
+ROAD_MATERIALIZER_GENERATOR: dict[str, Any] = {"name": "road-graph-materializer", "version": 2}
 
 
 class RoadGraphFormatError(ValueError):
-    """Raised when a road-graph sidecar violates the canonical format."""
+    """Raised when a road-graph or traffic-overlay sidecar violates the canonical format."""
 
 
 @dataclass
 class InstanceRoadGraph:
-    """In-memory content of a road-graph sidecar.
+    """In-memory content of a road-graph sidecar (format v2).
 
     Vertices are ``0 .. num_vertices - 1``; ``vertex_osm_ids[v]`` records the
     originating OSM node id of vertex ``v`` (strictly increasing — vertices
-    are numbered in ascending OSM-id order, informative only). ``edges`` holds
-    ``[u, v, length_m, speeds]`` entries sorted strictly increasing by
-    ``(u, v)`` (directed, no parallel edges); ``speeds`` has one strictly
-    positive value (m-per-time-unit in the instance's units) per bin of
-    ``bin_edges``. ``node_vertices[i]`` is the graph vertex of instance node
-    ``i`` (depot first, all distinct). ``sample_step`` is the departure-grid
-    spacing and ``simplify_tolerance`` the decimation tolerance of the pinned
-    materialization; both are canonical (hashed) materialization parameters.
+    are numbered in ascending OSM-id order, informative only);
+    ``vertex_lonlat[v]`` is its WGS84 ``(lon, lat)`` position (informative
+    only: rendering and heatmaps, never read by the materialization).
+    ``edges`` holds ``[u, v, length_m, speed_limit]`` entries sorted strictly
+    increasing by ``(u, v)`` (directed, no parallel edges); ``speed_limit`` is
+    the static free-flow limit (m-per-time-unit in the instance's units,
+    strictly positive) defining the pinned Dijkstra weight
+    ``length / speed_limit``. ``node_vertices[i]`` is the graph vertex of
+    instance node ``i`` (depot first, all distinct). ``sample_step`` is the
+    departure-grid spacing and ``simplify_tolerance`` the decimation
+    tolerance of the pinned materialization; both are canonical (hashed)
+    materialization parameters, repeated in the instance td block and
+    cross-checked at load.
     """
 
     base_name: str
@@ -110,8 +127,9 @@ class InstanceRoadGraph:
     simplify_tolerance: float
     num_vertices: int
     vertex_osm_ids: list[int]
+    vertex_lonlat: list[tuple[float, float]]
     node_vertices: list[int]
-    edges: list[tuple[int, int, float, list[float]]]
+    edges: list[tuple[int, int, float, float]]
     generator: dict[str, Any] = field(default_factory=dict)
     format_version: int = ROAD_GRAPH_FORMAT_VERSION
 
@@ -127,11 +145,40 @@ class InstanceRoadGraph:
         self.num_customers = int(self.num_customers)
         self.num_vertices = int(self.num_vertices)
         self.vertex_osm_ids = [int(v) for v in self.vertex_osm_ids]
+        self.vertex_lonlat = [(float(lon), float(lat)) for lon, lat in self.vertex_lonlat]
         self.node_vertices = [int(v) for v in self.node_vertices]
         self.edges = [
-            (int(u), int(v), float(length), [float(s) for s in speeds])
-            for u, v, length, speeds in self.edges
+            (int(u), int(v), float(length), float(speed_limit))
+            for u, v, length, speed_limit in self.edges
         ]
+
+
+@dataclass
+class TrafficOverlay:
+    """In-memory content of a traffic-overlay sidecar.
+
+    ``edge_speeds[k]`` is the per-bin speed row of edge ``k`` of the base's
+    road-graph sidecar (same order, same count); every speed is strictly
+    positive (FIFO by construction) and at most the edge's static
+    ``speed_limit`` (validated against the road graph: overlays are slowdowns
+    by contract). ``bin_edges`` must equal the road sidecar's bit-exactly.
+    """
+
+    base_name: str
+    benchmark_name: str
+    traffic_model: str
+    intensity: str
+    bin_edges: list[float]
+    edge_speeds: list[list[float]]
+    generator: dict[str, Any] = field(default_factory=dict)
+    format_version: int = TRAFFIC_OVERLAY_FORMAT_VERSION
+
+    def __post_init__(self) -> None:
+        self.bin_edges = [float(b) for b in self.bin_edges]
+        self.edge_speeds = [[float(s) for s in row] for row in self.edge_speeds]
+
+    def num_edges(self) -> int:
+        return len(self.edge_speeds)
 
 
 def departure_grid(horizon: tuple[float, float], sample_step: float) -> list[float]:
@@ -185,6 +232,13 @@ def _validate_road_graph(road: InstanceRoadGraph) -> None:
             raise RoadGraphFormatError(
                 "vertex_osm_ids must be strictly increasing (vertices are numbered in ascending OSM-id order)"
             )
+    if len(road.vertex_lonlat) != road.num_vertices:
+        raise RoadGraphFormatError(
+            f"expected {road.num_vertices} vertex_lonlat entries, found {len(road.vertex_lonlat)}"
+        )
+    for v, (lon, lat) in enumerate(road.vertex_lonlat):
+        if not (-180.0 <= lon <= 180.0 and -90.0 <= lat <= 90.0):
+            raise RoadGraphFormatError(f"vertex_lonlat[{v}] = ({lon}, {lat}) out of WGS84 range")
     expected_nodes = road.num_customers + 1
     if len(road.node_vertices) != expected_nodes:
         raise RoadGraphFormatError(
@@ -199,9 +253,8 @@ def _validate_road_graph(road: InstanceRoadGraph) -> None:
         seen_nodes.add(vertex)
     if not road.edges:
         raise RoadGraphFormatError("edges must be non-empty")
-    num_bins = len(road.bin_edges) - 1
     previous: tuple[int, int] | None = None
-    for index, (u, v, length, speeds) in enumerate(road.edges):
+    for index, (u, v, length, speed_limit) in enumerate(road.edges):
         if not (0 <= u < road.num_vertices and 0 <= v < road.num_vertices):
             raise RoadGraphFormatError(f"edge {index} endpoints ({u}, {v}) out of range")
         if u == v:
@@ -214,22 +267,68 @@ def _validate_road_graph(road: InstanceRoadGraph) -> None:
         previous = key
         if length <= 0:
             raise RoadGraphFormatError(f"edge {index} ({u}, {v}) length {length} must be strictly positive")
-        if len(speeds) != num_bins:
+        if speed_limit <= 0:
             raise RoadGraphFormatError(
-                f"edge {index} ({u}, {v}) has {len(speeds)} speeds, expected one per bin ({num_bins})"
+                f"edge {index} ({u}, {v}) speed_limit {speed_limit} must be strictly positive"
             )
-        for b, speed in enumerate(speeds):
+
+
+def _validate_traffic_overlay(overlay: TrafficOverlay) -> None:
+    if len(overlay.bin_edges) < 2:
+        raise RoadGraphFormatError("bin_edges must define at least one bin")
+    for k in range(1, len(overlay.bin_edges)):
+        if overlay.bin_edges[k] <= overlay.bin_edges[k - 1]:
+            raise RoadGraphFormatError(f"bin_edges must be strictly increasing (violated at index {k})")
+    if not overlay.edge_speeds:
+        raise RoadGraphFormatError("edge_speeds must be non-empty")
+    num_bins = len(overlay.bin_edges) - 1
+    for index, row in enumerate(overlay.edge_speeds):
+        if len(row) != num_bins:
+            raise RoadGraphFormatError(
+                f"edge_speeds[{index}] has {len(row)} entries, expected one per bin ({num_bins})"
+            )
+        for b, speed in enumerate(row):
             if speed <= 0:
                 raise RoadGraphFormatError(
-                    f"edge {index} ({u}, {v}) speed[{b}] = {speed} must be strictly positive (FIFO)"
+                    f"edge_speeds[{index}][{b}] = {speed} must be strictly positive (FIFO)"
+                )
+    if not overlay.traffic_model:
+        raise RoadGraphFormatError("traffic_model must be non-empty")
+    if not overlay.intensity:
+        raise RoadGraphFormatError("intensity must be non-empty")
+
+
+def validate_overlay_against_road(overlay: TrafficOverlay, road: InstanceRoadGraph) -> None:
+    """The alignment contract between a traffic overlay and its base road graph."""
+    if overlay.base_name != road.base_name:
+        raise RoadGraphFormatError(
+            f"overlay base_name {overlay.base_name!r} does not match road graph {road.base_name!r}"
+        )
+    if overlay.benchmark_name != road.benchmark_name:
+        raise RoadGraphFormatError(
+            f"overlay benchmark_name {overlay.benchmark_name!r} does not match "
+            f"road graph {road.benchmark_name!r}"
+        )
+    if overlay.bin_edges != road.bin_edges:
+        raise RoadGraphFormatError("overlay bin_edges do not equal the road graph's bit-exactly")
+    if len(overlay.edge_speeds) != len(road.edges):
+        raise RoadGraphFormatError(
+            f"overlay has {len(overlay.edge_speeds)} edge rows, road graph has {len(road.edges)} edges"
+        )
+    for index, ((u, v, _, speed_limit), row) in enumerate(zip(road.edges, overlay.edge_speeds)):
+        for b, speed in enumerate(row):
+            if speed > speed_limit:
+                raise RoadGraphFormatError(
+                    f"edge {index} ({u}, {v}) speed[{b}] = {speed} exceeds the free-flow "
+                    f"speed_limit {speed_limit} (overlays are slowdowns by contract)"
                 )
 
 
 def road_graph_to_canonical_json_bytes(road: InstanceRoadGraph) -> bytes:
-    """Serialize to the canonical JSON bytes (the input of ``graph_sha256``).
+    """Serialize to the canonical JSON bytes (the input of the graph sha256).
 
-    Fixed key order, one edge per line, floats via Python's shortest
-    round-trip repr, gzip-independent.
+    Fixed key order, one edge / one vertex coordinate pair per line, floats
+    via Python's shortest round-trip repr, gzip-independent.
     """
     header_lines = [
         "{",
@@ -247,17 +346,48 @@ def road_graph_to_canonical_json_bytes(road: InstanceRoadGraph) -> bytes:
         f'    "vertex_osm_ids": {json.dumps(road.vertex_osm_ids)},',
         f'    "node_vertices": {json.dumps(road.node_vertices)},',
         f'    "generator": {json.dumps(road.generator, sort_keys=True)},',
-        '    "edges": [',
+        '    "vertex_lonlat": [',
     ]
-    body = ",\n".join(
-        "        " + json.dumps([u, v, length, speeds]) for u, v, length, speeds in road.edges
+    lonlat_body = ",\n".join(
+        "        " + json.dumps([lon, lat]) for lon, lat in road.vertex_lonlat
     )
+    edge_header = '    ],\n    "edges": ['
+    edges_body = ",\n".join(
+        "        " + json.dumps([u, v, length, speed_limit])
+        for u, v, length, speed_limit in road.edges
+    )
+    text = (
+        "\n".join(header_lines)
+        + "\n" + lonlat_body + "\n" + edge_header + "\n" + edges_body + "\n    ]\n}\n"
+    )
+    return text.encode("utf-8")
+
+
+def traffic_overlay_to_canonical_json_bytes(overlay: TrafficOverlay) -> bytes:
+    """Serialize to the canonical JSON bytes (the input of the traffic sha256)."""
+    header_lines = [
+        "{",
+        f'    "format": {json.dumps(TRAFFIC_OVERLAY_FORMAT)},',
+        f'    "format_version": {json.dumps(overlay.format_version)},',
+        f'    "base_name": {json.dumps(overlay.base_name)},',
+        f'    "benchmark_name": {json.dumps(overlay.benchmark_name)},',
+        f'    "traffic_model": {json.dumps(overlay.traffic_model)},',
+        f'    "intensity": {json.dumps(overlay.intensity)},',
+        f'    "bin_edges": {json.dumps(overlay.bin_edges)},',
+        f'    "generator": {json.dumps(overlay.generator, sort_keys=True)},',
+        '    "edge_speeds": [',
+    ]
+    body = ",\n".join("        " + json.dumps(row) for row in overlay.edge_speeds)
     text = "\n".join(header_lines) + "\n" + body + "\n    ]\n}\n"
     return text.encode("utf-8")
 
 
 def compute_road_graph_sha256(road: InstanceRoadGraph) -> str:
     return hashlib.sha256(road_graph_to_canonical_json_bytes(road)).hexdigest()
+
+
+def compute_traffic_overlay_sha256(overlay: TrafficOverlay) -> str:
+    return hashlib.sha256(traffic_overlay_to_canonical_json_bytes(overlay)).hexdigest()
 
 
 def save_instance_road_graph(road: InstanceRoadGraph, path: str | Path) -> None:
@@ -297,12 +427,59 @@ def load_instance_road_graph(path: str | Path) -> InstanceRoadGraph:
         simplify_tolerance=payload["simplify_tolerance"],
         num_vertices=int(payload["num_vertices"]),
         vertex_osm_ids=list(payload["vertex_osm_ids"]),
+        vertex_lonlat=[(p[0], p[1]) for p in payload["vertex_lonlat"]],
         node_vertices=list(payload["node_vertices"]),
-        edges=[(e[0], e[1], e[2], list(e[3])) for e in payload["edges"]],
+        edges=[(e[0], e[1], e[2], e[3]) for e in payload["edges"]],
         generator=dict(payload.get("generator", {})),
     )
     _validate_road_graph(road)
     return road
+
+
+def save_traffic_overlay(overlay: TrafficOverlay, path: str | Path) -> None:
+    """Write the overlay; gzip iff the path ends with ``.json.gz`` (``mtime=0``).
+
+    The conventional name is ``<base>.traffic-<model>-<intensity>.json[.gz]``;
+    the ``.traffic-`` infix is required so overlays are never confused with
+    other sidecars.
+    """
+    _validate_traffic_overlay(overlay)
+    target = Path(path)
+    if TRAFFIC_INFIX not in target.name:
+        raise RoadGraphFormatError(f"traffic-overlay path must contain {TRAFFIC_INFIX!r}: {target.name}")
+    data = traffic_overlay_to_canonical_json_bytes(overlay)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.name.endswith(TRAFFIC_GZIP_SUFFIX):
+        target.write_bytes(gzip.compress(data, mtime=0))
+    elif target.name.endswith(TRAFFIC_PLAIN_SUFFIX):
+        target.write_bytes(data)
+    else:
+        raise RoadGraphFormatError(
+            f"traffic-overlay path must end with {TRAFFIC_PLAIN_SUFFIX} or {TRAFFIC_GZIP_SUFFIX}: {target.name}"
+        )
+
+
+def load_traffic_overlay(path: str | Path) -> TrafficOverlay:
+    source = Path(path)
+    raw = source.read_bytes()
+    if source.name.endswith(TRAFFIC_GZIP_SUFFIX):
+        raw = gzip.decompress(raw)
+    payload = json.loads(raw.decode("utf-8"))
+    if payload.get("format") != TRAFFIC_OVERLAY_FORMAT:
+        raise RoadGraphFormatError(f"unexpected format marker: {payload.get('format')!r}")
+    if payload.get("format_version") != TRAFFIC_OVERLAY_FORMAT_VERSION:
+        raise RoadGraphFormatError(f"unsupported format_version: {payload.get('format_version')!r}")
+    overlay = TrafficOverlay(
+        base_name=str(payload["base_name"]),
+        benchmark_name=str(payload["benchmark_name"]),
+        traffic_model=str(payload["traffic_model"]),
+        intensity=str(payload["intensity"]),
+        bin_edges=list(payload["bin_edges"]),
+        edge_speeds=[list(row) for row in payload["edge_speeds"]],
+        generator=dict(payload.get("generator", {})),
+    )
+    _validate_traffic_overlay(overlay)
+    return overlay
 
 
 def _drop_exactly_collinear(xs: list[float], ys: list[float]) -> tuple[list[float], list[float]]:
@@ -393,12 +570,13 @@ def compute_fastest_path_tree(
     adjacency: list[list[int]],
     source_vertex: int,
 ) -> tuple[list[float], list[int]]:
-    """Pinned Dijkstra over free-flow times from ``source_vertex``.
+    """Pinned Dijkstra over static free-flow times from ``source_vertex``.
 
-    Free-flow edge weight is ``length / max(speeds)``. Determinism is pinned
-    end to end: the heap orders ``(distance, vertex)`` tuples (total order,
-    so equal-distance pops resolve by vertex id), outgoing edges relax in
-    edge-list order, and labels update on strict ``<`` only — the first
+    Free-flow edge weight is ``length / speed_limit``: a property of the
+    base's road graph, independent of any traffic overlay. Determinism is
+    pinned end to end: the heap orders ``(distance, vertex)`` tuples (total
+    order, so equal-distance pops resolve by vertex id), outgoing edges relax
+    in edge-list order, and labels update on strict ``<`` only — the first
     fastest path found is canonical. Returns ``(dist, pred_edge)`` where
     ``pred_edge[v]`` is the index into ``road.edges`` of the tree edge
     entering ``v`` (``-1`` at the source and at unreachable vertices).
@@ -413,8 +591,8 @@ def compute_fastest_path_tree(
         if d > dist[u]:
             continue
         for edge_index in adjacency[u]:
-            _, v, length, speeds = edges[edge_index]
-            candidate = d + length / max(speeds)
+            _, v, length, speed_limit = edges[edge_index]
+            candidate = d + length / speed_limit
             if candidate < dist[v]:
                 dist[v] = candidate
                 pred_edge[v] = edge_index
@@ -428,6 +606,28 @@ def build_adjacency(road: InstanceRoadGraph) -> list[list[int]]:
     for index, (u, _, _, _) in enumerate(road.edges):
         adjacency[u].append(index)
     return adjacency
+
+
+def free_flow_node_times(road: InstanceRoadGraph) -> list[list[float]]:
+    """Free-flow fastest travel times between all instance nodes.
+
+    One pinned Dijkstra per node; entry ``[i][j]`` is the free-flow time from
+    node ``i`` to node ``j`` (0.0 on the diagonal). This is the reference the
+    published ``distances-fastest`` sidecar must match (after the family's
+    rounding convention); this is the generation gate of the Mamut2026 collection.
+    """
+    adjacency = build_adjacency(road)
+    matrix: list[list[float]] = []
+    for source_node in range(road.num_customers + 1):
+        dist, _ = compute_fastest_path_tree(road, adjacency, road.node_vertices[source_node])
+        row = [dist[road.node_vertices[target]] for target in range(road.num_customers + 1)]
+        for target, value in enumerate(row):
+            if value == float("inf"):
+                raise RoadGraphFormatError(
+                    f"node {target} unreachable from node {source_node} at free flow"
+                )
+        matrix.append(row)
+    return matrix
 
 
 class _EdgeEvaluator:
@@ -471,14 +671,18 @@ class _EdgeEvaluator:
 def materialize_instance_atfs_roadgraph(
     instance: AnyTDBenchmarkInstance,
     road: InstanceRoadGraph,
+    overlay: TrafficOverlay,
 ) -> "InstanceATFs":
     """Build the canonical complete-graph ``InstanceATFs`` of a road-graph instance.
 
-    One pinned Dijkstra per instance node, then per-arc ATFs by exact grid
-    sampling: the departure grid is propagated down the fastest-path tree
-    (arrival vectors memoized per tree vertex), each target's samples are
-    decimated (exact-collinear drop, then Douglas-Peucker with the sidecar
-    tolerance), and the kept subset of exact samples becomes the arc ATF.
+    Pinned fastest paths come from the road graph's static free-flow limits
+    (shared by every subinstance of the base); per-edge arrival functions come
+    from the overlay's bin speeds. One pinned Dijkstra per instance node, then
+    per-arc ATFs by exact grid sampling: the departure grid is propagated down
+    the fastest-path tree (arrival vectors memoized per tree vertex), each
+    target's samples are decimated (exact-collinear drop, then Douglas-Peucker
+    with the pinned tolerance), and the kept subset of exact samples becomes
+    the arc ATF.
     """
     from mamut_routing_lib.td.artifacts import InstanceATFs
 
@@ -486,6 +690,8 @@ def materialize_instance_atfs_roadgraph(
     if not isinstance(td, TDRoadGraphRef):
         raise RoadGraphFormatError(f"instance td model is {td.model!r}, expected road-graph")
     _validate_road_graph(road)
+    _validate_traffic_overlay(overlay)
+    validate_overlay_against_road(overlay, road)
     if road.num_customers != instance.num_customers:
         raise RoadGraphFormatError(
             f"road-graph num_customers {road.num_customers} does not match "
@@ -495,6 +701,15 @@ def materialize_instance_atfs_roadgraph(
     if road.horizon != instance_horizon:
         raise RoadGraphFormatError(
             f"road-graph horizon {road.horizon} does not match instance horizon {instance_horizon}"
+        )
+    if float(td.sample_step) != road.sample_step:
+        raise RoadGraphFormatError(
+            f"td block sample_step {td.sample_step} does not match road sidecar {road.sample_step}"
+        )
+    if float(td.simplify_tolerance) != road.simplify_tolerance:
+        raise RoadGraphFormatError(
+            f"td block simplify_tolerance {td.simplify_tolerance} does not match "
+            f"road sidecar {road.simplify_tolerance}"
         )
 
     zones = [(road.bin_edges[k], road.bin_edges[k + 1]) for k in range(len(road.bin_edges) - 1)]
@@ -511,7 +726,8 @@ def materialize_instance_atfs_roadgraph(
     def edge_evaluator(edge_index: int) -> _EdgeEvaluator:
         evaluator = evaluators.get(edge_index)
         if evaluator is None:
-            _, _, length, speeds = road.edges[edge_index]
+            _, _, length, _ = road.edges[edge_index]
+            speeds = overlay.edge_speeds[edge_index]
             evaluator = _EdgeEvaluator(build_arc_atf(zones, speeds, length, extended_horizon))
             evaluators[edge_index] = evaluator
         return evaluator
@@ -557,7 +773,6 @@ def materialize_instance_atfs_roadgraph(
             # Free per-source memo before the next Dijkstra; keeps peak memory
             # to one shortest-path tree of arrival vectors at a time.
             del arrivals
-
     return InstanceATFs(
         instance_name=instance.instance_name,
         benchmark_name=instance.benchmark_name.value,

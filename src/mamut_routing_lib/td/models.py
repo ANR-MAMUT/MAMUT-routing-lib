@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from mamut_routing_lib.enums import BenchmarkName, InstanceOrigin
 from mamut_routing_lib.models import Coordinate, ReferenceLLA
+from mamut_routing_lib.sidecars import SidecarRef
 
 TD_ATF_MODEL = "atf-ndcpwlf"
 TD_IGP_MODEL = "igp-profile"
@@ -23,8 +24,10 @@ ATF_FORMAT = "mamut-td-atf"
 ATF_FORMAT_VERSION = 1
 IGP_CATEGORIES_FORMAT = "mamut-td-igp-categories"
 IGP_CATEGORIES_FORMAT_VERSION = 1
-ROAD_GRAPH_FORMAT = "mamut-td-road-graph"
-ROAD_GRAPH_FORMAT_VERSION = 1
+ROAD_GRAPH_FORMAT = "mamut-road-graph"
+ROAD_GRAPH_FORMAT_VERSION = 2
+TRAFFIC_OVERLAY_FORMAT = "mamut-traffic-overlay"
+TRAFFIC_OVERLAY_FORMAT_VERSION = 1
 
 
 def _validate_sidecar_path(value: str, field_name: str) -> str:
@@ -119,33 +122,47 @@ class TDIGPProfileRef(BaseModel):
 
 
 class TDRoadGraphRef(BaseModel):
-    """Compact road-network time-dependent travel model.
+    """Compact road-network time-dependent travel model (format v2).
 
-    The instance references a road-graph sidecar (``<Base>.road.json[.gz]``)
-    carrying the trimmed road subgraph the instance lives on: directed edges
-    with a physical length and a strictly positive piecewise-constant speed
-    profile over the horizon bins (FIFO by construction), plus the mapping
-    from instance nodes to graph vertices. The canonical ATFs are materialized
-    deterministically on load (``mamut_routing_lib.td.roadgraph``): pinned
-    Dijkstra over free-flow times, exact per-edge arrival functions sampled
-    exactly along the fastest paths on a fixed departure grid, then
-    deterministic decimation. ``graph_sha256`` pins the sidecar's
-    uncompressed canonical bytes; ``atf_sha256`` pins the materialized
+    The instance references **two** sidecars, both collection-root-relative
+    and sha-pinned: the static road graph shared by every traffic subinstance
+    of the base (``<base>.road.json.gz``: trimmed subgraph with per-edge
+    free-flow ``speed_limit`` and vertex coordinates) and one traffic overlay
+    (``<base>.traffic-<model>-<intensity>.json.gz``: per-edge 24-bin speeds
+    aligned with the graph's edge order, clamped at free-flow). The canonical
+    ATFs are materialized deterministically on load
+    (``mamut_routing_lib.td.roadgraph``): pinned Dijkstra over the static
+    free-flow times, exact per-edge arrival functions from the overlay
+    speeds sampled exactly along the pinned paths on a fixed departure grid,
+    then deterministic decimation. ``sample_step`` and ``simplify_tolerance``
+    are the authoritative materialization parameters and must equal the
+    values recorded in the road sidecar. ``atf_sha256`` pins the materialized
     canonical ATF bytes exactly as it would for a committed sidecar. See the
-    TD benchmark standard.
+    TD benchmark standard (road-graph v2).
     """
 
     model_config = ConfigDict(extra="forbid")
 
     model: Literal["road-graph"] = TD_ROAD_MODEL
-    graph_path: str
-    graph_sha256: str | None = None
+    graph: SidecarRef
+    traffic: SidecarRef
     atf_sha256: str | None = None
+    sample_step: float
+    simplify_tolerance: float
 
-    @field_validator("graph_path")
+    @field_validator("sample_step")
     @classmethod
-    def validate_graph_path(cls, value: str) -> str:
-        return _validate_sidecar_path(value, "graph_path")
+    def validate_sample_step(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError(f"sample_step must be strictly positive, got {value}")
+        return value
+
+    @field_validator("simplify_tolerance")
+    @classmethod
+    def validate_simplify_tolerance(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError(f"simplify_tolerance must be >= 0, got {value}")
+        return value
 
 
 AnyTDTravelModelRef = Annotated[
