@@ -196,6 +196,13 @@ class TestCollectionDiscovery:
         ids = [item.instance_id for item in items]
         assert len(set(ids)) == len(ids)
 
+    def test_collection_checkout_scanned_as_root(self, benchmarks_root):
+        # A standalone collection checkout (marker at the scanned root itself)
+        # must discover the same collection instances.
+        items = discover_benchmark_instances(benchmarks_root / "Mamut2026")
+        assert len(items) == 5
+        assert {item.benchmark_name for item in items} == {"Mamut2026"}
+
 
 class TestCollectionLayoutParser:
     def test_td_name_must_compose_base_and_sub(self):

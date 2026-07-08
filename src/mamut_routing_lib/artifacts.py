@@ -298,8 +298,15 @@ def _discover_from_relative_path(relative_path: Path, instance_path: Path) -> Di
 
 
 def find_collection_roots(benchmarks_root: Path) -> dict[Path, str]:
-    """Marker-rooted collections directly under ``benchmarks_root``: root -> family."""
+    """Marker-rooted collections at or directly under ``benchmarks_root``: root -> family.
+
+    The root-marker case covers scanning a standalone collection checkout
+    (the collection repo itself) as the benchmarks tree.
+    """
     roots: dict[Path, str] = {}
+    own_marker = benchmarks_root / COLLECTION_MARKER_FILENAME
+    if own_marker.is_file():
+        roots[benchmarks_root] = load_collection_marker(own_marker).family
     for marker_path in sorted(benchmarks_root.glob(f"*/{COLLECTION_MARKER_FILENAME}")):
         marker = load_collection_marker(marker_path)
         roots[marker_path.parent] = marker.family
