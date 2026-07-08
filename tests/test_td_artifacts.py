@@ -152,3 +152,31 @@ class TestDiscoveryIntegration:
         instance_path = write_toy_instance_files(tmp_path)
         instance = load_benchmark_instance(instance_path)
         assert isinstance(instance, BenchmarkInstanceTDVRPTW)
+
+
+class TestReferenceLLA:
+    """TD instances may carry the optional reference_lla geodetic anchor
+    (local ENU meters to lat/lon, as in the CVRP/VRPTW workbench families)."""
+
+    def test_reference_lla_accepted_and_exposed(self, tmp_path):
+        instance_path = write_toy_instance_files(tmp_path)
+        payload = json.loads(instance_path.read_text())
+        payload["reference_lla"] = {"lat": 45.7578147, "lon": 4.83511885, "alt": 0.0}
+        instance_path.write_text(json.dumps(payload))
+        instance = load_benchmark_instance(instance_path)
+        assert instance.reference_lla is not None
+        assert instance.reference_lla.lat == 45.7578147
+        assert instance.reference_lla.lon == 4.83511885
+
+    def test_reference_lla_defaults_to_none(self, tmp_path):
+        instance_path = write_toy_instance_files(tmp_path)
+        instance = load_benchmark_instance(instance_path)
+        assert instance.reference_lla is None
+
+    def test_malformed_reference_lla_rejected(self, tmp_path):
+        instance_path = write_toy_instance_files(tmp_path)
+        payload = json.loads(instance_path.read_text())
+        payload["reference_lla"] = {"lat": 45.0, "lon": 4.8, "altitude": 12.0}
+        instance_path.write_text(json.dumps(payload))
+        with pytest.raises(Exception, match="reference_lla"):
+            load_benchmark_instance(instance_path)

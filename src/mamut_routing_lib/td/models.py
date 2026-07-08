@@ -14,7 +14,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from mamut_routing_lib.enums import BenchmarkName, InstanceOrigin
-from mamut_routing_lib.models import Coordinate
+from mamut_routing_lib.models import Coordinate, ReferenceLLA
 
 TD_ATF_MODEL = "atf-ndcpwlf"
 TD_IGP_MODEL = "igp-profile"
@@ -167,6 +167,7 @@ class _TDInstanceValidationMixin(BaseModel):
     demands: list[int]
     service_times: list[int | float]
     depot: int = Field(default=0, ge=0)
+    reference_lla: ReferenceLLA | None = None
     horizon: tuple[int | float, int | float]
     td: AnyTDTravelModelRef
     metadata: dict[str, Any] = Field(default_factory=dict)
