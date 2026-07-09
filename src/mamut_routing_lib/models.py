@@ -178,7 +178,10 @@ class BenchmarkInstanceCVRP(_InstanceValidationMixin):
     instance_name: str
     instance_origin: InstanceOrigin
     benchmark_name: BenchmarkName
-    metadata: InstanceMetadata
+    metadata: InstanceMetadata | dict[str, Any] = Field(
+        default_factory=dict,
+        union_mode="left_to_right",
+    )
 
 
 ARC_COSTS_DISTANCES_MODEL = "distances-sidecar"
