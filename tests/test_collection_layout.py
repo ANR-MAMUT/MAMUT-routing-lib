@@ -229,6 +229,40 @@ class TestCollectionLayoutParser:
                 "Mamut2026",
             )
 
+    def test_vrptw_tw_set_suffix_accepted(self):
+        layout = parse_collection_layout(
+            Path("VRPTW/fastest/lyon/n=10/base-a/base-a-tw-tight.vrp.json"),
+            Path("/x/base-a-tw-tight.vrp.json"),
+            "Mamut2026",
+        )
+        assert layout.instance_name == "base-a-tw-tight"
+        assert layout.base_instance_name == "base-a"
+        assert layout.tw_set == "tight"
+
+    def test_vrptw_bare_name_is_td_shared(self):
+        layout = parse_collection_layout(
+            Path("VRPTW/fastest/lyon/n=10/base-a/base-a.vrp.json"),
+            Path("/x/base-a.vrp.json"),
+            "Mamut2026",
+        )
+        assert layout.tw_set == "td-shared"
+
+    def test_cvrp_rejects_tw_set_suffix(self):
+        with pytest.raises(ValueError, match="does not equal"):
+            parse_collection_layout(
+                Path("CVRP/fastest/lyon/n=10/base-a/base-a-tw-tight.vrp.json"),
+                Path("/x/base-a-tw-tight.vrp.json"),
+                "Mamut2026",
+            )
+
+    def test_vrptw_empty_tw_tag_rejected(self):
+        with pytest.raises(ValueError, match="does not equal"):
+            parse_collection_layout(
+                Path("VRPTW/fastest/lyon/n=10/base-a/base-a-tw-.vrp.json"),
+                Path("/x/base-a-tw-.vrp.json"),
+                "Mamut2026",
+            )
+
 
 class TestSlimInstances:
     def test_load_dispatches_to_collection_models(self, benchmarks_root):

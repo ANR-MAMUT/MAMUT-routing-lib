@@ -142,6 +142,9 @@ class LayoutInfo:
     The subset-partitioned layout has neither ``metric_variant`` nor
     ``place_slug`` either, but adds ``subset`` (e.g. ``final``/``public``).
     Collection layouts expose ``base_instance_name`` and (TD) ``subinstance``.
+    Collection VRPTW instances additionally expose ``tw_set``: ``td-shared``
+    for the bare base name (windows shared with the TDVRPTW twins), or the
+    set tag of a static-only ``<base>-tw-<set>`` instance.
     """
 
     problem_type: ProblemType
@@ -153,6 +156,7 @@ class LayoutInfo:
     subset: str | None = None
     base_instance_name: str | None = None
     subinstance: str | None = None
+    tw_set: str | None = None
 
 
 def parse_layout(relative_path: Path, instance_path: Path) -> LayoutInfo:
@@ -223,6 +227,9 @@ def parse_collection_layout(
 
     The problem type discriminates: TDVRP/TDVRPTW have no metric slot (the
     time dependence is the metric) and add the subinstance directory instead.
+    Static instance files are named after their base directory; VRPTW extra
+    TW-set instances (``<base>-tw-<set>.vrp.json``) sit next to the TD-paired
+    ``<base>.vrp.json`` and expose their tag via ``LayoutInfo.tw_set``.
     """
     parts = relative_path.parts
     if len(parts) != 6:
@@ -253,11 +260,21 @@ def parse_collection_layout(
     if num_customers is None:
         raise ValueError(f"Unsupported size bucket in collection instance layout: {relative_path}")
     base = parts[4]
+    tw_set: str | None = None
     if instance_name != base:
-        raise ValueError(
-            f"collection static instance name {instance_name!r} does not equal "
-            f"its base directory {base!r}: {relative_path}"
-        )
+        tw_prefix = f"{base}-tw-"
+        if problem_type is ProblemType.VRPTW and instance_name.startswith(tw_prefix) and len(
+            instance_name
+        ) > len(tw_prefix):
+            tw_set = instance_name[len(tw_prefix) :]
+        else:
+            raise ValueError(
+                f"collection static instance name {instance_name!r} does not equal "
+                f"its base directory {base!r} (VRPTW extra TW sets use "
+                f"<base>-tw-<set>): {relative_path}"
+            )
+    elif problem_type is ProblemType.VRPTW:
+        tw_set = "td-shared"
     return LayoutInfo(
         problem_type=problem_type,
         benchmark_name=family,
@@ -266,6 +283,7 @@ def parse_collection_layout(
         num_customers=num_customers,
         instance_name=instance_name,
         base_instance_name=base,
+        tw_set=tw_set,
     )
 
 
