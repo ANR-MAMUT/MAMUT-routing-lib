@@ -110,6 +110,7 @@ class DiscoveredBenchmarkInstance:
     subset: str | None = None
     base_instance_name: str | None = None
     subinstance: str | None = None
+    tw_set: str | None = None
 
     def load(self) -> "AnyBenchmarkInstance | AnyTDBenchmarkInstance":
         return load_benchmark_instance(self.instance_path)
@@ -308,6 +309,7 @@ def _discovered_from_layout(layout: LayoutInfo, instance_path: Path) -> Discover
         subset=layout.subset,
         base_instance_name=layout.base_instance_name,
         subinstance=layout.subinstance,
+        tw_set=layout.tw_set,
     )
 
 
