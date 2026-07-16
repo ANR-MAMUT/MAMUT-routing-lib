@@ -27,6 +27,7 @@ from mamut_routing_lib.td import (
     load_td_instance,
     load_traffic_overlay,
     materialize_instance_atfs_roadgraph,
+    materialize_selected_atfs_roadgraph,
     save_instance_road_graph,
     save_traffic_overlay,
     simplify_ndcpwlf,
@@ -454,6 +455,18 @@ class TestMaterialization:
             assert atf.xs[0] == HORIZON[0]
             assert atf.xs[-1] == HORIZON[1]
             assert all(y >= x for x, y in zip(atf.xs, atf.ys))
+
+    def test_selected_arcs_are_bit_identical_to_complete_materialization(self):
+        road = make_road_graph(tolerance=0.1)
+        overlay = make_overlay()
+        instance = td_instance_from_payload(road_instance_payload(road, overlay))
+        complete = materialize_instance_atfs_roadgraph(instance, road, overlay)
+        selected_keys = {(0, 2), (2, 1), (1, 0)}
+        selected = materialize_selected_atfs_roadgraph(instance, road, overlay, selected_keys)
+        assert set(selected) == selected_keys
+        for key in selected_keys:
+            assert selected[key].xs == complete.arcs[key].xs
+            assert selected[key].ys == complete.arcs[key].ys
 
     def test_time_dependence_is_present(self):
         road = make_road_graph()

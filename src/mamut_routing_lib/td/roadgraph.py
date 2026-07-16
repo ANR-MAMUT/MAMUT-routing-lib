@@ -781,3 +781,81 @@ def materialize_instance_atfs_roadgraph(
         arcs=arcs,
         generator=dict(ROAD_MATERIALIZER_GENERATOR),
     )
+
+
+def materialize_selected_atfs_roadgraph(
+    instance: AnyTDBenchmarkInstance,
+    road: InstanceRoadGraph,
+    overlay: TrafficOverlay,
+    selected_arcs: set[tuple[int, int]],
+) -> dict[tuple[int, int], NDCPWLF]:
+    """Materialize only selected complete-graph arcs with canonical semantics.
+
+    This is the sparse counterpart of :func:`materialize_instance_atfs_roadgraph`.
+    It uses the same pinned paths, departure grid, edge evaluation and
+    simplification, but avoids constructing the quadratic matrix when a
+    generation audit needs only the arcs of a route certificate.
+    """
+    td = instance.td
+    if not isinstance(td, TDRoadGraphRef):
+        raise RoadGraphFormatError(f"instance td model is {td.model!r}, expected road-graph")
+    _validate_road_graph(road)
+    _validate_traffic_overlay(overlay)
+    validate_overlay_against_road(overlay, road)
+    if road.num_customers != instance.num_customers:
+        raise RoadGraphFormatError("road-graph customer count does not match instance")
+    num_nodes = road.num_customers + 1
+    for source, target in selected_arcs:
+        if not (0 <= source < num_nodes and 0 <= target < num_nodes) or source == target:
+            raise RoadGraphFormatError(f"invalid selected arc {(source, target)}")
+
+    zones = [(road.bin_edges[k], road.bin_edges[k + 1]) for k in range(len(road.bin_edges) - 1)]
+    extended_horizon = (road.horizon[0], road.extension_end)
+    adjacency = build_adjacency(road)
+    grid = departure_grid(road.horizon, road.sample_step)
+    grid_root = _np.asarray(grid, dtype=_np.float64) if _np is not None else list(grid)
+    evaluators: dict[int, _EdgeEvaluator] = {}
+
+    def edge_evaluator(edge_index: int) -> _EdgeEvaluator:
+        evaluator = evaluators.get(edge_index)
+        if evaluator is None:
+            _, _, length, _ = road.edges[edge_index]
+            evaluator = _EdgeEvaluator(
+                build_arc_atf(zones, overlay.edge_speeds[edge_index], length, extended_horizon)
+            )
+            evaluators[edge_index] = evaluator
+        return evaluator
+
+    targets_by_source: dict[int, list[int]] = {}
+    for source, target in sorted(selected_arcs):
+        targets_by_source.setdefault(source, []).append(target)
+    arcs: dict[tuple[int, int], NDCPWLF] = {}
+    with _gc_paused():
+        for source_node, targets in targets_by_source.items():
+            source_vertex = road.node_vertices[source_node]
+            _, pred_edge = compute_fastest_path_tree(road, adjacency, source_vertex)
+            arrivals = {source_vertex: grid_root}
+            for target_node in targets:
+                target_vertex = road.node_vertices[target_node]
+                chain: list[int] = []
+                vertex = target_vertex
+                while vertex not in arrivals:
+                    edge_index = pred_edge[vertex]
+                    if edge_index < 0:
+                        raise RoadGraphFormatError(
+                            f"node {target_node} unreachable from node {source_node}"
+                        )
+                    chain.append(vertex)
+                    vertex = road.edges[edge_index][0]
+                for vertex in reversed(chain):
+                    edge_index = pred_edge[vertex]
+                    parent = road.edges[edge_index][0]
+                    values = edge_evaluator(edge_index).evaluate_many(arrivals[parent])
+                    if float(values[-1]) > road.extension_end:
+                        raise RoadGraphFormatError("selected-arc arrival exceeds extension_end")
+                    arrivals[vertex] = values
+                ys = [float(value) for value in arrivals[target_vertex]]
+                xs, ys = _drop_exactly_collinear(grid, ys)
+                xs, ys = _simplify_points(xs, ys, road.simplify_tolerance)
+                arcs[(source_node, target_node)] = NDCPWLF(list(xs), list(ys), validate=False)
+    return arcs
