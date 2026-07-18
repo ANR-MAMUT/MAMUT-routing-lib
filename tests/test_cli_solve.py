@@ -67,7 +67,7 @@ def _fake_method_result(*, instance_name: str, problem_type: str = "CVRP", route
     fake.solver_cost = 14
     fake.wall_time = 0.05
     fake.vehicle_penalty = 0
-    fake.method = "hgs-v1"
+    fake.method = "pyvrp-ils-v1"
     fake.problem_type = problem_type
     fake.instance_id = instance_name
     return fake
