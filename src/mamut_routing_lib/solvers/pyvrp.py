@@ -31,7 +31,7 @@ except ImportError as exc:  # pragma: no cover - exercised via test_cli_solve mi
         "dependency. Install with: pip install 'mamut-routing-lib[pyvrp]'"
     ) from exc
 
-from mamut_routing_lib.artifacts import AnyBenchmarkInstance, get_instance_identifier
+from mamut_routing_lib.artifacts import AnyBenchmarkInstance, get_instance_identifier, resolve_arc_costs
 from mamut_routing_lib.bks import (
     BKSUpdateResult,
     DEFAULT_BKS_AUTHORS,
@@ -43,12 +43,15 @@ from mamut_routing_lib.enums import ObjectiveFunction
 from mamut_routing_lib.models import (
     BenchmarkInstance,
     BenchmarkInstanceCVRP,
+    BenchmarkInstanceCVRPCollection,
+    BenchmarkInstanceVRPTWCollection,
     BenchmarkSolution,
 )
 
 
 __all__ = [
     "MethodResult",
+    "hydrate_collection_instance",
     "solve_and_update_bks",
     "solve_cvrp",
     "solve_instance",
@@ -80,11 +83,79 @@ class MethodResult:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-def to_vrplib_dict(instance: AnyBenchmarkInstance) -> dict[str, Any]:
+def _is_vrptw_like(instance: AnyBenchmarkInstance) -> bool:
+    return isinstance(instance, (BenchmarkInstance, BenchmarkInstanceVRPTWCollection))
+
+
+def _is_collection(instance: AnyBenchmarkInstance) -> bool:
+    return isinstance(instance, (BenchmarkInstanceCVRPCollection, BenchmarkInstanceVRPTWCollection))
+
+
+def _hydrated_arc_costs(
+    instance: AnyBenchmarkInstance,
+    instance_path: str | Path | None,
+) -> list[list[int]] | list[list[float]]:
+    """Inline arc costs, or the sidecar/euclidean-resolved matrix for slim
+    collection instances (which need ``instance_path`` for sidecar sources)."""
+    if not _is_collection(instance):
+        return instance.arc_costs
+    if instance_path is None:
+        raise ValueError(
+            "Collection instances resolve arc costs from their sidecars; pass instance_path to solve them."
+        )
+    return resolve_arc_costs(instance, instance_path)
+
+
+def hydrate_collection_instance(
+    instance: AnyBenchmarkInstance,
+    instance_path: str | Path | None = None,
+    arc_costs: list[list[int]] | list[list[float]] | None = None,
+) -> AnyBenchmarkInstance:
+    """A v1 embedded-model view of a slim collection instance with resolved
+    arc costs, usable with ``mamut_routing_lib.checker.check_solution``.
+    Non-collection instances pass through unchanged."""
+    if not _is_collection(instance):
+        return instance
+    if arc_costs is None:
+        arc_costs = _hydrated_arc_costs(instance, instance_path)
+    common: dict[str, Any] = {
+        "instance_name": instance.instance_name,
+        "instance_origin": instance.instance_origin,
+        "benchmark_name": instance.benchmark_name,
+        "num_customers": instance.num_customers,
+        "num_vehicles": instance.num_vehicles,
+        "vehicle_capacity": instance.vehicle_capacity,
+        "coordinates": instance.coordinates,
+        "demands": instance.demands,
+        "depot": instance.depot,
+        "arc_costs": arc_costs,
+        "reference_lla": instance.reference_lla,
+        "metadata": dict(instance.metadata),
+    }
+    if isinstance(instance, BenchmarkInstanceVRPTWCollection):
+        service_times = [int(value) for value in instance.service_times]
+        time_windows = [(int(ready), int(due)) for ready, due in instance.time_windows]
+        if service_times != [float(v) for v in instance.service_times] or any(
+            (float(int(r)), float(int(d))) != (float(r), float(d)) for r, d in instance.time_windows
+        ):
+            raise ValueError("Non-integer time windows/service times cannot hydrate into the v1 checker model")
+        return BenchmarkInstance(**common, service_times=service_times, time_windows=time_windows)
+    return BenchmarkInstanceCVRP(**common)
+
+
+def to_vrplib_dict(
+    instance: AnyBenchmarkInstance,
+    arc_costs: list[list[int]] | list[list[float]] | None = None,
+) -> dict[str, Any]:
     """Convert a benchmark instance into a VRPLIB-shaped dict consumable by PyVRP's parser."""
+    if arc_costs is None:
+        arc_costs = instance.arc_costs
+    weights = np.asarray(arc_costs)
+    if np.allclose(weights, np.round(weights)):
+        weights = weights.astype(int)
     payload: dict[str, Any] = {
         "name": get_instance_identifier(instance),
-        "type": "CVRPTW" if isinstance(instance, BenchmarkInstance) else "CVRP",
+        "type": "CVRPTW" if _is_vrptw_like(instance) else "CVRP",
         "dimension": instance.num_customers + 1,
         "vehicles": instance.num_vehicles if instance.num_vehicles is not None else instance.num_customers,
         "capacity": instance.vehicle_capacity,
@@ -93,12 +164,12 @@ def to_vrplib_dict(instance: AnyBenchmarkInstance) -> dict[str, Any]:
         "node_coord": np.asarray(instance.coordinates, dtype=float),
         "demand": np.asarray(instance.demands, dtype=int),
         "depot": np.array([instance.depot], dtype=int),
-        "edge_weight": np.asarray(instance.arc_costs, dtype=int),
+        "edge_weight": weights,
     }
 
-    if isinstance(instance, BenchmarkInstance):
-        payload["time_window"] = np.asarray(instance.time_windows, dtype=int)
-        payload["service_time"] = np.asarray(instance.service_times, dtype=int)
+    if _is_vrptw_like(instance):
+        payload["time_window"] = np.asarray(instance.time_windows)
+        payload["service_time"] = np.asarray(instance.service_times)
 
     return payload
 
@@ -106,6 +177,7 @@ def to_vrplib_dict(instance: AnyBenchmarkInstance) -> dict[str, Any]:
 def to_pyvrp_problem(
     instance: AnyBenchmarkInstance,
     round_func: str | _RoundingFunc = "none",
+    arc_costs: list[list[int]] | list[list[float]] | None = None,
 ) -> ProblemData:
     """Convert a benchmark instance into a PyVRP `ProblemData`."""
     if (key := str(round_func)) in ROUND_FUNCS:
@@ -117,7 +189,7 @@ def to_pyvrp_problem(
             f"or one of {list(ROUND_FUNCS.keys())}."
         )
 
-    parser = _InstanceParser(to_vrplib_dict(instance), round_func)
+    parser = _InstanceParser(to_vrplib_dict(instance, arc_costs), round_func)
     builder = _ProblemDataBuilder(parser)
     return builder.data()
 
@@ -131,9 +203,13 @@ def _extract_routes(pyvrp_solution: Any) -> list[list[int]]:
     return routes
 
 
-def _get_vehicle_fixed_cost(instance: AnyBenchmarkInstance) -> int | float:
-    max_arc_cost = max(max(row) for row in instance.arc_costs)
-    return 2 * (instance.num_customers + 1) * max_arc_cost + 1
+def _get_vehicle_fixed_cost(
+    num_customers: int,
+    arc_costs: list[list[int]] | list[list[float]],
+    scale: int = 1,
+) -> int:
+    max_arc_cost = max(max(row) for row in arc_costs)
+    return int(2 * (num_customers + 1) * max_arc_cost * scale) + 1
 
 
 def _build_method_metadata(
@@ -155,16 +231,32 @@ def _build_method_metadata(
     return metadata
 
 
+def _conversion_plan(
+    instance: AnyBenchmarkInstance,
+    instance_path: str | Path | None,
+) -> tuple[list[list[int]] | list[list[float]], str, int]:
+    """(arc costs, round_func, cost scale) for the solve. Slim collection
+    instances carry 3-decimal float costs; PyVRP's 'exact' rounding scales
+    them x1000 to integers, so reported solver costs are in milli-units."""
+    arc_costs = _hydrated_arc_costs(instance, instance_path)
+    weights = np.asarray(arc_costs)
+    if np.allclose(weights, np.round(weights)):
+        return arc_costs, "none", 1
+    return arc_costs, "exact", 1000
+
+
 def solve_cvrp(
-    instance: BenchmarkInstanceCVRP,
+    instance: BenchmarkInstanceCVRP | BenchmarkInstanceCVRPCollection,
     *,
     time_limit_s: int,
     seed: int = 42,
     display: bool = False,
+    instance_path: str | Path | None = None,
 ) -> MethodResult:
     """Solve a CVRP instance with PyVRP's ILS (mono-cost objective only)."""
     start_time = time.perf_counter()
-    problem = to_pyvrp_problem(instance)
+    arc_costs, round_func, scale = _conversion_plan(instance, instance_path)
+    problem = to_pyvrp_problem(instance, round_func=round_func, arc_costs=arc_costs)
     result = pyvrp_solve(
         problem,
         stop=MaxRuntime(max(1, time_limit_s)),
@@ -193,17 +285,19 @@ def solve_cvrp(
             ObjectiveFunction.MONO_COST,
             seed=seed,
             time_limit_s=time_limit_s,
+            extra={"arc_cost_scale": scale} if scale != 1 else None,
         ),
     )
 
 
 def solve_vrptw(
-    instance: BenchmarkInstance,
+    instance: BenchmarkInstance | BenchmarkInstanceVRPTWCollection,
     *,
     objective_function: ObjectiveFunction,
     time_limit_s: int,
     seed: int = 42,
     display: bool = False,
+    instance_path: str | Path | None = None,
 ) -> MethodResult:
     """Solve a VRPTW instance with PyVRP's ILS.
 
@@ -218,7 +312,8 @@ def solve_vrptw(
          infeasible solutions that use fewer vehicles.
     """
     start_time = time.perf_counter()
-    problem = to_pyvrp_problem(instance)
+    arc_costs, round_func, scale = _conversion_plan(instance, instance_path)
+    problem = to_pyvrp_problem(instance, round_func=round_func, arc_costs=arc_costs)
     params = SolveParams()
     vehicle_penalty: int | float = 0
 
@@ -248,7 +343,7 @@ def solve_vrptw(
             display=False,
             params=params,
         )
-        vehicle_penalty = int(_get_vehicle_fixed_cost(instance)) + 1
+        vehicle_penalty = _get_vehicle_fixed_cost(instance.num_customers, arc_costs, scale)
         constrained_problem = problem.replace(
             vehicle_types=[constrained_vehicle_type.replace(fixed_cost=vehicle_penalty)]
         )
@@ -288,7 +383,7 @@ def solve_vrptw(
             objective_function,
             seed=seed,
             time_limit_s=time_limit_s,
-            extra={"vehicle_penalty": vehicle_penalty},
+            extra={"vehicle_penalty": vehicle_penalty, **({"arc_cost_scale": scale} if scale != 1 else {})},
         ),
     )
 
@@ -300,16 +395,21 @@ def solve_instance(
     seed: int = 42,
     objective_function: ObjectiveFunction | None = None,
     display: bool = False,
+    instance_path: str | Path | None = None,
 ) -> MethodResult:
     """Dispatch to `solve_cvrp` or `solve_vrptw` based on instance type.
 
     For VRPTW instances, `objective_function` defaults to MONO_COST when not provided.
     For CVRP instances, the objective is fixed to MONO_COST regardless of the argument.
+    Slim collection instances need `instance_path` when their arc costs live in
+    a distances sidecar.
     """
-    if isinstance(instance, BenchmarkInstanceCVRP):
-        return solve_cvrp(instance, time_limit_s=time_limit_s, seed=seed, display=display)
+    if isinstance(instance, (BenchmarkInstanceCVRP, BenchmarkInstanceCVRPCollection)):
+        return solve_cvrp(
+            instance, time_limit_s=time_limit_s, seed=seed, display=display, instance_path=instance_path
+        )
 
-    if isinstance(instance, BenchmarkInstance):
+    if _is_vrptw_like(instance):
         objective = objective_function or ObjectiveFunction.MONO_COST
         return solve_vrptw(
             instance,
@@ -317,6 +417,7 @@ def solve_instance(
             time_limit_s=time_limit_s,
             seed=seed,
             display=display,
+            instance_path=instance_path,
         )
 
     raise TypeError(f"Unsupported instance type: {type(instance).__name__}")
@@ -345,23 +446,25 @@ def solve_and_update_bks(
         seed=seed,
         objective_function=objective_function,
         display=display,
+        instance_path=instance_path,
     )
     if not method_result.solver_is_feasible or not method_result.routes:
         return method_result, None
 
     resolved_objective = ObjectiveFunction(method_result.objective_function)
+    checkable = hydrate_collection_instance(instance, instance_path)
     candidate = BenchmarkSolution(
         instance_name=get_instance_identifier(instance),
         routes=method_result.routes,
         cost=None,
         metadata={"seed": seed, "method": method_result.method, "wall_time": method_result.wall_time},
     )
-    check_result = check_solution(instance, candidate)
+    check_result = check_solution(checkable, candidate)
     if not check_result.is_valid():
         return method_result, None
 
     bks = create_bks_from_solution(
-        instance,
+        checkable,
         candidate,
         resolved_objective,
         authors=authors,
@@ -374,5 +477,5 @@ def solve_and_update_bks(
             "vehicle_penalty": method_result.vehicle_penalty,
         },
     )
-    update_result = save_bks_if_improved(instance, bks, Path(instance_path))
+    update_result = save_bks_if_improved(checkable, bks, Path(instance_path))
     return method_result, update_result
