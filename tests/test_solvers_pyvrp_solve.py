@@ -14,7 +14,7 @@ def test_solve_cvrp_returns_feasible_routes(toy_cvrp_instance) -> None:
     result = solve_cvrp(toy_cvrp_instance, time_limit_s=2, seed=1)
     assert result.solver_is_feasible
     assert result.route_count >= 1
-    assert result.method == "hgs-v1"
+    assert result.method == "pyvrp-ils-v1"
     assert result.objective_function == ObjectiveFunction.MONO_COST.value
     candidate = BenchmarkSolution(instance_name=toy_cvrp_instance.instance_name, routes=result.routes)
     assert check_solution(toy_cvrp_instance, candidate).is_valid()

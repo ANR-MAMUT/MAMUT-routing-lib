@@ -21,7 +21,7 @@ from typing import Any
 try:
     import numpy as np
     from pyvrp import ProblemData, SolveParams
-    from pyvrp.minimise_fleet import _lower_bound
+    from pyvrp.minimise_fleet import minimise_fleet
     from pyvrp.read import ROUND_FUNCS, _InstanceParser, _ProblemDataBuilder, _RoundingFunc
     from pyvrp.solve import solve as pyvrp_solve
     from pyvrp.stop import FirstFeasible, MaxRuntime, MultipleCriteria
@@ -60,9 +60,7 @@ __all__ = [
 
 # Tuning constants for the hierarchical-vehicle-cost two-phase VRPTW solve.
 _FLEET_MIN_TIME_FRACTION = 0.3
-_FLEET_ATTEMPT_MAX_TIME_FRACTION = 0.2
-_FLEET_ATTEMPT_MIN_TIME = 0.5
-_FLEET_ATTEMPT_FEASIBLE_MULTIPLIER = 3.0
+_WARM_START_MAX_TIME = 5.0
 
 
 @dataclass(frozen=True)
@@ -157,72 +155,6 @@ def _build_method_metadata(
     return metadata
 
 
-def _minimise_fleet_adaptive(
-    problem: ProblemData,
-    *,
-    total_phase1_budget: float,
-    start_time: float,
-    seed: int,
-    params: SolveParams | None = None,
-) -> Any:
-    """Adaptively reduce vehicle count via repeated FirstFeasible|MaxRuntime probes.
-
-    Returns the most constrained `VehicleType` for which a feasible solution was
-    found within the phase-1 budget.
-    """
-    params = params or SolveParams()
-    feasible_vehicle_type = problem.vehicle_type(0)
-    lower_bound = _lower_bound(problem)
-    max_feasible_attempt_time = 0.0
-    fleet_attempt_max_time = max(
-        _FLEET_ATTEMPT_MIN_TIME,
-        _FLEET_ATTEMPT_MAX_TIME_FRACTION * total_phase1_budget,
-    )
-
-    while feasible_vehicle_type.num_available > lower_bound:
-        elapsed = time.perf_counter() - start_time
-        remaining_phase1 = total_phase1_budget - elapsed
-        if remaining_phase1 <= 0:
-            break
-
-        if max_feasible_attempt_time > 0:
-            adaptive_cap = max(
-                _FLEET_ATTEMPT_MIN_TIME,
-                max_feasible_attempt_time * _FLEET_ATTEMPT_FEASIBLE_MULTIPLIER,
-            )
-        else:
-            adaptive_cap = fleet_attempt_max_time
-
-        attempt_time = min(fleet_attempt_max_time, adaptive_cap, remaining_phase1)
-        candidate_vehicle_type = feasible_vehicle_type.replace(
-            num_available=feasible_vehicle_type.num_available - 1
-        )
-        candidate_problem = problem.replace(vehicle_types=[candidate_vehicle_type])
-        attempt_start = time.perf_counter()
-        stop_criterion = MultipleCriteria([FirstFeasible(), MaxRuntime(attempt_time)])
-        result = pyvrp_solve(
-            candidate_problem,
-            stop=stop_criterion,
-            seed=seed,
-            collect_stats=False,
-            display=False,
-            params=params,
-        )
-        attempt_elapsed = time.perf_counter() - attempt_start
-        if not result.is_feasible():
-            break
-
-        max_feasible_attempt_time = max(max_feasible_attempt_time, attempt_elapsed)
-        feasible_vehicle_type = candidate_vehicle_type
-
-        if result.best.num_routes() < candidate_problem.num_vehicles:
-            feasible_vehicle_type = candidate_vehicle_type.replace(
-                num_available=result.best.num_routes()
-            )
-
-    return feasible_vehicle_type
-
-
 def solve_cvrp(
     instance: BenchmarkInstanceCVRP,
     *,
@@ -230,7 +162,7 @@ def solve_cvrp(
     seed: int = 42,
     display: bool = False,
 ) -> MethodResult:
-    """Solve a CVRP instance with PyVRP's HGS (mono-cost objective only)."""
+    """Solve a CVRP instance with PyVRP's ILS (mono-cost objective only)."""
     start_time = time.perf_counter()
     problem = to_pyvrp_problem(instance)
     result = pyvrp_solve(
@@ -244,7 +176,7 @@ def solve_cvrp(
     is_feasible = result.is_feasible()
     routes = _extract_routes(result.best) if is_feasible else []
     return MethodResult(
-        method="hgs-v1",
+        method="pyvrp-ils-v1",
         problem_type="CVRP",
         objective_function=ObjectiveFunction.MONO_COST.value,
         instance_id=instance.instance_name,
@@ -273,13 +205,17 @@ def solve_vrptw(
     seed: int = 42,
     display: bool = False,
 ) -> MethodResult:
-    """Solve a VRPTW instance with PyVRP's HGS.
+    """Solve a VRPTW instance with PyVRP's ILS.
 
     For ObjectiveFunction.MONO_COST, runs a single solve with the full time budget.
     For ObjectiveFunction.HIERARCHICAL_VEHICLE_COST, runs a two-phase solve:
-      1. Adaptive fleet minimization within ~30% of the budget.
+      1. Fleet minimization (PyVRP's `minimise_fleet`) within ~30% of the budget.
       2. Cost optimization on the constrained fleet for the remaining budget,
          with a per-vehicle fixed cost large enough to dominate routing cost.
+         Phase 2 is warm-started from a feasible solution re-found on the
+         constrained fleet: the fixed cost dwarfs the solver's capped
+         infeasibility penalties, so a cold start can otherwise stabilize on
+         infeasible solutions that use fewer vehicles.
     """
     start_time = time.perf_counter()
     problem = to_pyvrp_problem(instance)
@@ -296,15 +232,23 @@ def solve_vrptw(
             params=params,
         )
     else:
-        fleet_budget = float(time_limit_s) * _FLEET_MIN_TIME_FRACTION
-        constrained_vehicle_type = _minimise_fleet_adaptive(
+        fleet_budget = max(1.0, float(time_limit_s) * _FLEET_MIN_TIME_FRACTION)
+        constrained_vehicle_type = minimise_fleet(
             problem,
-            total_phase1_budget=fleet_budget,
-            start_time=start_time,
+            stop=MaxRuntime(fleet_budget),
             seed=seed,
             params=params,
         )
-        vehicle_penalty = _get_vehicle_fixed_cost(instance)
+        fleet_problem = problem.replace(vehicle_types=[constrained_vehicle_type])
+        warm_result = pyvrp_solve(
+            fleet_problem,
+            stop=MultipleCriteria([FirstFeasible(), MaxRuntime(_WARM_START_MAX_TIME)]),
+            seed=seed,
+            collect_stats=False,
+            display=False,
+            params=params,
+        )
+        vehicle_penalty = int(_get_vehicle_fixed_cost(instance)) + 1
         constrained_problem = problem.replace(
             vehicle_types=[constrained_vehicle_type.replace(fixed_cost=vehicle_penalty)]
         )
@@ -316,13 +260,18 @@ def solve_vrptw(
             collect_stats=False,
             display=display,
             params=params,
+            initial_solution=warm_result.best if warm_result.is_feasible() else None,
         )
+        if not result.is_feasible() and warm_result.is_feasible():
+            # The warm incumbent is a valid hierarchical solution even when
+            # phase 2 degrades; never return worse than what phase 1 proved.
+            result = warm_result
 
     wall_time = time.perf_counter() - start_time
     is_feasible = result.is_feasible()
     routes = _extract_routes(result.best) if is_feasible else []
     return MethodResult(
-        method="hgs-v3",
+        method="pyvrp-ils-v3",
         problem_type="VRPTW",
         objective_function=objective_function.value,
         instance_id=get_instance_identifier(instance),
