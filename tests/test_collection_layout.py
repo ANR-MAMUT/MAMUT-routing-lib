@@ -26,7 +26,7 @@ from mamut_routing_lib.json_utils import save_json_to_file
 from mamut_routing_lib.sidecars import CollectionMarker, save_collection_marker
 from pathlib import Path
 
-BASE = "mamut-toyville-n2-hyb"
+BASE = "poryos-toyville-n2-hyb"
 CITY = "toyville"
 
 
@@ -34,7 +34,7 @@ def static_payload(*, metric: str, arc_costs_source: dict, with_tw: bool = False
     payload = {
         "instance_name": BASE,
         "instance_origin": "OsmCvrpGen",
-        "benchmark_name": "Mamut2026",
+        "benchmark_name": "Poryos2026",
         "num_customers": 2,
         "num_vehicles": None,
         "vehicle_capacity": 10,
@@ -55,7 +55,7 @@ def td_payload(subinstance: str, *, with_tw: bool) -> dict:
     payload = {
         "instance_name": f"{BASE}-{subinstance}",
         "instance_origin": "OsmCvrpGen",
-        "benchmark_name": "Mamut2026",
+        "benchmark_name": "Poryos2026",
         "num_customers": 2,
         "num_vehicles": None,
         "vehicle_capacity": 10,
@@ -83,11 +83,11 @@ def benchmarks_root(tmp_path) -> Path:
     root = tmp_path / "benchmarks"
 
     # Family-first collection.
-    collection = root / "Mamut2026"
-    save_collection_marker(CollectionMarker(family="Mamut2026"), collection)
+    collection = root / "Poryos2026"
+    save_collection_marker(CollectionMarker(family="Poryos2026"), collection)
     distances = InstanceDistances(
         base_name=BASE,
-        benchmark_name="Mamut2026",
+        benchmark_name="Poryos2026",
         metric="fastest",
         num_customers=2,
         values=[[0.0, 120.5, 240.25], [120.5, 0.0, 130.75], [240.25, 130.75, 0.0]],
@@ -165,7 +165,7 @@ class TestCollectionDiscovery:
     def test_collection_items_expose_base_and_subinstance(self, benchmarks_root):
         items = discover_benchmark_instances(benchmarks_root, problem_types=[ProblemType.TDVRP])
         (item,) = items
-        assert item.benchmark_name == "Mamut2026"
+        assert item.benchmark_name == "Poryos2026"
         assert item.base_instance_name == BASE
         assert item.subinstance == "bpr-heavy"
         assert item.instance_name == f"{BASE}-bpr-heavy"
@@ -199,9 +199,9 @@ class TestCollectionDiscovery:
     def test_collection_checkout_scanned_as_root(self, benchmarks_root):
         # A standalone collection checkout (marker at the scanned root itself)
         # must discover the same collection instances.
-        items = discover_benchmark_instances(benchmarks_root / "Mamut2026")
+        items = discover_benchmark_instances(benchmarks_root / "Poryos2026")
         assert len(items) == 5
-        assert {item.benchmark_name for item in items} == {"Mamut2026"}
+        assert {item.benchmark_name for item in items} == {"Poryos2026"}
 
 
 class TestCollectionLayoutParser:
@@ -210,7 +210,7 @@ class TestCollectionLayoutParser:
             parse_collection_layout(
                 Path("TDVRP/lyon/n=10/base-a/sub-b/wrong-name.vrp.json"),
                 Path("/x/wrong-name.vrp.json"),
-                "Mamut2026",
+                "Poryos2026",
             )
 
     def test_static_name_must_equal_base_dir(self):
@@ -218,7 +218,7 @@ class TestCollectionLayoutParser:
             parse_collection_layout(
                 Path("CVRP/fastest/lyon/n=10/base-a/other.vrp.json"),
                 Path("/x/other.vrp.json"),
-                "Mamut2026",
+                "Poryos2026",
             )
 
     def test_wrong_depth_rejected(self):
@@ -226,14 +226,14 @@ class TestCollectionLayoutParser:
             parse_collection_layout(
                 Path("CVRP/fastest/n=10/base/base.vrp.json"),
                 Path("/x/base.vrp.json"),
-                "Mamut2026",
+                "Poryos2026",
             )
 
     def test_vrptw_tw_set_suffix_accepted(self):
         layout = parse_collection_layout(
             Path("VRPTW/fastest/lyon/n=10/base-a/base-a-tw-tight.vrp.json"),
             Path("/x/base-a-tw-tight.vrp.json"),
-            "Mamut2026",
+            "Poryos2026",
         )
         assert layout.instance_name == "base-a-tw-tight"
         assert layout.base_instance_name == "base-a"
@@ -243,7 +243,7 @@ class TestCollectionLayoutParser:
         layout = parse_collection_layout(
             Path("VRPTW/fastest/lyon/n=10/base-a/base-a.vrp.json"),
             Path("/x/base-a.vrp.json"),
-            "Mamut2026",
+            "Poryos2026",
         )
         assert layout.tw_set == "td-shared"
 
@@ -252,7 +252,7 @@ class TestCollectionLayoutParser:
             parse_collection_layout(
                 Path("CVRP/fastest/lyon/n=10/base-a/base-a-tw-tight.vrp.json"),
                 Path("/x/base-a-tw-tight.vrp.json"),
-                "Mamut2026",
+                "Poryos2026",
             )
 
     def test_vrptw_empty_tw_tag_rejected(self):
@@ -260,13 +260,13 @@ class TestCollectionLayoutParser:
             parse_collection_layout(
                 Path("VRPTW/fastest/lyon/n=10/base-a/base-a-tw-.vrp.json"),
                 Path("/x/base-a-tw-.vrp.json"),
-                "Mamut2026",
+                "Poryos2026",
             )
 
 
 class TestSlimInstances:
     def test_load_dispatches_to_collection_models(self, benchmarks_root):
-        collection = benchmarks_root / "Mamut2026"
+        collection = benchmarks_root / "Poryos2026"
         cvrp = load_benchmark_instance(
             collection / "CVRP" / "euclidean" / CITY / "n=2" / BASE / f"{BASE}.vrp.json"
         )
@@ -278,7 +278,7 @@ class TestSlimInstances:
         assert vrptw.time_windows[1] == (100, 5000)
 
     def test_euclidean_hydration(self, benchmarks_root):
-        path = benchmarks_root / "Mamut2026" / "CVRP" / "euclidean" / CITY / "n=2" / BASE / f"{BASE}.vrp.json"
+        path = benchmarks_root / "Poryos2026" / "CVRP" / "euclidean" / CITY / "n=2" / BASE / f"{BASE}.vrp.json"
         instance = load_benchmark_instance(path)
         matrix = resolve_arc_costs(instance, path)
         assert matrix[0][1] == round(math.hypot(3.0, 4.0), 3) == 5.0
@@ -286,14 +286,14 @@ class TestSlimInstances:
         assert matrix[1][1] == 0.0
 
     def test_distances_sidecar_hydration_with_sha(self, benchmarks_root):
-        path = benchmarks_root / "Mamut2026" / "CVRP" / "fastest" / CITY / "n=2" / BASE / f"{BASE}.vrp.json"
+        path = benchmarks_root / "Poryos2026" / "CVRP" / "fastest" / CITY / "n=2" / BASE / f"{BASE}.vrp.json"
         instance = load_benchmark_instance(path)
         matrix = resolve_arc_costs(instance, path)
         assert matrix[0][1] == 120.5
         assert matrix[2][1] == 130.75
 
     def test_sha_mismatch_raises(self, benchmarks_root, tmp_path):
-        path = benchmarks_root / "Mamut2026" / "CVRP" / "fastest" / CITY / "n=2" / BASE / f"{BASE}.vrp.json"
+        path = benchmarks_root / "Poryos2026" / "CVRP" / "fastest" / CITY / "n=2" / BASE / f"{BASE}.vrp.json"
         instance = load_benchmark_instance(path)
         bad = instance.model_copy(deep=True)
         bad.arc_costs_source.distances.sha256 = "0" * 64
@@ -301,7 +301,7 @@ class TestSlimInstances:
             resolve_arc_costs(bad, path)
 
     def test_metric_mismatch_raises(self, benchmarks_root):
-        path = benchmarks_root / "Mamut2026" / "CVRP" / "fastest" / CITY / "n=2" / BASE / f"{BASE}.vrp.json"
+        path = benchmarks_root / "Poryos2026" / "CVRP" / "fastest" / CITY / "n=2" / BASE / f"{BASE}.vrp.json"
         instance = load_benchmark_instance(path)
         bad = instance.model_copy(deep=True, update={"metric_variant": MetricVariant.SHORTEST})
         with pytest.raises(ValueError, match="does not match instance"):

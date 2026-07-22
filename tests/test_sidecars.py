@@ -34,11 +34,11 @@ class TestSidecarRef:
 
 class TestCollectionMarker:
     def test_roundtrip(self, tmp_path):
-        marker = CollectionMarker(family="Mamut2026")
+        marker = CollectionMarker(family="Poryos2026")
         path = save_collection_marker(marker, tmp_path)
         assert path.name == COLLECTION_MARKER_FILENAME
         loaded = load_collection_marker(path)
-        assert loaded.family == "Mamut2026"
+        assert loaded.family == "Poryos2026"
         assert loaded.layout_version == 1
 
     def test_bad_format_rejected(self, tmp_path):
@@ -56,8 +56,8 @@ class TestCollectionMarker:
 
 class TestRootResolution:
     def make_collection(self, tmp_path):
-        root = tmp_path / "Mamut2026"
-        save_collection_marker(CollectionMarker(family="Mamut2026"), root)
+        root = tmp_path / "Poryos2026"
+        save_collection_marker(CollectionMarker(family="Poryos2026"), root)
         deep = root / "TDVRP" / "lyon" / "n=10" / "base" / "sub"
         deep.mkdir(parents=True)
         instance = deep / "base-sub.vrp.json"

@@ -68,9 +68,9 @@ def test_solve_instance_dispatches_on_type(toy_cvrp_instance, toy_vrptw_instance
 
 def _toy_collection_kwargs() -> dict:
     return {
-        "instance_name": "mamut-n3-collection",
+        "instance_name": "poryos-n3-collection",
         "instance_origin": "OsmCvrpGen",
-        "benchmark_name": "Mamut2026",
+        "benchmark_name": "Poryos2026",
         "num_customers": 3,
         "vehicle_capacity": 10,
         "coordinates": [(0.0, 0.0), (100.0, 0.0), (0.0, 100.0), (100.0, 100.0)],
@@ -102,7 +102,7 @@ def test_solve_vrptw_collection_dispatches_with_time_windows() -> None:
     from mamut_routing_lib.models import BenchmarkInstanceVRPTWCollection
 
     kwargs = _toy_collection_kwargs()
-    kwargs["instance_name"] = "mamut-n3-collection-vrptw"
+    kwargs["instance_name"] = "poryos-n3-collection-vrptw"
     kwargs["service_times"] = [0, 10, 10, 10]
     kwargs["time_windows"] = [(0, 100000), (0, 100000), (0, 100000), (0, 100000)]
     instance = BenchmarkInstanceVRPTWCollection(**kwargs)

@@ -28,16 +28,16 @@ def make_metadata_kwargs(problem_type: str = "CVRP", metric_variant: str = "fast
         "num_vehicles_lb": 14,
         "generator_version": "mamut-routing-lib.seed-v1",
         "artifact_paths": {
-            "vrp_json": "benchmarks/CVRP/Mamut2026/fastest/brest/n=2/mamut-n2-deadbee/mamut-n2-deadbee.vrp.json",
-            "vrp": "benchmarks/CVRP/Mamut2026/fastest/brest/n=2/mamut-n2-deadbee/mamut-n2-deadbee.vrp",
-            "meta": "benchmarks/CVRP/Mamut2026/sidecars/brest/n=2/mamut-n2-deadbee/mamut-n2-deadbee.meta.json",
-            "manifest": "benchmarks/CVRP/Mamut2026/sidecars/brest/n=2/mamut-n2-deadbee/mamut-n2-deadbee.manifest.json",
+            "vrp_json": "benchmarks/CVRP/Poryos2026/fastest/brest/n=2/poryos-n2-deadbee/poryos-n2-deadbee.vrp.json",
+            "vrp": "benchmarks/CVRP/Poryos2026/fastest/brest/n=2/poryos-n2-deadbee/poryos-n2-deadbee.vrp",
+            "meta": "benchmarks/CVRP/Poryos2026/sidecars/brest/n=2/poryos-n2-deadbee/poryos-n2-deadbee.meta.json",
+            "manifest": "benchmarks/CVRP/Poryos2026/sidecars/brest/n=2/poryos-n2-deadbee/poryos-n2-deadbee.manifest.json",
         },
         "sibling_variant_paths": {
-            "euclidean": "benchmarks/CVRP/Mamut2026/euclidean/brest/n=2/mamut-n2-deadbee/mamut-n2-deadbee.vrp.json"
+            "euclidean": "benchmarks/CVRP/Poryos2026/euclidean/brest/n=2/poryos-n2-deadbee/poryos-n2-deadbee.vrp.json"
         },
         "derived_problem_paths": {
-            "fastest": "benchmarks/VRPTW/Mamut2026/fastest/brest/n=2/mamut-n2-beefdad/mamut-n2-beefdad.vrp.json"
+            "fastest": "benchmarks/VRPTW/Poryos2026/fastest/brest/n=2/poryos-n2-beefdad/poryos-n2-beefdad.vrp.json"
         },
     }
 
@@ -65,9 +65,9 @@ def make_valid_historical_instance_kwargs() -> dict:
 
 def make_valid_cvrp_instance_kwargs() -> dict:
     return {
-        "instance_name": "mamut-n2-deadbee",
+        "instance_name": "poryos-n2-deadbee",
         "instance_origin": "OsmCvrpGen",
-        "benchmark_name": "Mamut2026",
+        "benchmark_name": "Poryos2026",
         "num_customers": 2,
         "vehicle_capacity": 10,
         "coordinates": [(0.0, 0.0), (1.5, 1.5), (2.25, 2.25)],
@@ -84,19 +84,19 @@ def make_valid_cvrp_instance_kwargs() -> dict:
 
 def make_valid_vrptw_instance_kwargs() -> dict:
     payload = make_valid_cvrp_instance_kwargs()
-    payload["instance_name"] = "mamut-n2-beefdad"
+    payload["instance_name"] = "poryos-n2-beefdad"
     payload["service_times"] = [0, 10, 20]
     payload["time_windows"] = [(0, 86400), (100, 5000), (200, 6000)]
     payload["metadata"] = make_metadata_kwargs(problem_type="VRPTW", metric_variant="euclidean")
     payload["metadata"]["artifact_paths"] = {
-        "vrp_json": "benchmarks/VRPTW/Mamut2026/euclidean/brest/n=2/mamut-n2-beefdad/mamut-n2-beefdad.vrp.json",
-        "vrp": "benchmarks/VRPTW/Mamut2026/euclidean/brest/n=2/mamut-n2-beefdad/mamut-n2-beefdad.vrp",
-        "meta": "benchmarks/VRPTW/Mamut2026/sidecars/brest/n=2/mamut-n2-beefdad/mamut-n2-beefdad.meta.json",
-        "manifest": "benchmarks/VRPTW/Mamut2026/sidecars/brest/n=2/mamut-n2-beefdad/mamut-n2-beefdad.manifest.json",
+        "vrp_json": "benchmarks/VRPTW/Poryos2026/euclidean/brest/n=2/poryos-n2-beefdad/poryos-n2-beefdad.vrp.json",
+        "vrp": "benchmarks/VRPTW/Poryos2026/euclidean/brest/n=2/poryos-n2-beefdad/poryos-n2-beefdad.vrp",
+        "meta": "benchmarks/VRPTW/Poryos2026/sidecars/brest/n=2/poryos-n2-beefdad/poryos-n2-beefdad.meta.json",
+        "manifest": "benchmarks/VRPTW/Poryos2026/sidecars/brest/n=2/poryos-n2-beefdad/poryos-n2-beefdad.manifest.json",
     }
     payload["metadata"]["source_problem_paths"] = {
-        "cvrp_vrp_json": "benchmarks/CVRP/Mamut2026/euclidean/brest/n=2/mamut-n2-deadbee/mamut-n2-deadbee.vrp.json",
-        "cvrp_vrp": "benchmarks/CVRP/Mamut2026/euclidean/brest/n=2/mamut-n2-deadbee/mamut-n2-deadbee.vrp",
+        "cvrp_vrp_json": "benchmarks/CVRP/Poryos2026/euclidean/brest/n=2/poryos-n2-deadbee/poryos-n2-deadbee.vrp.json",
+        "cvrp_vrp": "benchmarks/CVRP/Poryos2026/euclidean/brest/n=2/poryos-n2-deadbee/poryos-n2-deadbee.vrp",
     }
     return payload
 
@@ -145,7 +145,7 @@ def test_benchmark_instance_metadata_union_resolves_to_dict_for_historical() -> 
     assert instance.metadata == {"foo": "bar"}
 
 
-def test_benchmark_instance_metadata_union_resolves_to_structured_for_mamut2026() -> None:
+def test_benchmark_instance_metadata_union_resolves_to_structured_for_poryos2026() -> None:
     instance = BenchmarkInstance(**make_valid_vrptw_instance_kwargs())
 
     assert isinstance(instance.metadata, InstanceMetadata)

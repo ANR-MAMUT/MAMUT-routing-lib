@@ -18,13 +18,13 @@ def make_manifest_payload() -> dict:
         "assets": [
             {
                 "scope": "problem_family",
-                "filename": "CVRP-Mamut2026-snapshot-2026-04-24-deadbee.zip",
-                "download_url": "https://example.invalid/CVRP-Mamut2026-snapshot-2026-04-24-deadbee.zip",
+                "filename": "CVRP-Poryos2026-snapshot-2026-04-24-deadbee.zip",
+                "download_url": "https://example.invalid/CVRP-Poryos2026-snapshot-2026-04-24-deadbee.zip",
                 "problem_type": "CVRP",
-                "benchmark_name": "Mamut2026",
+                "benchmark_name": "Poryos2026",
                 "checksum_sha256": "abc123",
                 "size_bytes": 123,
-                "archive_root": "benchmarks/CVRP/Mamut2026",
+                "archive_root": "benchmarks/CVRP/Poryos2026",
             },
             {
                 "scope": "problem_family",
@@ -56,7 +56,7 @@ def test_select_assets_filters_by_scope_and_family() -> None:
     cvrp_family_assets = manifest.select_assets(
         scope=ReleaseArchiveScope.PROBLEM_FAMILY,
         problem_type=ProblemType.CVRP,
-        benchmark_name=BenchmarkName.MAMUT_2026,
+        benchmark_name=BenchmarkName.PORYOS_2026,
     )
     vrptw_family_assets = manifest.select_assets(
         scope=ReleaseArchiveScope.PROBLEM_FAMILY,
@@ -65,7 +65,7 @@ def test_select_assets_filters_by_scope_and_family() -> None:
     )
 
     assert [asset.filename for asset in cvrp_family_assets] == [
-        "CVRP-Mamut2026-snapshot-2026-04-24-deadbee.zip"
+        "CVRP-Poryos2026-snapshot-2026-04-24-deadbee.zip"
     ]
     assert [asset.filename for asset in vrptw_family_assets] == [
         "VRPTW-Sintef2008-snapshot-2026-04-24-deadbee.zip"
@@ -77,24 +77,24 @@ def test_family_collection_scope_selects_by_benchmark_name() -> None:
     payload["assets"].append(
         {
             "scope": "family_collection",
-            "filename": "Mamut2026-collection-snapshot-2026-04-24-deadbee.zip",
-            "download_url": "https://example.invalid/Mamut2026-collection.zip",
+            "filename": "Poryos2026-collection-snapshot-2026-04-24-deadbee.zip",
+            "download_url": "https://example.invalid/Poryos2026-collection.zip",
             "problem_type": None,
-            "benchmark_name": "Mamut2026",
+            "benchmark_name": "Poryos2026",
             "checksum_sha256": "fed789",
             "size_bytes": 789,
-            "archive_root": "benchmarks/Mamut2026",
+            "archive_root": "benchmarks/Poryos2026",
         }
     )
     manifest = ReleaseArchiveManifest(**payload)
 
     collection_assets = manifest.select_assets(scope=ReleaseArchiveScope.FAMILY_COLLECTION)
     assert [asset.filename for asset in collection_assets] == [
-        "Mamut2026-collection-snapshot-2026-04-24-deadbee.zip"
+        "Poryos2026-collection-snapshot-2026-04-24-deadbee.zip"
     ]
     # A benchmark-name-only selection surfaces the collection alongside the
     # per-problem archives of the same family.
-    by_family = manifest.select_assets(benchmark_name=BenchmarkName.MAMUT_2026)
+    by_family = manifest.select_assets(benchmark_name=BenchmarkName.PORYOS_2026)
     assert {asset.scope for asset in by_family} == {
         ReleaseArchiveScope.PROBLEM_FAMILY,
         ReleaseArchiveScope.FAMILY_COLLECTION,

@@ -2,7 +2,7 @@
 
 One sidecar per (base, metric): the full ``(n+1) x (n+1)`` matrix of the
 ``fastest`` (free-flow travel times) or ``shortest`` (path lengths) metric,
-values rounded to the family's precision (Mamut2026: 3 decimals). Slim
+values rounded to the family's precision (Poryos2026: 3 decimals). Slim
 CVRP/VRPTW instances reference it by sha-pinned collection-relative path
 instead of embedding the matrix; the ``fastest`` sidecar of a base must equal
 the free-flow node-to-node times of its road-graph sidecar after the same

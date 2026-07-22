@@ -161,7 +161,7 @@ def test_solve_filters_by_derived_instance_id(tmp_path: Path, toy_cvrp_instance,
                 str(tmp_path),
                 "solve",
                 "--instance-id",
-                "vrptw-mamut2026-fastest-testville-n2-mamut-n2-testvrptw",
+                "vrptw-poryos2026-fastest-testville-n2-poryos-n2-testvrptw",
                 "--time-limit-s",
                 "1",
             ],
@@ -171,7 +171,7 @@ def test_solve_filters_by_derived_instance_id(tmp_path: Path, toy_cvrp_instance,
     assert mock_solve.call_count == 1
     selected_instance = mock_solve.call_args.args[0]
     assert selected_instance.instance_name == toy_vrptw_instance.instance_name
-    assert "vrptw-mamut2026-fastest-testville-n2-mamut-n2-testvrptw" in result.stdout
+    assert "vrptw-poryos2026-fastest-testville-n2-poryos-n2-testvrptw" in result.stdout
     assert toy_vrptw_instance.instance_name in result.stdout
 
 
@@ -392,7 +392,7 @@ def test_solve_does_not_warn_for_mamut_objective_choice(tmp_path: Path, toy_vrpt
             [
                 "--benchmarks-dir", str(tmp_path),
                 "solve",
-                "--benchmark-name", "Mamut2026",
+                "--benchmark-name", "Poryos2026",
                 "--objective", "hierarchicalvehiclecost",
                 "--time-limit-s", "1",
                 "--no-save-bks",

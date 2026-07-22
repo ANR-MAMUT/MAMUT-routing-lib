@@ -79,7 +79,7 @@ def build_instance_id(
     """Build a stable path-derived instance id for CLI/API selection.
 
     Historical layouts use problem/benchmark/size/name. Variant layouts include
-    metric and place to keep IDs unique across sibling MAMUT2026 variants.
+    metric and place to keep IDs unique across sibling Poryos2026 variants.
     Ortec2022-style layouts insert a ``subset`` segment between benchmark and
     size to keep IDs unique across the ``final``/``public`` partitions.
     """
@@ -132,9 +132,9 @@ class LayoutInfo:
       ``<problem>/<benchmark>/n=<N>/<file>.vrp.json``
     - 5-part subset-partitioned (e.g. Ortec2022):
       ``<problem>/<benchmark>/<subset>/n=<N>/<file>.vrp.json``
-    - 7-part Mamut2026 v1 (retired with the v1 family, still parsed):
+    - 7-part Poryos2026 v1 (retired with the v1 family, still parsed):
       ``<problem>/<benchmark>/<metric>/<place>/n=<N>/<instance_name>/<file>.vrp.json``
-    - family-first **collection** (marker-rooted, e.g. ``Mamut2026/``), paths
+    - family-first **collection** (marker-rooted, e.g. ``Poryos2026/``), paths
       relative to the collection root, parsed by ``parse_collection_layout``:
       ``<problem>/<metric>/<city>/n=<N>/<base>/<file>.vrp.json`` (CVRP/VRPTW)
       ``<problem>/<city>/n=<N>/<base>/<subinstance>/<file>.vrp.json`` (TD)
@@ -401,7 +401,7 @@ def load_benchmark_instance(instance_path: str | Path) -> "AnyBenchmarkInstance 
             return BenchmarkInstanceVRPTWCollection(**payload)
         return BenchmarkInstanceCVRPCollection(**payload)
     if (
-        payload.get("benchmark_name") == BenchmarkName.MAMUT_2026.value
+        payload.get("benchmark_name") == BenchmarkName.PORYOS_2026.value
         and "metadata" in payload
         and "service_times" not in payload
     ):
@@ -464,7 +464,7 @@ def resolve_arc_costs(
 def has_structured_metadata(instance: AnyBenchmarkInstance) -> bool:
     """Return True if the instance carries a validated InstanceMetadata payload.
 
-    BenchmarkInstanceCVRP always does. Unified BenchmarkInstance does for Mamut2026
+    BenchmarkInstanceCVRP always does. Unified BenchmarkInstance does for Poryos2026
     (pydantic Union resolves to InstanceMetadata when the structured fields match);
     historical Sintef/Dimacs instances carry a plain dict.
     """

@@ -17,10 +17,10 @@ _TOY_METADATA_CVRP = {
     "source_folder": "test",
     "num_vehicles_lb": 1,
     "artifact_paths": {
-        "vrp_json": "benchmarks/CVRP/Mamut2026/fastest/testville/n=2/mamut-n2-testcvrp/mamut-n2-testcvrp.vrp.json",
-        "vrp": "benchmarks/CVRP/Mamut2026/fastest/testville/n=2/mamut-n2-testcvrp/mamut-n2-testcvrp.vrp",
-        "meta": "benchmarks/CVRP/Mamut2026/sidecars/testville/n=2/mamut-n2-testcvrp/mamut-n2-testcvrp.meta.json",
-        "manifest": "benchmarks/CVRP/Mamut2026/sidecars/testville/n=2/mamut-n2-testcvrp/mamut-n2-testcvrp.manifest.json",
+        "vrp_json": "benchmarks/CVRP/Poryos2026/fastest/testville/n=2/poryos-n2-testcvrp/poryos-n2-testcvrp.vrp.json",
+        "vrp": "benchmarks/CVRP/Poryos2026/fastest/testville/n=2/poryos-n2-testcvrp/poryos-n2-testcvrp.vrp",
+        "meta": "benchmarks/CVRP/Poryos2026/sidecars/testville/n=2/poryos-n2-testcvrp/poryos-n2-testcvrp.meta.json",
+        "manifest": "benchmarks/CVRP/Poryos2026/sidecars/testville/n=2/poryos-n2-testcvrp/poryos-n2-testcvrp.manifest.json",
     },
 }
 
@@ -28,10 +28,10 @@ _TOY_METADATA_VRPTW = {
     **_TOY_METADATA_CVRP,
     "problem_type": "VRPTW",
     "artifact_paths": {
-        "vrp_json": "benchmarks/VRPTW/Mamut2026/fastest/testville/n=2/mamut-n2-testvrptw/mamut-n2-testvrptw.vrp.json",
-        "vrp": "benchmarks/VRPTW/Mamut2026/fastest/testville/n=2/mamut-n2-testvrptw/mamut-n2-testvrptw.vrp",
-        "meta": "benchmarks/VRPTW/Mamut2026/sidecars/testville/n=2/mamut-n2-testvrptw/mamut-n2-testvrptw.meta.json",
-        "manifest": "benchmarks/VRPTW/Mamut2026/sidecars/testville/n=2/mamut-n2-testvrptw/mamut-n2-testvrptw.manifest.json",
+        "vrp_json": "benchmarks/VRPTW/Poryos2026/fastest/testville/n=2/poryos-n2-testvrptw/poryos-n2-testvrptw.vrp.json",
+        "vrp": "benchmarks/VRPTW/Poryos2026/fastest/testville/n=2/poryos-n2-testvrptw/poryos-n2-testvrptw.vrp",
+        "meta": "benchmarks/VRPTW/Poryos2026/sidecars/testville/n=2/poryos-n2-testvrptw/poryos-n2-testvrptw.meta.json",
+        "manifest": "benchmarks/VRPTW/Poryos2026/sidecars/testville/n=2/poryos-n2-testvrptw/poryos-n2-testvrptw.manifest.json",
     },
 }
 
@@ -39,9 +39,9 @@ _TOY_METADATA_VRPTW = {
 @pytest.fixture
 def toy_cvrp_instance() -> BenchmarkInstanceCVRP:
     return BenchmarkInstanceCVRP(
-        instance_name="mamut-n2-testcvrp",
+        instance_name="poryos-n2-testcvrp",
         instance_origin="OsmCvrpGen",
-        benchmark_name="Mamut2026",
+        benchmark_name="Poryos2026",
         num_customers=2,
         vehicle_capacity=10,
         coordinates=[(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)],
@@ -59,9 +59,9 @@ def toy_cvrp_instance() -> BenchmarkInstanceCVRP:
 @pytest.fixture
 def toy_vrptw_instance() -> BenchmarkInstance:
     return BenchmarkInstance(
-        instance_name="mamut-n2-testvrptw",
+        instance_name="poryos-n2-testvrptw",
         instance_origin="OsmCvrpGen",
-        benchmark_name="Mamut2026",
+        benchmark_name="Poryos2026",
         num_customers=2,
         vehicle_capacity=10,
         coordinates=[(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)],

@@ -33,10 +33,10 @@ RELEASE_REPO = "ANR-MAMUT/MAMUT-routing"
 RELEASE_TAG = "snapshot-2026-05-22-28f9199"
 EXPECTED_SNAPSHOT_ID = "2026-05-22-28f9199"
 EXPECTED_ASSET_COUNT = 5
-TARGET_FILENAME = "CVRP-Mamut2026-snapshot-2026-05-22-28f9199.zip"
+TARGET_FILENAME = "CVRP-Poryos2026-snapshot-2026-05-22-28f9199.zip"
 
 
-def test_real_release_download_cvrp_mamut2026(tmp_path: Path) -> None:
+def test_real_release_download_cvrp_poryos2026(tmp_path: Path) -> None:
     client = GitHubReleaseClient(
         GitHubReleaseSource(repo_full_name=RELEASE_REPO, token=os.getenv("MAMUT_ROUTING_GITHUB_TOKEN"))
     )
@@ -49,7 +49,7 @@ def test_real_release_download_cvrp_mamut2026(tmp_path: Path) -> None:
     matching = manifest.select_assets(
         scope=ReleaseArchiveScope.PROBLEM_FAMILY,
         problem_type=ProblemType.CVRP,
-        benchmark_name=BenchmarkName.MAMUT_2026,
+        benchmark_name=BenchmarkName.PORYOS_2026,
     )
     assert len(matching) == 1
     asset = matching[0]
@@ -60,7 +60,7 @@ def test_real_release_download_cvrp_mamut2026(tmp_path: Path) -> None:
     extracted_dir = client.download_asset(asset, tmp_path, extract=True)
 
     assert extracted_dir.is_dir()
-    expected_subdir = extracted_dir / "benchmarks" / "CVRP" / "Mamut2026"
+    expected_subdir = extracted_dir / "benchmarks" / "CVRP" / "Poryos2026"
     assert expected_subdir.is_dir(), f"Expected directory missing: {expected_subdir}"
     extracted_files = list(expected_subdir.rglob("*"))
     assert any(p.is_file() for p in extracted_files), "Extracted archive contained no files"

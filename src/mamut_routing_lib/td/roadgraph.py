@@ -1,7 +1,7 @@
 """Road-network engine for the ``road-graph`` td model (format v2).
 
 Format v2 splits the v1 monolithic sidecar in two, mirroring the base /
-subinstance structure of the Mamut2026 family:
+subinstance structure of the Poryos2026 family:
 
 1. The **road-graph sidecar** (``<base>.road.json[.gz]``, format
    ``mamut-road-graph`` v2), one per base instance: the trimmed road subgraph
@@ -614,7 +614,7 @@ def free_flow_node_times(road: InstanceRoadGraph) -> list[list[float]]:
     One pinned Dijkstra per node; entry ``[i][j]`` is the free-flow time from
     node ``i`` to node ``j`` (0.0 on the diagonal). This is the reference the
     published ``distances-fastest`` sidecar must match (after the family's
-    rounding convention); this is the generation gate of the Mamut2026 collection.
+    rounding convention); this is the generation gate of the Poryos2026 collection.
     """
     adjacency = build_adjacency(road)
     matrix: list[list[float]] = []

@@ -8,13 +8,13 @@
     "assets": [
         {
             "scope": "problem_family",
-            "filename": "CVRP-Mamut2026-snapshot-2026-04-24-deadbee.zip",
-            "download_url": "https://example.invalid/CVRP-Mamut2026-snapshot-2026-04-24-deadbee.zip",
+            "filename": "CVRP-Poryos2026-snapshot-2026-04-24-deadbee.zip",
+            "download_url": "https://example.invalid/CVRP-Poryos2026-snapshot-2026-04-24-deadbee.zip",
             "problem_type": "CVRP",
-            "benchmark_name": "Mamut2026",
+            "benchmark_name": "Poryos2026",
             "checksum_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
             "size_bytes": 2048,
-            "archive_root": "benchmarks/CVRP/Mamut2026"
+            "archive_root": "benchmarks/CVRP/Poryos2026"
         },
         {
             "scope": "problem_family",

@@ -5,7 +5,7 @@ one benchmark family plus their shared ``sidecars/`` tree) marked by a
 ``mamut-collection.json`` file at its root. Instance files inside a collection
 reference their sidecars with paths **relative to the collection root**, each
 paired with the sha256 of the sidecar's uncompressed canonical JSON bytes.
-The Mamut2026 family (mounted at ``benchmarks/Mamut2026/``) is the first
+The Poryos2026 family (mounted at ``benchmarks/Poryos2026/``) is the first
 collection; historic families keep the problem-type-first layout and
 instance-relative sidecar paths.
 """

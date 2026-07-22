@@ -72,7 +72,7 @@ class GeoRoadCache:
     path from instance node ``i`` to instance node ``j`` (ordered pair,
     indices into ``vertex_lonlat``, at least two points). A complete cache
     covers all ordered pairs of the instance for every metric it carries;
-    completeness is a family policy (Mamut2026: n <= 100 only), not a format
+    completeness is a family policy (Poryos2026: n <= 100 only), not a format
     invariant.
     """
 

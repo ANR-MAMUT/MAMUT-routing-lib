@@ -55,7 +55,7 @@ def test_list_lists_filtered_with_summary(
 
     assert result.exit_code == 0, result.stdout + result.stderr
     assert "INSTANCE_NAME" in result.stdout
-    assert "cvrp-mamut2026-fastest-testville-n2-mamut-n2-testcvrp" in result.stdout
+    assert "cvrp-poryos2026-fastest-testville-n2-poryos-n2-testcvrp" in result.stdout
     assert toy_cvrp_instance.instance_name in result.stdout
     assert toy_vrptw_instance.instance_name not in result.stdout
     assert "PATH" not in result.stdout
@@ -121,7 +121,7 @@ def test_list_filters_by_derived_instance_id(tmp_path: Path, toy_cvrp_instance, 
             str(tmp_path),
             "list",
             "--instance-id",
-            "vrptw-mamut2026-fastest-testville-n2-mamut-n2-testvrptw",
+            "vrptw-poryos2026-fastest-testville-n2-poryos-n2-testvrptw",
             "--no-summary",
         ],
     )

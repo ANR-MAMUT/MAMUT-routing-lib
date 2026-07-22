@@ -35,7 +35,7 @@ ProgressCallback: TypeAlias = Callable[[int, int | None], None]
 class ReleaseArchiveScope(str, Enum):
     PROBLEM_FAMILY = "problem_family"
     #: One archive covering a whole family-first collection (all problem-type
-    #: variants + the shared sidecars tree), e.g. Mamut2026. ``benchmark_name``
+    #: variants + the shared sidecars tree), e.g. Poryos2026. ``benchmark_name``
     #: identifies the family; ``problem_type`` is None.
     FAMILY_COLLECTION = "family_collection"
 

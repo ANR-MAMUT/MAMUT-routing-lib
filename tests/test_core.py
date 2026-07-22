@@ -20,9 +20,9 @@ from mamut_routing_lib import (
 
 def make_cvrp_instance() -> BenchmarkInstanceCVRP:
     return BenchmarkInstanceCVRP(
-        instance_name="mamut-n2-testcvrp",
+        instance_name="poryos-n2-testcvrp",
         instance_origin="OsmCvrpGen",
-        benchmark_name="Mamut2026",
+        benchmark_name="Poryos2026",
         num_customers=2,
         vehicle_capacity=10,
         coordinates=[(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)],
@@ -45,10 +45,10 @@ def make_cvrp_instance() -> BenchmarkInstanceCVRP:
             "source_folder": "test",
             "num_vehicles_lb": 1,
             "artifact_paths": {
-                "vrp_json": "benchmarks/CVRP/Mamut2026/fastest/testville/n=2/mamut-n2-testcvrp/mamut-n2-testcvrp.vrp.json",
-                "vrp": "benchmarks/CVRP/Mamut2026/fastest/testville/n=2/mamut-n2-testcvrp/mamut-n2-testcvrp.vrp",
-                "meta": "benchmarks/CVRP/Mamut2026/sidecars/testville/n=2/mamut-n2-testcvrp/mamut-n2-testcvrp.meta.json",
-                "manifest": "benchmarks/CVRP/Mamut2026/sidecars/testville/n=2/mamut-n2-testcvrp/mamut-n2-testcvrp.manifest.json",
+                "vrp_json": "benchmarks/CVRP/Poryos2026/fastest/testville/n=2/poryos-n2-testcvrp/poryos-n2-testcvrp.vrp.json",
+                "vrp": "benchmarks/CVRP/Poryos2026/fastest/testville/n=2/poryos-n2-testcvrp/poryos-n2-testcvrp.vrp",
+                "meta": "benchmarks/CVRP/Poryos2026/sidecars/testville/n=2/poryos-n2-testcvrp/poryos-n2-testcvrp.meta.json",
+                "manifest": "benchmarks/CVRP/Poryos2026/sidecars/testville/n=2/poryos-n2-testcvrp/poryos-n2-testcvrp.manifest.json",
             },
         },
     )
@@ -56,9 +56,9 @@ def make_cvrp_instance() -> BenchmarkInstanceCVRP:
 
 def make_vrptw_instance() -> BenchmarkInstance:
     return BenchmarkInstance(
-        instance_name="mamut-n2-testvrptw",
+        instance_name="poryos-n2-testvrptw",
         instance_origin="OsmCvrpGen",
-        benchmark_name="Mamut2026",
+        benchmark_name="Poryos2026",
         num_customers=2,
         vehicle_capacity=10,
         coordinates=[(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)],
@@ -83,10 +83,10 @@ def make_vrptw_instance() -> BenchmarkInstance:
             "source_folder": "test",
             "num_vehicles_lb": 1,
             "artifact_paths": {
-                "vrp_json": "benchmarks/VRPTW/Mamut2026/fastest/testville/n=2/mamut-n2-testvrptw/mamut-n2-testvrptw.vrp.json",
-                "vrp": "benchmarks/VRPTW/Mamut2026/fastest/testville/n=2/mamut-n2-testvrptw/mamut-n2-testvrptw.vrp",
-                "meta": "benchmarks/VRPTW/Mamut2026/sidecars/testville/n=2/mamut-n2-testvrptw/mamut-n2-testvrptw.meta.json",
-                "manifest": "benchmarks/VRPTW/Mamut2026/sidecars/testville/n=2/mamut-n2-testvrptw/mamut-n2-testvrptw.manifest.json",
+                "vrp_json": "benchmarks/VRPTW/Poryos2026/fastest/testville/n=2/poryos-n2-testvrptw/poryos-n2-testvrptw.vrp.json",
+                "vrp": "benchmarks/VRPTW/Poryos2026/fastest/testville/n=2/poryos-n2-testvrptw/poryos-n2-testvrptw.vrp",
+                "meta": "benchmarks/VRPTW/Poryos2026/sidecars/testville/n=2/poryos-n2-testvrptw/poryos-n2-testvrptw.meta.json",
+                "manifest": "benchmarks/VRPTW/Poryos2026/sidecars/testville/n=2/poryos-n2-testvrptw/poryos-n2-testvrptw.manifest.json",
             },
         },
     )
@@ -94,25 +94,25 @@ def make_vrptw_instance() -> BenchmarkInstance:
 
 def test_discover_benchmark_instances_and_problem_specific_layout(tmp_path: Path) -> None:
     benchmark_root = tmp_path / "benchmarks"
-    cvrp_path = benchmark_root / "CVRP" / "Mamut2026" / "fastest" / "testville" / "n=2" / "mamut-n2-testcvrp" / "mamut-n2-testcvrp.vrp.json"
-    vrptw_path = benchmark_root / "VRPTW" / "Mamut2026" / "euclidean" / "testville" / "n=2" / "mamut-n2-testvrptw" / "mamut-n2-testvrptw.vrp.json"
+    cvrp_path = benchmark_root / "CVRP" / "Poryos2026" / "fastest" / "testville" / "n=2" / "poryos-n2-testcvrp" / "poryos-n2-testcvrp.vrp.json"
+    vrptw_path = benchmark_root / "VRPTW" / "Poryos2026" / "euclidean" / "testville" / "n=2" / "poryos-n2-testvrptw" / "poryos-n2-testvrptw.vrp.json"
     save_json_to_file(make_cvrp_instance().model_dump(mode="json"), cvrp_path)
     save_json_to_file(make_vrptw_instance().model_dump(mode="json"), vrptw_path)
 
-    discovered = discover_benchmark_instances(benchmark_root, benchmark_names=["Mamut2026"])
+    discovered = discover_benchmark_instances(benchmark_root, benchmark_names=["Poryos2026"])
 
     assert len(discovered) == 2
     assert {item.problem_type.value for item in discovered} == {"CVRP", "VRPTW"}
     assert {item.instance_id for item in discovered} == {
-        "cvrp-mamut2026-fastest-testville-n2-mamut-n2-testcvrp",
-        "vrptw-mamut2026-euclidean-testville-n2-mamut-n2-testvrptw",
+        "cvrp-poryos2026-fastest-testville-n2-poryos-n2-testcvrp",
+        "vrptw-poryos2026-euclidean-testville-n2-poryos-n2-testvrptw",
     }
-    assert {item.instance_name for item in discovered} == {"mamut-n2-testcvrp", "mamut-n2-testvrptw"}
+    assert {item.instance_name for item in discovered} == {"poryos-n2-testcvrp", "poryos-n2-testvrptw"}
 
 
 def test_cvrp_and_vrptw_checkers_validate_feasible_solutions() -> None:
-    cvrp_solution = BenchmarkSolution(instance_name="mamut-n2-testcvrp", routes=[[1, 2]], cost=14)
-    vrptw_solution = BenchmarkSolution(instance_name="mamut-n2-testvrptw", routes=[[1, 2]], cost=14)
+    cvrp_solution = BenchmarkSolution(instance_name="poryos-n2-testcvrp", routes=[[1, 2]], cost=14)
+    vrptw_solution = BenchmarkSolution(instance_name="poryos-n2-testvrptw", routes=[[1, 2]], cost=14)
 
     cvrp_check = check_cvrp_solution(make_cvrp_instance(), cvrp_solution)
     vrptw_check = check_vrptw_solution(make_vrptw_instance(), vrptw_solution)
@@ -125,7 +125,7 @@ def test_cvrp_and_vrptw_checkers_validate_feasible_solutions() -> None:
 
 def test_bks_replacement_only_happens_on_strict_improvement(tmp_path: Path) -> None:
     instance = make_cvrp_instance()
-    instance_path = tmp_path / "mamut-n2-testcvrp.vrp.json"
+    instance_path = tmp_path / "poryos-n2-testcvrp.vrp.json"
     save_json_to_file(instance.model_dump(mode="json"), instance_path)
 
     first_bks = create_bks_from_solution(
@@ -136,7 +136,7 @@ def test_bks_replacement_only_happens_on_strict_improvement(tmp_path: Path) -> N
     )
     created = save_bks_if_improved(instance, first_bks, instance_path)
     assert created.action == "created"
-    assert created.path.name == "mamut-n2-testcvrp.bks.MonoCost.json"
+    assert created.path.name == "poryos-n2-testcvrp.bks.MonoCost.json"
     assert first_bks.metadata["authors"] == DEFAULT_BKS_AUTHORS
 
     worse_bks = create_bks_from_solution(

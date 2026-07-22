@@ -227,7 +227,7 @@ AnyArcCostsSource = Annotated[
 class _SlimInstanceValidationMixin(BaseModel):
     """Static (CVRP/VRPTW) collection instance core: matrix by source, not embedded.
 
-    Collection instances (Mamut2026 v2) reference their arc-cost matrix
+    Collection instances (Poryos2026 v2) reference their arc-cost matrix
     through ``arc_costs_source`` instead of embedding it; use
     ``mamut_routing_lib.artifacts.resolve_arc_costs`` to hydrate the matrix.
     ``metric_variant`` names the metric slot the instance is published under.

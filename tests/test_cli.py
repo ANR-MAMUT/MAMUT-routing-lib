@@ -55,7 +55,7 @@ def test_cli_remote_list_renders_table_and_filters(manifest: ReleaseArchiveManif
 
     assert result.exit_code == 0, result.stdout + result.stderr
     assert "Snapshot 2026-04-24-deadbee" in result.stdout
-    assert "CVRP-Mamut2026-snapshot-2026-04-24-deadbee.zip" in result.stdout
+    assert "CVRP-Poryos2026-snapshot-2026-04-24-deadbee.zip" in result.stdout
     assert "VRPTW-Sintef2008-snapshot-2026-04-24-deadbee.zip" not in result.stdout
 
 
@@ -90,7 +90,7 @@ def test_cli_fetch_calls_download_asset_for_each_selected(tmp_path: Path, manife
     assert result.exit_code == 0, result.stdout + result.stderr
     assert fake_client.download_asset.call_count == 1
     called_asset = fake_client.download_asset.call_args.args[0]
-    assert called_asset.filename == "CVRP-Mamut2026-snapshot-2026-04-24-deadbee.zip"
+    assert called_asset.filename == "CVRP-Poryos2026-snapshot-2026-04-24-deadbee.zip"
     assert fake_client.download_asset.call_args.kwargs["extract"] is False
 
 
@@ -178,10 +178,10 @@ def test_cli_verify_classifies_ok_missing_mismatch(tmp_path: Path) -> None:
                 "filename": "ok.zip",
                 "download_url": "https://example.invalid/ok.zip",
                 "problem_type": "CVRP",
-                "benchmark_name": "Mamut2026",
+                "benchmark_name": "Poryos2026",
                 "checksum_sha256": ok_sha,
                 "size_bytes": len(ok_bytes),
-                "archive_root": "benchmarks/CVRP/Mamut2026",
+                "archive_root": "benchmarks/CVRP/Poryos2026",
             },
             {
                 "scope": "problem_family",
@@ -198,10 +198,10 @@ def test_cli_verify_classifies_ok_missing_mismatch(tmp_path: Path) -> None:
                 "filename": "missing.zip",
                 "download_url": "https://example.invalid/missing.zip",
                 "problem_type": "CVRP",
-                "benchmark_name": "Mamut2026",
+                "benchmark_name": "Poryos2026",
                 "checksum_sha256": "0" * 64,
                 "size_bytes": 1,
-                "archive_root": "benchmarks/CVRP/Mamut2026",
+                "archive_root": "benchmarks/CVRP/Poryos2026",
             },
         ],
     }

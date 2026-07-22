@@ -79,14 +79,14 @@ backed by the remote retrieval module:
 mamut-routing remote --repo ANR-MAMUT/MAMUT-routing list
 
 # Filter by problem-type/benchmark-name
-mamut-routing remote list --problem-type CVRP --benchmark-name Mamut2026
+mamut-routing remote list --problem-type CVRP --benchmark-name Poryos2026
 
 # Download (and extract) one or more archives into --benchmarks-dir
 mamut-routing --benchmarks-dir ./benchmarks remote \
-    fetch CVRP-Mamut2026-snapshot-2026-05-22-28f9199.zip
+    fetch CVRP-Poryos2026-snapshot-2026-05-22-28f9199.zip
 
 # Or fetch by filter:
-mamut-routing remote fetch --problem-type CVRP --benchmark-name Mamut2026
+mamut-routing remote fetch --problem-type CVRP --benchmark-name Poryos2026
 
 # Verify local zip checksums against the remote manifest
 mamut-routing --benchmarks-dir ./benchmarks remote verify
@@ -96,7 +96,7 @@ mamut-routing remote manifest | jq .snapshot_id
 ```
 
 Release archives are published at the problem-family level, for example
-`CVRP-Mamut2026` or `VRPTW-Sintef2008`. Extracted archives are placed in a
+`CVRP-Poryos2026` or `VRPTW-Sintef2008`. Extracted archives are placed in a
 directory named after the archive stem, containing the archived `benchmarks/...`
 tree.
 
@@ -144,7 +144,7 @@ CLI (requires `[cli,pyvrp]`):
 ```bash
 # Inspect what's locally available before solving
 mamut-routing --benchmarks-dir ./benchmarks list \
-    --problem-type CVRP --benchmark-name Mamut2026
+    --problem-type CVRP --benchmark-name Poryos2026
 
 # Include source file paths in the table when needed
 mamut-routing --benchmarks-dir ./benchmarks list --show-path
@@ -160,7 +160,7 @@ mamut-routing solve path/to/inst1.vrp.json path/to/inst2.vrp.json \
 
 # Or discover under --benchmarks-dir and filter
 mamut-routing --benchmarks-dir ./benchmarks solve \
-    --problem-type VRPTW --benchmark-name Mamut2026 \
+    --problem-type VRPTW --benchmark-name Poryos2026 \
     --objective hierarchical_vehicle_cost \
     --time-limit-s 60
 ```

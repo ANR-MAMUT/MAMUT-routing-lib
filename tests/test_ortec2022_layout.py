@@ -4,7 +4,7 @@ The Ortec2022 family introduces a new on-disk layout
 ``<problem>/<benchmark>/<subset>/n=<N>/<file>.vrp.json`` (the ``subset`` segment
 partitions the dataset into ``final``/``public``). It also requires
 ``license``/``license_url`` to be carried on the typed ``InstanceMetadata`` (so
-that Mamut2026-style instances can advertise a license too), while preserving
+that Poryos2026-style instances can advertise a license too), while preserving
 the historical free-form ``metadata`` dict path for historical instances.
 
 We avoid checking in the upstream 1k+-line TXT fixtures here. Instead, we build

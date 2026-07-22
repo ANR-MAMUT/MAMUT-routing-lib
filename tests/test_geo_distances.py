@@ -49,8 +49,8 @@ def make_geo(*, with_cache: bool = True) -> InstanceGeo:
             },
         )
     return InstanceGeo(
-        base_name="mamut-toy",
-        benchmark_name="Mamut2026",
+        base_name="poryos-toy",
+        benchmark_name="Poryos2026",
         city="toyville",
         method="hyb",
         source_osm_file="toyville.osm.pbf",
@@ -128,8 +128,8 @@ class TestGeoSidecar:
 
 def make_distances() -> InstanceDistances:
     return InstanceDistances(
-        base_name="mamut-toy",
-        benchmark_name="Mamut2026",
+        base_name="poryos-toy",
+        benchmark_name="Poryos2026",
         metric="fastest",
         num_customers=2,
         values=[[0.0, 100.0, 200.0], [100.0, 0.0, 100.0], [200.0, 100.0, 0.0]],

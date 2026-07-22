@@ -198,12 +198,12 @@ def _make_archive_asset(*, filename: str, sha256: str, size_bytes: int, download
         benchmark_name=None,
         checksum_sha256=sha256,
         size_bytes=size_bytes,
-        archive_root="benchmarks/CVRP/Mamut2026",
+        archive_root="benchmarks/CVRP/Poryos2026",
     )
 
 
 def test_download_asset_writes_file_and_verifies_sha256(tmp_path: Path) -> None:
-    zip_bytes = _build_zip_bytes({"benchmarks/CVRP/Mamut2026/instance_0001.vrp.json": b"{\"id\": 1}"})
+    zip_bytes = _build_zip_bytes({"benchmarks/CVRP/Poryos2026/instance_0001.vrp.json": b"{\"id\": 1}"})
     fake_path = tmp_path / "src" / "asset.zip"
     fake_path.parent.mkdir(parents=True)
     fake_path.write_bytes(zip_bytes)
@@ -211,7 +211,7 @@ def test_download_asset_writes_file_and_verifies_sha256(tmp_path: Path) -> None:
 
     download_url = "https://example.invalid/asset.zip"
     asset = _make_archive_asset(
-        filename="CVRP-Mamut2026-snapshot-2026-04-24-deadbee.zip",
+        filename="CVRP-Poryos2026-snapshot-2026-04-24-deadbee.zip",
         sha256=expected_sha,
         size_bytes=len(zip_bytes),
         download_url=download_url,
@@ -247,14 +247,14 @@ def test_download_asset_sha256_mismatch_raises_value_error(tmp_path: Path) -> No
 
 def test_download_asset_extracts_zip_to_named_subdirectory(tmp_path: Path) -> None:
     zip_files = {
-        "benchmarks/CVRP/Mamut2026/instance_0001.vrp.json": b"{\"id\": 1}",
-        "benchmarks/CVRP/Mamut2026/instance_0002.vrp.json": b"{\"id\": 2}",
+        "benchmarks/CVRP/Poryos2026/instance_0001.vrp.json": b"{\"id\": 1}",
+        "benchmarks/CVRP/Poryos2026/instance_0002.vrp.json": b"{\"id\": 2}",
     }
     zip_bytes = _build_zip_bytes(zip_files)
     sha256 = __import__("hashlib").sha256(zip_bytes).hexdigest()
     download_url = "https://example.invalid/asset.zip"
     asset = _make_archive_asset(
-        filename="CVRP-Mamut2026-snapshot-x.zip",
+        filename="CVRP-Poryos2026-snapshot-x.zip",
         sha256=sha256,
         size_bytes=len(zip_bytes),
         download_url=download_url,
@@ -268,7 +268,7 @@ def test_download_asset_extracts_zip_to_named_subdirectory(tmp_path: Path) -> No
         )
 
     assert result.is_dir()
-    assert result.name == "CVRP-Mamut2026-snapshot-x"
+    assert result.name == "CVRP-Poryos2026-snapshot-x"
     for path_in_zip in zip_files:
         assert (result / path_in_zip).is_file()
 

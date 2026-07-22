@@ -69,8 +69,8 @@ VERTEX_LONLAT = [(4.84, 45.76), (4.85, 45.76), (4.84, 45.77), (4.85, 45.77)]
 
 def make_road_graph(*, tolerance: float = 0.0, extension_end: float = EXTENSION_END) -> InstanceRoadGraph:
     return InstanceRoadGraph(
-        base_name="mamut-toy",
-        benchmark_name="Mamut2026",
+        base_name="poryos-toy",
+        benchmark_name="Poryos2026",
         num_customers=2,
         horizon=HORIZON,
         extension_end=extension_end,
@@ -88,8 +88,8 @@ def make_road_graph(*, tolerance: float = 0.0, extension_end: float = EXTENSION_
 
 def make_overlay() -> TrafficOverlay:
     return TrafficOverlay(
-        base_name="mamut-toy",
-        benchmark_name="Mamut2026",
+        base_name="poryos-toy",
+        benchmark_name="Poryos2026",
         traffic_model="wave",
         intensity="heavy",
         bin_edges=list(BIN_EDGES),
@@ -103,13 +103,13 @@ def road_instance_payload(
     overlay: TrafficOverlay,
     *,
     with_time_windows: bool = True,
-    graph_path: str = "sidecars/mamut-toy/mamut-toy.road.json",
-    traffic_path: str = "sidecars/mamut-toy/mamut-toy.traffic-wave-heavy.json",
+    graph_path: str = "sidecars/poryos-toy/poryos-toy.road.json",
+    traffic_path: str = "sidecars/poryos-toy/poryos-toy.traffic-wave-heavy.json",
 ) -> dict:
     payload = {
-        "instance_name": "mamut-toy-wave-heavy",
+        "instance_name": "poryos-toy-wave-heavy",
         "instance_origin": "OsmCvrpGen",
-        "benchmark_name": "Mamut2026",
+        "benchmark_name": "Poryos2026",
         "num_customers": 2,
         "num_vehicles": None,
         "vehicle_capacity": 10,
@@ -125,7 +125,7 @@ def road_instance_payload(
             "sample_step": road.sample_step,
             "simplify_tolerance": road.simplify_tolerance,
         },
-        "metadata": {"base_instance_name": "mamut-toy", "subinstance": "wave-heavy"},
+        "metadata": {"base_instance_name": "poryos-toy", "subinstance": "wave-heavy"},
     }
     if with_time_windows:
         payload["time_windows"] = [[0, 300], [0, 300], [0, 300]]
@@ -134,12 +134,12 @@ def road_instance_payload(
 
 def write_collection_files(directory, *, gzip_sidecars: bool = False, with_time_windows: bool = True):
     """A minimal marker-rooted collection: one TD instance + its two sidecars."""
-    save_collection_marker(CollectionMarker(family="Mamut2026"), directory)
+    save_collection_marker(CollectionMarker(family="Poryos2026"), directory)
     road = make_road_graph()
     overlay = make_overlay()
     suffix = ".gz" if gzip_sidecars else ""
-    graph_path = f"sidecars/mamut-toy/mamut-toy.road.json{suffix}"
-    traffic_path = f"sidecars/mamut-toy/mamut-toy.traffic-wave-heavy.json{suffix}"
+    graph_path = f"sidecars/poryos-toy/poryos-toy.road.json{suffix}"
+    traffic_path = f"sidecars/poryos-toy/poryos-toy.traffic-wave-heavy.json{suffix}"
     save_instance_road_graph(road, directory / graph_path)
     save_traffic_overlay(overlay, directory / traffic_path)
 
@@ -154,8 +154,8 @@ def write_collection_files(directory, *, gzip_sidecars: bool = False, with_time_
     payload["td"]["atf_sha256"] = compute_atf_sha256(
         materialize_instance_atfs_roadgraph(instance, road, overlay)
     )
-    instance_dir = directory / "TDVRPTW" / "toyville" / "n=2" / "mamut-toy" / "wave-heavy"
-    instance_path = instance_dir / "mamut-toy-wave-heavy.vrp.json"
+    instance_dir = directory / "TDVRPTW" / "toyville" / "n=2" / "poryos-toy" / "wave-heavy"
+    instance_path = instance_dir / "poryos-toy-wave-heavy.vrp.json"
     save_json_to_file(payload, instance_path)
     return instance_path
 
@@ -226,7 +226,7 @@ class TestPinnedDijkstra:
         # through vertex 1 and never revise it.
         road = InstanceRoadGraph(
             base_name="tie",
-            benchmark_name="Mamut2026",
+            benchmark_name="Poryos2026",
             num_customers=1,
             horizon=HORIZON,
             extension_end=EXTENSION_END,
@@ -597,8 +597,8 @@ class TestLoader:
         loaded = load_td_instance(instance_path, verify_sha256=True)
         assert loaded.atf_path is None
         assert loaded.road_graph_path is not None
-        assert loaded.road_graph_path.name == "mamut-toy.road.json"
-        assert loaded.traffic_path.name == "mamut-toy.traffic-wave-heavy.json"
+        assert loaded.road_graph_path.name == "poryos-toy.road.json"
+        assert loaded.traffic_path.name == "poryos-toy.traffic-wave-heavy.json"
         assert loaded.collection_root == tmp_path
         assert len(loaded.atfs.arcs) == 6
         assert loaded.atfs.generator == {"name": "road-graph-materializer", "version": 2}
@@ -606,8 +606,8 @@ class TestLoader:
     def test_load_gzip_sidecars(self, tmp_path):
         instance_path = write_collection_files(tmp_path, gzip_sidecars=True)
         loaded = load_td_instance(instance_path, verify_sha256=True)
-        assert loaded.road_graph_path.name == "mamut-toy.road.json.gz"
-        assert loaded.traffic_path.name == "mamut-toy.traffic-wave-heavy.json.gz"
+        assert loaded.road_graph_path.name == "poryos-toy.road.json.gz"
+        assert loaded.traffic_path.name == "poryos-toy.traffic-wave-heavy.json.gz"
 
     def test_tdvrp_twin_loads(self, tmp_path):
         instance_path = write_collection_files(tmp_path, with_time_windows=False)
