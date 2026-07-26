@@ -1,9 +1,18 @@
-"""Canonical Duration checker for TDVRPTW / TDVRP solutions.
+"""Canonical checker for TDVRPTW / TDVRP solutions (Duration objectives).
 
-The checker is the authoritative definition of the Duration objective: BKS
-costs are whatever this pure-Python, fully deterministic implementation
-computes on the canonical instance artifacts. All arithmetic is plain IEEE-754
-double precision with exact comparisons — no epsilon thresholds anywhere.
+The checker is the authoritative definition of the TD objectives: BKS costs
+are whatever this pure-Python, fully deterministic implementation computes on
+the canonical instance artifacts. All arithmetic is plain IEEE-754 double
+precision with exact comparisons — no epsilon thresholds anywhere.
+
+Two objectives are supported. ``Duration`` is the historical one: the sum of
+per-route optimal durations. ``FleetCostDuration`` (Plan 11, Blauth2024) adds
+a per-used-vehicle fixed cost: the same canonical-order duration fold, then a
+single ``+ fleet_fixed_cost * num_routes`` (one IEEE-754 multiply and one
+add), where ``fleet_fixed_cost`` is the instance's normative field in the
+instance's time unit. Scoring ``FleetCostDuration`` on an instance without
+that field raises; scoring ``Duration`` on an instance that carries it is
+legal (the field is simply ignored).
 
 Route evaluation composes, sequentially and left-to-right, the arc
 arrival-time functions ``α`` and vertex ready-time functions ``θ`` into the
@@ -22,10 +31,37 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict
 
 from mamut_routing_lib.checker import SolutionCheckStatus
+from mamut_routing_lib.enums import ObjectiveFunction
 from mamut_routing_lib.models import BenchmarkBKS, BenchmarkSolution
 from mamut_routing_lib.td.artifacts import InstanceATFs, LoadedTDInstance
 from mamut_routing_lib.td.models import AnyTDBenchmarkInstance, BenchmarkInstanceTDVRPTW
 from mamut_routing_lib.td.pwlf import NDCPWLF, make_theta
+
+#: Objectives the TD checker can score. Everything else is a static-checker
+#: concern and is refused loudly.
+TD_OBJECTIVES = (ObjectiveFunction.DURATION, ObjectiveFunction.FLEET_COST_DURATION)
+
+
+def _fleet_fixed_cost_for(
+    instance: AnyTDBenchmarkInstance,
+    objective_function: ObjectiveFunction,
+) -> float | None:
+    """Resolve the fixed-cost term of ``objective_function`` on ``instance``.
+
+    Returns ``None`` for ``Duration`` (no term), the instance's
+    ``fleet_fixed_cost`` for ``FleetCostDuration``, and raises on any other
+    objective or when the required field is missing.
+    """
+    if objective_function == ObjectiveFunction.DURATION:
+        return None
+    if objective_function == ObjectiveFunction.FLEET_COST_DURATION:
+        if instance.fleet_fixed_cost is None:
+            raise ValueError(
+                f"Instance {instance.instance_name} has no fleet_fixed_cost; "
+                "the FleetCostDuration objective requires it"
+            )
+        return float(instance.fleet_fixed_cost)
+    raise ValueError(f"The TD checker only scores {[o.value for o in TD_OBJECTIVES]}, got {objective_function!r}")
 
 
 class TDRouteEvaluation(BaseModel):
@@ -134,8 +170,15 @@ def compute_solution_cost(
     instance: AnyTDBenchmarkInstance,
     atfs: InstanceATFs,
     routes: list[list[int]],
+    objective_function: ObjectiveFunction = ObjectiveFunction.DURATION,
 ) -> float:
-    """Total Duration, summed in canonical route order. Raises on infeasible routes."""
+    """Total cost under ``objective_function``, canonical route order.
+
+    Duration: sum of per-route durations. FleetCostDuration: the same fold,
+    then a single ``+ fleet_fixed_cost * len(routes)``. Raises on infeasible
+    routes and on a missing ``fleet_fixed_cost``.
+    """
+    fleet_fixed_cost = _fleet_fixed_cost_for(instance, objective_function)
     total = 0.0
     for route in canonical_route_order(routes):
         evaluation = compute_route_duration(instance, atfs, route)
@@ -143,17 +186,30 @@ def compute_solution_cost(
             raise ValueError(f"route {route} is time-infeasible")
         assert evaluation.duration is not None
         total += evaluation.duration
+    if fleet_fixed_cost is not None:
+        total += fleet_fixed_cost * len(routes)
     return total
 
 
 def check_td_solution(
     loaded: LoadedTDInstance,
     solution: BenchmarkSolution | BenchmarkBKS,
+    objective_function: ObjectiveFunction = ObjectiveFunction.DURATION,
 ) -> TDSolutionCheckResult:
     instance = loaded.instance
     atfs = loaded.atfs
     routes = solution.routes
     is_tdvrptw = isinstance(instance, BenchmarkInstanceTDVRPTW)
+
+    # Contract misuse guards, not solution defects: raise instead of returning
+    # an invalid result.
+    fleet_fixed_cost = _fleet_fixed_cost_for(instance, objective_function)
+    declared_objective = getattr(solution, "objective_function", None)
+    if declared_objective is not None and declared_objective != objective_function:
+        raise ValueError(
+            f"Solution declares objective {declared_objective!r} but the check "
+            f"was requested for {objective_function!r}"
+        )
 
     served_customers: set[int] = set()
     for route in routes:
@@ -209,11 +265,14 @@ def check_td_solution(
     for evaluation in sorted(evaluations, key=lambda item: item.route[0]):
         assert evaluation.duration is not None
         total += evaluation.duration
+    if fleet_fixed_cost is not None:
+        total += fleet_fixed_cost * len(routes)
 
     if solution.cost is not None and solution.cost != total:
         return TDSolutionCheckResult.make_invalid(
             SolutionCheckStatus.OBJECTIVE_VALUE_MISMATCH,
-            f"Provided cost {solution.cost!r} does not match computed Duration {total!r}.",
+            f"Provided cost {solution.cost!r} does not match computed "
+            f"{objective_function.value} {total!r}.",
         )
 
     return TDSolutionCheckResult(

@@ -186,6 +186,7 @@ class _TDInstanceValidationMixin(BaseModel):
     depot: int = Field(default=0, ge=0)
     reference_lla: ReferenceLLA | None = None
     horizon: tuple[int | float, int | float]
+    fleet_fixed_cost: int | float | None = None
     td: AnyTDTravelModelRef
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -219,6 +220,16 @@ class _TDInstanceValidationMixin(BaseModel):
     def validate_horizon(cls, value: tuple[int | float, int | float]) -> tuple[int | float, int | float]:
         if value[0] >= value[1]:
             raise ValueError("horizon must be a non-empty interval [start, end]")
+        return value
+
+    @field_validator("fleet_fixed_cost")
+    @classmethod
+    def validate_fleet_fixed_cost(cls, value: int | float | None) -> int | float | None:
+        # Normative per-used-vehicle fixed cost of the FleetCostDuration
+        # objective, in the instance's time unit; None on families that only
+        # score Duration.
+        if value is not None and not value >= 0:
+            raise ValueError(f"fleet_fixed_cost must be >= 0, got {value!r}")
         return value
 
     @model_validator(mode="after")

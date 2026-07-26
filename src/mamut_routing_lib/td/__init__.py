@@ -41,6 +41,7 @@ from mamut_routing_lib.td.igp import (
     save_instance_categories,
 )
 from mamut_routing_lib.td.checker import (
+    TD_OBJECTIVES,
     TDRouteEvaluation,
     TDSolutionCheckResult,
     canonical_route_order,
@@ -143,6 +144,7 @@ __all__ = [
     "build_arc_atf",
     "canonical_route_order",
     "categories_to_canonical_json_bytes",
+    "TD_OBJECTIVES",
     "check_td_solution",
     "compute_atf_sha256",
     "compute_categories_sha256",

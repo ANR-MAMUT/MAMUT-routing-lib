@@ -192,7 +192,14 @@ def get_objective_tuple(
     cost: int | float,
     objective_function: ObjectiveFunction,
 ) -> tuple[int | float, ...]:
-    if objective_function in (ObjectiveFunction.MONO_COST, ObjectiveFunction.DURATION):
+    if objective_function in (
+        ObjectiveFunction.MONO_COST,
+        ObjectiveFunction.DURATION,
+        ObjectiveFunction.FLEET_COST_DURATION,
+    ):
+        # Mono-objective: for FleetCostDuration the vehicle count is already
+        # priced into the cost (duration + fleet_fixed_cost * num_routes), so
+        # there is no lexicographic tier.
         return (cost,)
     return (len(routes), cost)
 

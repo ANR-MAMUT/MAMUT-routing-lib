@@ -3,8 +3,9 @@
 The generic :mod:`mamut_routing_lib.bks` helpers go through the static
 ``check_solution``, which refuses TD instances. These mirrors validate and
 price candidates with the canonical TD checker (:func:`check_td_solution`)
-instead. The objective is always :attr:`ObjectiveFunction.DURATION` — the only
-objective the TD standard stores BKS for — and the stored cost is always the
+instead. The objective defaults to :attr:`ObjectiveFunction.DURATION`;
+families whose contract is :attr:`ObjectiveFunction.FLEET_COST_DURATION`
+(Blauth2024) pass it explicitly. Either way the stored cost is always the
 checker's canonical value.
 """
 
@@ -20,7 +21,7 @@ from mamut_routing_lib.checker import is_better_solution
 from mamut_routing_lib.enums import ObjectiveFunction
 from mamut_routing_lib.models import BenchmarkBKS, BenchmarkSolution, OptimalityMetadata
 from mamut_routing_lib.td.artifacts import LoadedTDInstance, load_td_instance
-from mamut_routing_lib.td.checker import check_td_solution
+from mamut_routing_lib.td.checker import TD_OBJECTIVES, check_td_solution
 
 
 def _as_loaded(instance: LoadedTDInstance | str | Path) -> LoadedTDInstance:
@@ -29,22 +30,33 @@ def _as_loaded(instance: LoadedTDInstance | str | Path) -> LoadedTDInstance:
     return load_td_instance(instance)
 
 
+def _validate_td_objective(objective_function: ObjectiveFunction) -> ObjectiveFunction:
+    if objective_function not in TD_OBJECTIVES:
+        raise ValueError(
+            f"TD BKS store only supports {[o.value for o in TD_OBJECTIVES]}, got {objective_function!r}"
+        )
+    return objective_function
+
+
 def create_td_bks_from_solution(
     loaded: LoadedTDInstance | str | Path,
     solution: BenchmarkSolution,
     *,
     authors: str,
     metadata: dict[str, Any] | None = None,
+    objective_function: ObjectiveFunction = ObjectiveFunction.DURATION,
 ) -> BenchmarkBKS:
-    """Validate ``solution`` with the TD checker and wrap it as a Duration BKS.
+    """Validate ``solution`` with the TD checker and wrap it as a BKS.
 
-    The BKS cost is the checker's canonical value. If ``solution.cost`` is set,
-    ``check_td_solution`` itself rejects any deviation from that value (exact
-    doubles, no tolerance), so a solver that disagrees with the reference
-    checker can never write to the BKS store.
+    The BKS cost is the checker's canonical value under
+    ``objective_function``. If ``solution.cost`` is set, ``check_td_solution``
+    itself rejects any deviation from that value (exact doubles, no
+    tolerance), so a solver that disagrees with the reference checker can
+    never write to the BKS store.
     """
     loaded = _as_loaded(loaded)
-    check_result = check_td_solution(loaded, solution)
+    _validate_td_objective(objective_function)
+    check_result = check_td_solution(loaded, solution, objective_function)
     if not check_result.is_valid():
         raise ValueError(f"Cannot create BKS from invalid TD solution: {check_result.error_message}")
 
@@ -58,7 +70,7 @@ def create_td_bks_from_solution(
     merged_metadata.setdefault("date", datetime.now(UTC).replace(tzinfo=None).isoformat(timespec="seconds"))
     return BenchmarkBKS(
         instance_name=loaded.instance.instance_name,
-        objective_function=ObjectiveFunction.DURATION,
+        objective_function=objective_function,
         routes=solution.routes,
         cost=check_result.routing_cost,
         metadata=merged_metadata,
@@ -71,17 +83,23 @@ def save_td_solution_as_bks_if_improved(
     *,
     authors: str,
     metadata: dict[str, Any] | None = None,
+    objective_function: ObjectiveFunction = ObjectiveFunction.DURATION,
 ) -> BKSUpdateResult:
-    """TD counterpart of ``save_solution_as_bks_if_improved`` (Duration only).
+    """TD counterpart of ``save_solution_as_bks_if_improved``.
 
-    The candidate and any stored BKS are both validated by the TD checker; the
-    stored file is replaced only on a strict Duration improvement. Accepts a
-    :class:`LoadedTDInstance` directly so callers that already hold the loaded
-    instance (solvers, sweep runners) avoid re-reading the ATF sidecar.
+    The candidate and any stored BKS are both validated by the TD checker
+    under ``objective_function``; the stored file is replaced only on a strict
+    improvement. Each objective has its own store file
+    (``<Name>.bks.<Objective>.json``). Accepts a :class:`LoadedTDInstance`
+    directly so callers that already hold the loaded instance (solvers, sweep
+    runners) avoid re-reading the ATF sidecar.
     """
     loaded = _as_loaded(loaded)
-    bks = create_td_bks_from_solution(loaded, solution, authors=authors, metadata=metadata)
-    bks_path = get_bks_path_for_instance(loaded.instance_path, ObjectiveFunction.DURATION)
+    _validate_td_objective(objective_function)
+    bks = create_td_bks_from_solution(
+        loaded, solution, authors=authors, metadata=metadata, objective_function=objective_function
+    )
+    bks_path = get_bks_path_for_instance(loaded.instance_path, objective_function)
     existing_path = bks_path if bks_path.exists() else None
 
     candidate_cost = bks.cost if bks.cost is not None else float("inf")
@@ -97,7 +115,7 @@ def save_td_solution_as_bks_if_improved(
         )
 
     existing_bks = load_bks(existing_path)
-    existing_check = check_td_solution(loaded, existing_bks)
+    existing_check = check_td_solution(loaded, existing_bks, objective_function)
     if not existing_check.is_valid():
         raise ValueError(f"Stored BKS is invalid at {existing_path}: {existing_check.error_message}")
 
@@ -107,7 +125,7 @@ def save_td_solution_as_bks_if_improved(
         candidate_cost,
         existing_bks.routes,
         existing_cost,
-        ObjectiveFunction.DURATION,
+        objective_function,
     ):
         save_bks(bks, bks_path)
         return BKSUpdateResult(
@@ -138,28 +156,30 @@ OPTIMALITY_COST_TOLERANCE = 1e-6
 def annotate_td_bks_optimality(
     loaded: LoadedTDInstance | str | Path,
     optimality: OptimalityMetadata | dict[str, Any],
+    objective_function: ObjectiveFunction = ObjectiveFunction.DURATION,
 ) -> Path:
-    """Stamp the stored Duration BKS of ``loaded`` with an optimality proof.
+    """Stamp the stored BKS of ``loaded`` with an optimality proof.
 
-    The stored BKS is re-validated by the TD checker before being rewritten
-    with ``metadata["optimality"]`` set. When the stamp declares a
-    ``proven_optimum``, it must match the stored cost: an absolute difference
-    beyond :data:`OPTIMALITY_COST_TOLERANCE` raises, and a dust-level
-    difference is accepted only when the stamp's ``note`` explains it.
-    Everything else in the stored file (routes, cost, authorship, other
-    metadata) is left untouched — the proof stamp records who *proved* the
-    solution optimal, which is independent of who *found* it.
+    The stored BKS (of ``objective_function``'s store file) is re-validated by
+    the TD checker before being rewritten with ``metadata["optimality"]`` set.
+    When the stamp declares a ``proven_optimum``, it must match the stored
+    cost: an absolute difference beyond :data:`OPTIMALITY_COST_TOLERANCE`
+    raises, and a dust-level difference is accepted only when the stamp's
+    ``note`` explains it. Everything else in the stored file (routes, cost,
+    authorship, other metadata) is left untouched — the proof stamp records
+    who *proved* the solution optimal, which is independent of who *found* it.
     """
     loaded = _as_loaded(loaded)
+    _validate_td_objective(objective_function)
     if not isinstance(optimality, OptimalityMetadata):
         optimality = OptimalityMetadata.model_validate(optimality)
 
-    bks_path = get_bks_path_for_instance(loaded.instance_path, ObjectiveFunction.DURATION)
+    bks_path = get_bks_path_for_instance(loaded.instance_path, objective_function)
     if not bks_path.exists():
-        raise FileNotFoundError(f"No stored Duration BKS to annotate at {bks_path}")
+        raise FileNotFoundError(f"No stored {objective_function.value} BKS to annotate at {bks_path}")
 
     existing_bks = load_bks(bks_path)
-    existing_check = check_td_solution(loaded, existing_bks)
+    existing_check = check_td_solution(loaded, existing_bks, objective_function)
     if not existing_check.is_valid():
         raise ValueError(f"Stored BKS is invalid at {bks_path}: {existing_check.error_message}")
 

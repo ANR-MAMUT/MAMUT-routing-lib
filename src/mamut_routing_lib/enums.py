@@ -11,6 +11,7 @@ class BenchmarkName(str, Enum):
     VU_2020 = "Vu2020"
     RIFKI_2020 = "Rifki2020"
     LERA_2026 = "Lera2026"
+    BLAUTH_2024 = "Blauth2024"
 
 
 class InstanceOrigin(str, Enum):
@@ -20,6 +21,7 @@ class InstanceOrigin(str, Enum):
     ORTEC_2022 = "Ortec2022"
     ARI_2018 = "Ari2018"
     RIFKI_2020 = "Rifki2020"
+    BLAUTH_2024 = "Blauth2024"
 
 
 class ProblemType(str, Enum):
@@ -39,3 +41,4 @@ class ObjectiveFunction(str, Enum):
     HIERARCHICAL_VEHICLE_COST = "HierarchicalVehicleCost"
     MONO_COST = "MonoCost"
     DURATION = "Duration"
+    FLEET_COST_DURATION = "FleetCostDuration"

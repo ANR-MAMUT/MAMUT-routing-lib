@@ -16,7 +16,7 @@ It provides:
 
 - historical VRPTW benchmark models
 - generated CVRP and VRPTW benchmark models
-- time-dependent (TDVRPTW/TDVRP) benchmark models with arrival-time-function sidecars and an exact, epsilon-free Duration checker (`mamut_routing_lib.td`)
+- time-dependent (TDVRPTW/TDVRP) benchmark models with arrival-time-function sidecars and an exact, epsilon-free checker for the Duration and FleetCostDuration objectives (`mamut_routing_lib.td`; FleetCostDuration = duration + `fleet_fixed_cost` per used vehicle, the Blauth2024 contract)
 - local benchmark discovery and JSON I/O
 - solution checking
 - BKS creation and replacement logic

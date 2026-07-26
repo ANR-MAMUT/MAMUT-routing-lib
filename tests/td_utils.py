@@ -47,13 +47,18 @@ def make_toy_atfs() -> InstanceATFs:
     )
 
 
-def toy_instance_payload(*, with_time_windows: bool = True) -> dict:
+def toy_instance_payload(
+    *,
+    with_time_windows: bool = True,
+    fleet_fixed_cost: float | None = None,
+    num_vehicles: int | None = 2,
+) -> dict:
     payload = {
         "instance_name": "TOY1",
         "instance_origin": "Solomon1987",
         "benchmark_name": "Dabia2013",
         "num_customers": 2,
-        "num_vehicles": 2,
+        "num_vehicles": num_vehicles,
         "vehicle_capacity": 10,
         "coordinates": [[0, 0], [1, 0], [1, 1]],
         "demands": [0, 4, 4],
@@ -65,6 +70,8 @@ def toy_instance_payload(*, with_time_windows: bool = True) -> dict:
     }
     if with_time_windows:
         payload["time_windows"] = [[0, 100], [0, 100], [0, 100]]
+    if fleet_fixed_cost is not None:
+        payload["fleet_fixed_cost"] = fleet_fixed_cost
     return payload
 
 
@@ -73,13 +80,19 @@ def write_toy_instance_files(
     *,
     with_time_windows: bool = True,
     gzip_sidecar: bool = False,
+    fleet_fixed_cost: float | None = None,
+    num_vehicles: int | None = 2,
 ) -> Path:
     """Write TOY1.vrp.json + sidecar into ``directory``; return the instance path."""
     atfs = make_toy_atfs()
     sidecar_name = "TOY1.atf.json.gz" if gzip_sidecar else "TOY1.atf.json"
     save_instance_atfs(atfs, directory / sidecar_name)
 
-    payload = toy_instance_payload(with_time_windows=with_time_windows)
+    payload = toy_instance_payload(
+        with_time_windows=with_time_windows,
+        fleet_fixed_cost=fleet_fixed_cost,
+        num_vehicles=num_vehicles,
+    )
     payload["td"]["atf_path"] = sidecar_name
     payload["td"]["atf_sha256"] = compute_atf_sha256(atfs)
     instance_path = directory / "TOY1.vrp.json"
