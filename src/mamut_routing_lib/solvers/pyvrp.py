@@ -7,6 +7,7 @@ Importing this module requires the `[pyvrp]` optional dependency:
 Public API:
     to_vrplib_dict, to_pyvrp_problem            -- conversion helpers
     MethodResult                                 -- solver result dataclass
+    SolveTick, SolveMonitor                      -- live progress / cancellation hook
     solve_cvrp, solve_vrptw, solve_instance      -- single-instance solvers
     solve_and_update_bks                         -- solve + write BKS if improved
 """
@@ -16,7 +17,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 try:
     import numpy as np
@@ -51,6 +52,8 @@ from mamut_routing_lib.models import (
 
 __all__ = [
     "MethodResult",
+    "SolveMonitor",
+    "SolveTick",
     "hydrate_collection_instance",
     "solve_and_update_bks",
     "solve_cvrp",
@@ -64,6 +67,89 @@ __all__ = [
 # Tuning constants for the hierarchical-vehicle-cost two-phase VRPTW solve.
 _FLEET_MIN_TIME_FRACTION = 0.3
 _WARM_START_MAX_TIME = 5.0
+
+# PyVRP evaluates an infeasible incumbent at INT_MAX (see pyvrp.stop.FirstFeasible), so any
+# cost at or above this is "nothing feasible found yet" rather than an astronomically bad tour.
+_INFEASIBLE_COST = float(np.iinfo(np.int64).max)
+
+
+@dataclass(frozen=True)
+class SolveTick:
+    """One observation of a running solve, as seen from inside the search loop."""
+
+    phase: str
+    iterations: int
+    elapsed_s: float
+    best_cost: float | None
+
+
+class SolveMonitor:
+    """A PyVRP stopping criterion that reports the incumbent and honours cancellation.
+
+    PyVRP calls the stopping criterion once per iteration with the cost of the best solution
+    so far, which is the only point inside a solve where a caller can learn that anything is
+    happening. This criterion never stops on its own -- the `MaxRuntime` it is paired with
+    still owns the time budget. It relays throttled ticks to `on_tick`, and stops the search
+    only when `on_tick` returns True.
+
+    Compose it *before* `MaxRuntime` in a `MultipleCriteria`: that class uses `any()`, which
+    short-circuits, so a monitor placed second would go silent the moment the budget expires.
+    """
+
+    def __init__(
+        self,
+        on_tick: Callable[[SolveTick], bool],
+        *,
+        scale: int = 1,
+        interval_s: float = 1.0,
+    ):
+        self._on_tick = on_tick
+        self._scale = scale if scale > 0 else 1
+        self._interval_s = max(0.0, interval_s)
+        self._phase = "search"
+        self._iterations = 0
+        self._start = time.perf_counter()
+        # -inf, not the start time: the first iteration should report immediately rather than
+        # leave the caller showing nothing for a whole interval.
+        self._last_tick = float("-inf")
+        self.stopped_early = False
+
+    def phase(self, name: str) -> None:
+        """Name the stage the solve has just entered, and tick immediately so the label lands."""
+        self._phase = name
+        self._last_tick = float("-inf")  # tick on the next iteration so the label lands
+
+    def rescale(self, scale: int) -> None:
+        """Adopt the solve's cost scale, which is only known once the instance is converted."""
+        self._scale = scale if scale > 0 else 1
+
+    @property
+    def elapsed_s(self) -> float:
+        return time.perf_counter() - self._start
+
+    def __call__(self, best_cost: float) -> bool:
+        self._iterations += 1
+        now = time.perf_counter()
+        if now - self._last_tick < self._interval_s:
+            return False
+        self._last_tick = now
+        tick = SolveTick(
+            phase=self._phase,
+            iterations=self._iterations,
+            elapsed_s=now - self._start,
+            best_cost=None if best_cost >= _INFEASIBLE_COST else best_cost / self._scale,
+        )
+        if self._on_tick(tick):
+            self.stopped_early = True
+            return True
+        return False
+
+
+def _stop_with(monitor: SolveMonitor | None, *criteria: Any) -> Any:
+    """The given criteria, with the monitor in front of them when there is one."""
+    if monitor is None:
+        return criteria[0] if len(criteria) == 1 else MultipleCriteria(list(criteria))
+    return MultipleCriteria([monitor, *criteria])
 
 
 @dataclass(frozen=True)
@@ -252,14 +338,17 @@ def solve_cvrp(
     seed: int = 42,
     display: bool = False,
     instance_path: str | Path | None = None,
+    monitor: SolveMonitor | None = None,
 ) -> MethodResult:
     """Solve a CVRP instance with PyVRP's ILS (mono-cost objective only)."""
     start_time = time.perf_counter()
     arc_costs, round_func, scale = _conversion_plan(instance, instance_path)
+    if monitor is not None:
+        monitor.rescale(scale)
     problem = to_pyvrp_problem(instance, round_func=round_func, arc_costs=arc_costs)
     result = pyvrp_solve(
         problem,
-        stop=MaxRuntime(max(1, time_limit_s)),
+        stop=_stop_with(monitor, MaxRuntime(max(1, time_limit_s))),
         seed=seed,
         collect_stats=False,
         display=display,
@@ -298,6 +387,7 @@ def solve_vrptw(
     seed: int = 42,
     display: bool = False,
     instance_path: str | Path | None = None,
+    monitor: SolveMonitor | None = None,
 ) -> MethodResult:
     """Solve a VRPTW instance with PyVRP's ILS.
 
@@ -313,6 +403,8 @@ def solve_vrptw(
     """
     start_time = time.perf_counter()
     arc_costs, round_func, scale = _conversion_plan(instance, instance_path)
+    if monitor is not None:
+        monitor.rescale(scale)
     problem = to_pyvrp_problem(instance, round_func=round_func, arc_costs=arc_costs)
     params = SolveParams()
     vehicle_penalty: int | float = 0
@@ -320,7 +412,7 @@ def solve_vrptw(
     if objective_function == ObjectiveFunction.MONO_COST:
         result = pyvrp_solve(
             problem,
-            stop=MaxRuntime(max(1, time_limit_s)),
+            stop=_stop_with(monitor, MaxRuntime(max(1, time_limit_s))),
             seed=seed,
             collect_stats=False,
             display=display,
@@ -328,16 +420,20 @@ def solve_vrptw(
         )
     else:
         fleet_budget = max(1.0, float(time_limit_s) * _FLEET_MIN_TIME_FRACTION)
+        if monitor is not None:
+            monitor.phase("minimising fleet")
         constrained_vehicle_type = minimise_fleet(
             problem,
-            stop=MaxRuntime(fleet_budget),
+            stop=_stop_with(monitor, MaxRuntime(fleet_budget)),
             seed=seed,
             params=params,
         )
         fleet_problem = problem.replace(vehicle_types=[constrained_vehicle_type])
+        if monitor is not None:
+            monitor.phase("warm start")
         warm_result = pyvrp_solve(
             fleet_problem,
-            stop=MultipleCriteria([FirstFeasible(), MaxRuntime(_WARM_START_MAX_TIME)]),
+            stop=_stop_with(monitor, FirstFeasible(), MaxRuntime(_WARM_START_MAX_TIME)),
             seed=seed,
             collect_stats=False,
             display=False,
@@ -348,9 +444,11 @@ def solve_vrptw(
             vehicle_types=[constrained_vehicle_type.replace(fixed_cost=vehicle_penalty)]
         )
         remaining_time = max(1, time_limit_s - int(time.perf_counter() - start_time))
+        if monitor is not None:
+            monitor.phase("optimising cost")
         result = pyvrp_solve(
             constrained_problem,
-            stop=MaxRuntime(remaining_time),
+            stop=_stop_with(monitor, MaxRuntime(remaining_time)),
             seed=seed,
             collect_stats=False,
             display=display,
@@ -396,17 +494,23 @@ def solve_instance(
     objective_function: ObjectiveFunction | None = None,
     display: bool = False,
     instance_path: str | Path | None = None,
+    monitor: SolveMonitor | None = None,
 ) -> MethodResult:
     """Dispatch to `solve_cvrp` or `solve_vrptw` based on instance type.
 
     For VRPTW instances, `objective_function` defaults to MONO_COST when not provided.
     For CVRP instances, the objective is fixed to MONO_COST regardless of the argument.
     Slim collection instances need `instance_path` when their arc costs live in
-    a distances sidecar.
+    a distances sidecar. Pass a `SolveMonitor` to observe the search while it runs.
     """
     if isinstance(instance, (BenchmarkInstanceCVRP, BenchmarkInstanceCVRPCollection)):
         return solve_cvrp(
-            instance, time_limit_s=time_limit_s, seed=seed, display=display, instance_path=instance_path
+            instance,
+            time_limit_s=time_limit_s,
+            seed=seed,
+            display=display,
+            instance_path=instance_path,
+            monitor=monitor,
         )
 
     if _is_vrptw_like(instance):
@@ -418,6 +522,7 @@ def solve_instance(
             seed=seed,
             display=display,
             instance_path=instance_path,
+            monitor=monitor,
         )
 
     raise TypeError(f"Unsupported instance type: {type(instance).__name__}")
