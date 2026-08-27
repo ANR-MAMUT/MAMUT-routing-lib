@@ -78,6 +78,10 @@ def _atfs_from_payload(payload: dict[str, Any], *, validate_complete: bool = Tru
 
     horizon_raw = payload["horizon"]
     horizon = (float(horizon_raw[0]), float(horizon_raw[1]))
+    # Same anchoring contract as the instance model: theta and the return clamp live on domains
+    # starting at abscissa 0, so a sidecar may not declare a horizon that starts below 0.
+    if horizon[0] < 0:
+        raise ATFFormatError(f"horizon must start at or after 0, got {horizon[0]!r}")
     num_customers = int(payload["num_customers"])
     num_vertices = num_customers + 1
 

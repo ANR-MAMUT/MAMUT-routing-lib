@@ -69,7 +69,7 @@ from mamut_routing_lib.td.models import (
     TDIGPProfileRef,
     TDRoadGraphRef,
 )
-from mamut_routing_lib.td.pwlf import NDCPWLF, PWLFError, make_theta
+from mamut_routing_lib.td.pwlf import NDCPWLF, PWLFError, make_service_theta, make_theta
 from mamut_routing_lib.td.roadgraph import (
     ROAD_GZIP_SUFFIX,
     ROAD_MATERIALIZER_GENERATOR,
@@ -165,6 +165,7 @@ __all__ = [
     "load_td_benchmark_instance",
     "load_td_instance",
     "load_traffic_overlay",
+    "make_service_theta",
     "make_theta",
     "materialize_instance_atfs",
     "materialize_instance_atfs_roadgraph",

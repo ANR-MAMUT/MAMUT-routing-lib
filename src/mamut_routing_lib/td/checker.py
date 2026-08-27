@@ -35,7 +35,7 @@ from mamut_routing_lib.enums import ObjectiveFunction
 from mamut_routing_lib.models import BenchmarkBKS, BenchmarkSolution
 from mamut_routing_lib.td.artifacts import InstanceATFs, LoadedTDInstance
 from mamut_routing_lib.td.models import AnyTDBenchmarkInstance, BenchmarkInstanceTDVRPTW
-from mamut_routing_lib.td.pwlf import NDCPWLF, make_theta
+from mamut_routing_lib.td.pwlf import NDCPWLF, make_service_theta, make_theta
 
 #: Objectives the TD checker can score. Everything else is a static-checker
 #: concern and is refused loudly.
@@ -132,8 +132,7 @@ def compute_route_ready_time_function(
         if time_window is not None:
             theta = make_theta(time_window[0], time_window[1], service_time)
         else:
-            upper = acc.max_image
-            theta = NDCPWLF([0.0, upper], [service_time, upper + service_time])
+            theta = make_service_theta(acc.max_image, service_time)
         acc = theta.compose(acc)
         if acc.is_empty():
             return acc

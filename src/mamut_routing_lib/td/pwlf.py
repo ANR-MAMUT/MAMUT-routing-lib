@@ -221,6 +221,23 @@ class NDCPWLF:
         return f"NDCPWLF(xs={self.xs!r}, ys={self.ys!r})"
 
 
+def _dedup_points(xs: list[float], ys: list[float]) -> tuple[list[float], list[float]]:
+    """Drop every point exactly equal to the one before it.
+
+    The chain contract forbids two equal consecutive breakpoints, and the
+    degenerate ready-time functions below (a zero-width time window, a zero
+    upper bound) naturally produce them.
+    """
+    dedup_xs: list[float] = []
+    dedup_ys: list[float] = []
+    for x, y in zip(xs, ys):
+        if dedup_xs and x == dedup_xs[-1] and y == dedup_ys[-1]:
+            continue
+        dedup_xs.append(x)
+        dedup_ys.append(y)
+    return dedup_xs, dedup_ys
+
+
 def make_theta(earliest: float, latest: float, service_time: float) -> NDCPWLF:
     """Vertex TW ready-time function θ over arrival times in ``[0, latest]``.
 
@@ -231,11 +248,17 @@ def make_theta(earliest: float, latest: float, service_time: float) -> NDCPWLF:
         raise PWLFError(f"invalid time window [{earliest}, {latest}]")
     xs = [0.0, earliest, latest]
     ys = [earliest + service_time, earliest + service_time, latest + service_time]
-    dedup_xs: list[float] = []
-    dedup_ys: list[float] = []
-    for x, y in zip(xs, ys):
-        if dedup_xs and x == dedup_xs[-1] and y == dedup_ys[-1]:
-            continue
-        dedup_xs.append(x)
-        dedup_ys.append(y)
-    return NDCPWLF(dedup_xs, dedup_ys)
+    return NDCPWLF(*_dedup_points(xs, ys))
+
+
+def make_service_theta(upper: float, service_time: float) -> NDCPWLF:
+    """Vertex ready-time function θ without a time window, over ``[0, upper]``.
+
+    ``θ(t) = t + service_time``, no waiting. ``upper`` is the largest arrival
+    time the vertex can see. It shares the dedup of ``make_theta``, so
+    ``upper == 0`` yields the single point ``([0.0], [service_time])`` instead
+    of two equal consecutive points.
+    """
+    xs = [0.0, upper]
+    ys = [service_time, upper + service_time]
+    return NDCPWLF(*_dedup_points(xs, ys))

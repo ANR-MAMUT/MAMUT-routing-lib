@@ -4,7 +4,7 @@ import random
 
 import pytest
 
-from mamut_routing_lib.td import NDCPWLF, PWLFError, make_theta
+from mamut_routing_lib.td import NDCPWLF, PWLFError, make_service_theta, make_theta
 
 
 class TestNDCPWLFBasics:
@@ -150,6 +150,24 @@ class TestMakeTheta:
     def test_invalid_window_raises(self):
         with pytest.raises(PWLFError):
             make_theta(10.0, 5.0, 0.0)
+
+
+class TestMakeServiceTheta:
+    def test_zero_upper_is_a_single_point(self):
+        theta = make_service_theta(0.0, 7.0)
+        assert theta.xs == [0.0]
+        assert theta.ys == [7.0]
+
+    def test_positive_upper_has_two_points(self):
+        theta = make_service_theta(50.0, 7.0)
+        assert theta.xs == [0.0, 50.0]
+        assert theta.ys == [7.0, 57.0]
+
+    def test_single_point_theta_composes_with_a_zero_accumulator(self):
+        acc = NDCPWLF([0.0, 10.0], [0.0, 0.0])
+        composed = make_service_theta(acc.max_image, 7.0).compose(acc)
+        assert composed.evaluate(0.0) == 7.0
+        assert composed.evaluate(10.0) == 7.0
 
 
 def _random_ndcpwlf(rng: random.Random, num_points: int) -> NDCPWLF:

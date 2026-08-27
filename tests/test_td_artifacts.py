@@ -4,6 +4,7 @@ import gzip
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from mamut_routing_lib.artifacts import discover_benchmark_instances, load_benchmark_instance
 from mamut_routing_lib.enums import ProblemType
@@ -17,7 +18,7 @@ from mamut_routing_lib.td import (
     load_td_instance,
     save_instance_atfs,
 )
-from td_utils import make_toy_atfs, write_toy_instance_files
+from td_utils import make_toy_atfs, toy_instance_payload, write_toy_instance_files
 
 
 class TestSidecarRoundTrip:
@@ -94,6 +95,32 @@ class TestSidecarValidation:
         payload["arcs"][0][2] = [1.0] + payload["arcs"][0][2][1:]
         with pytest.raises(ATFFormatError, match="horizon"):
             load_instance_atfs(self._write(tmp_path, payload))
+
+    def test_negative_horizon_start_rejected(self, tmp_path):
+        payload = self._payload()
+        payload["horizon"][0] = -1.0
+        with pytest.raises(ATFFormatError, match="horizon must start at or after 0"):
+            load_instance_atfs(self._write(tmp_path, payload))
+
+
+class TestHorizonAnchoring:
+    """The horizon start is anchored at abscissa 0 (theta and the return clamp start there)."""
+
+    def test_negative_start_rejected(self):
+        payload = toy_instance_payload()
+        payload["horizon"] = [-1, 100]
+        with pytest.raises(ValidationError, match="horizon must start at or after 0"):
+            BenchmarkInstanceTDVRPTW.model_validate(payload)
+
+    def test_zero_start_accepted(self):
+        payload = toy_instance_payload()
+        payload["horizon"] = [0, 100]
+        assert BenchmarkInstanceTDVRPTW.model_validate(payload).horizon == (0, 100)
+
+    def test_positive_start_accepted(self):
+        payload = toy_instance_payload()
+        payload["horizon"] = [10, 100]
+        assert BenchmarkInstanceTDVRPTW.model_validate(payload).horizon == (10, 100)
 
 
 class TestInstanceLoading:

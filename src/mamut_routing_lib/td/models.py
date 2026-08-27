@@ -220,6 +220,12 @@ class _TDInstanceValidationMixin(BaseModel):
     def validate_horizon(cls, value: tuple[int | float, int | float]) -> tuple[int | float, int | float]:
         if value[0] >= value[1]:
             raise ValueError("horizon must be a non-empty interval [start, end]")
+        # Anchored at abscissa 0: the vertex ready-time functions (td.pwlf.make_theta) and the
+        # return clamp in td.checker start their domain at 0, and the composition hypothesis (the
+        # outer domain does not start above the inner function's first value) needs every arc
+        # function anchored at a horizon start >= 0.
+        if value[0] < 0:
+            raise ValueError(f"horizon must start at or after 0, got {value[0]!r}")
         return value
 
     @field_validator("fleet_fixed_cost")
