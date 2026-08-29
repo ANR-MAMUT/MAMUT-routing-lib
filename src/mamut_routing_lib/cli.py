@@ -943,6 +943,7 @@ def solve_instances(
                 )
             method_result = solve_instance(
                 instance,
+                instance_path=path,
                 time_limit_s=time_limit_s,
                 seed=seed,
                 objective_function=run_objective,

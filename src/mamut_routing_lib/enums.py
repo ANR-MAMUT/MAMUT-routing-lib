@@ -5,6 +5,7 @@ class BenchmarkName(str, Enum):
     SINTEF_2008 = "Sintef2008"
     DIMACS_2021 = "Dimacs2021"
     PORYOS_2026 = "Poryos2026"
+    MAMUT_2026 = "Mamut2026"
     ORTEC_2022 = "Ortec2022"
     DABIA_2013 = "Dabia2013"
     ARI_2018 = "Ari2018"
