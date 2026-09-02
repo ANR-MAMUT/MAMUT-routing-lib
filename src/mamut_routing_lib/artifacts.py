@@ -409,6 +409,25 @@ def load_benchmark_instance(instance_path: str | Path) -> "AnyBenchmarkInstance 
     return BenchmarkInstance(**payload)
 
 
+def instance_problem_type(instance: "AnyBenchmarkInstance | AnyTDBenchmarkInstance") -> ProblemType:
+    """The problem type of a loaded instance, from its model class.
+
+    Time-dependent models resolve to TDVRPTW/TDVRP (their metadata does not
+    always carry ``problem_type``); the static ones to CVRP or VRPTW.
+    """
+    from mamut_routing_lib.td.models import BenchmarkInstanceTDVRP, BenchmarkInstanceTDVRPTW
+
+    if isinstance(instance, BenchmarkInstanceTDVRPTW):
+        return ProblemType.TDVRPTW
+    if isinstance(instance, BenchmarkInstanceTDVRP):
+        return ProblemType.TDVRP
+    if isinstance(instance, (BenchmarkInstanceCVRP, BenchmarkInstanceCVRPCollection)):
+        return ProblemType.CVRP
+    if isinstance(instance, (BenchmarkInstance, BenchmarkInstanceVRPTWCollection)):
+        return ProblemType.VRPTW
+    raise TypeError(f"unsupported instance model: {type(instance).__name__}")
+
+
 def resolve_arc_costs(
     instance: AnyCollectionStaticInstance,
     instance_path: str | Path,

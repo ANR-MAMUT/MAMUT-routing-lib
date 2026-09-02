@@ -5,7 +5,7 @@ import os
 import sys
 import time
 import tomllib
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from importlib import metadata
 from pathlib import Path
@@ -19,8 +19,17 @@ from mamut_routing_lib.artifacts import (
     DEFAULT_BENCHMARKS_ROOT_ENV,
     DEFAULT_MAMUT_ROUTING_ROOT_ENV,
     build_instance_id,
+    instance_problem_type,
     load_benchmark_instance,
     parse_layout,
+)
+from mamut_routing_lib.cvrplib import (
+    EDGE_WEIGHT_TYPES,
+    EXPORT_FORMATS,
+    ExportResult,
+    VrpExportOptions,
+    export_filename,
+    export_instance_file,
 )
 from mamut_routing_lib.enums import BenchmarkName, MetricVariant, ObjectiveFunction, ProblemType
 from mamut_routing_lib.models import BenchmarkInstanceCVRP
@@ -47,6 +56,12 @@ remote_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(remote_app, name="remote")
+
+export_app = typer.Typer(
+    help="Export local benchmark instances to classic solver formats (CVRPLIB .vrp, Solomon .txt).",
+    no_args_is_help=True,
+)
+app.add_typer(export_app, name="export")
 
 
 def _get_package_version() -> str:
@@ -424,13 +439,7 @@ def _coerce_benchmark_name(value: Any) -> str:
 
 
 def _problem_type_from_instance(instance: "AnyBenchmarkInstance") -> ProblemType:
-    if isinstance(instance, BenchmarkInstanceCVRP):
-        return ProblemType.CVRP
-    metadata = getattr(instance, "metadata", None)
-    problem_type = _metadata_value(metadata, "problem_type")
-    if problem_type is not None:
-        return ProblemType(problem_type)
-    return ProblemType.VRPTW
+    return instance_problem_type(instance)
 
 
 def _resolve_layout_under(path: Path, benchmarks_dir: Path):
@@ -1017,6 +1026,265 @@ def solve_instances(
         )
 
     if any_failure:
+        raise typer.Exit(code=1)
+
+
+@dataclass(frozen=True)
+class ExportJob:
+    record: LocalInstanceRecord
+    output_path: Path
+
+
+def _export_output_path(record_path: Path, benchmarks_dir: Path, output_dir: Path | None, filename: str) -> Path:
+    """Next to the source by default; under ``output_dir`` mirroring the path
+    relative to ``benchmarks_dir`` (flat for files outside it)."""
+    if output_dir is None:
+        return record_path.with_name(filename)
+    try:
+        relative_parent = record_path.resolve().relative_to(benchmarks_dir.resolve()).parent
+    except ValueError:
+        relative_parent = Path()
+    return output_dir / relative_parent / filename
+
+
+def _run_export_job(job: ExportJob, options: VrpExportOptions, overwrite: bool, collection_root: Path | None) -> ExportResult:
+    return export_instance_file(
+        job.record.path,
+        job.output_path,
+        collection_root=collection_root,
+        options=options,
+        overwrite=overwrite,
+    )
+
+
+def _export_worker(args: tuple[ExportJob, VrpExportOptions, bool, Path | None]) -> ExportResult | Exception:
+    try:
+        return _run_export_job(*args)
+    except Exception as exc:  # noqa: BLE001 - reported per instance in the summary table
+        return exc
+
+
+@export_app.command("vrp")
+def export_vrp(
+    ctx: typer.Context,
+    instance_paths: Annotated[
+        Optional[list[Path]],
+        typer.Argument(
+            help="One or more benchmark instance JSON paths. If omitted, --benchmarks-dir is "
+            "scanned recursively for *.vrp.json files (and filter flags apply).",
+        ),
+    ] = None,
+    problem_type: Annotated[
+        Optional[ProblemType],
+        typer.Option("--problem-type", case_sensitive=False, help="Filter by CVRP or VRPTW."),
+    ] = None,
+    benchmark_name: Annotated[
+        Optional[BenchmarkName],
+        typer.Option("--benchmark-name", case_sensitive=False, help="Filter by benchmark family."),
+    ] = None,
+    metric_variant: Annotated[
+        Optional[MetricVariant],
+        typer.Option("--metric-variant", case_sensitive=False, help="Filter by metric variant."),
+    ] = None,
+    instance_id: Annotated[
+        Optional[str],
+        typer.Option("--instance-id", help="Filter by exact path-derived aggregate instance ID."),
+    ] = None,
+    instance_name: Annotated[
+        Optional[str],
+        typer.Option("--instance-name", help="Filter by exact stored instance name."),
+    ] = None,
+    output_dir: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--output-dir",
+            help="Write outputs under this directory, mirroring each path relative to --benchmarks-dir "
+            "(flat for files outside it). Default: next to each source .vrp.json.",
+        ),
+    ] = None,
+    export_format: Annotated[
+        str,
+        typer.Option(
+            "--format",
+            help="'vrp' (CVRPLIB/TSPLIB .vrp; CVRP or CVRPTW sections) or 'solomon' "
+            "(Solomon/Gehring-Homberger .txt, VRPTW with euclidean metric only).",
+        ),
+    ] = "vrp",
+    edge_weight_type: Annotated[
+        str,
+        typer.Option(
+            "--edge-weight-type",
+            help="'EXPLICIT' writes the full cost matrix (faithful to the published costs). 'EUC_2D' writes "
+            "coordinates only for euclidean-metric instances; classic readers then use TSPLIB nint "
+            "distances, which differ from the published 3-decimal costs.",
+        ),
+    ] = "EXPLICIT",
+    comment: Annotated[
+        Optional[str],
+        typer.Option("--comment", help="Override the COMMENT line (default: reconstructed from the instance)."),
+    ] = None,
+    force: Annotated[
+        bool,
+        typer.Option("--force/--no-force", help="Overwrite existing outputs (default: report them as 'exists')."),
+    ] = False,
+    collection_root: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--collection-root",
+            help="Collection root (directory holding mamut-collection.json) for slim instances copied "
+            "out of their collection tree.",
+        ),
+    ] = None,
+    jobs: Annotated[
+        Optional[int],
+        typer.Option("--jobs", min=1, help="Parallel workers for batches. Defaults to max(1, CPU count - 2)."),
+    ] = None,
+    quiet: Annotated[
+        bool,
+        typer.Option("--quiet/--no-quiet", help="Only print errors and the summary."),
+    ] = False,
+) -> None:
+    """Export benchmark instances to the classic CVRPLIB .vrp format (or Solomon .txt).
+
+    Selection mirrors `list` and `solve`: positional INSTANCE_PATHS or a recursive
+    scan of `--benchmarks-dir` filtered by --problem-type / --benchmark-name /
+    --metric-variant / --instance-id / --instance-name. Slim collection instances
+    (Poryos2026, Mamut2026) hydrate their matrix from the sha-pinned distances
+    sidecar. Time-dependent instances have no static matrix: explicit TD paths
+    are an error, scanned ones are skipped with a warning.
+
+        mamut-routing --benchmarks-dir ./benchmarks export vrp \\
+            --problem-type CVRP --benchmark-name Mamut2026 --output-dir ./vrp-out
+    """
+    state: CLIState = ctx.obj
+    export_format = export_format.lower()
+    edge_weight_type = edge_weight_type.upper()
+    if export_format not in EXPORT_FORMATS:
+        raise typer.BadParameter(f"must be one of {', '.join(EXPORT_FORMATS)}", param_hint="--format")
+    if edge_weight_type not in EDGE_WEIGHT_TYPES:
+        raise typer.BadParameter(f"must be one of {', '.join(EDGE_WEIGHT_TYPES)}", param_hint="--edge-weight-type")
+    options = VrpExportOptions(edge_weight_type=edge_weight_type, format=export_format, comment=comment)  # type: ignore[arg-type]
+
+    explicit_paths = list(instance_paths) if instance_paths else None
+    candidate_paths = list(_iter_candidate_paths(state, explicit_paths))
+    selected = _filter_loaded_instances(
+        candidate_paths,
+        problem_type=problem_type,
+        benchmark_name=benchmark_name,
+        metric_variant=metric_variant,
+        instance_id=instance_id,
+        instance_name=instance_name,
+        benchmarks_dir=state.benchmarks_dir,
+    )
+    if not selected:
+        typer.echo(
+            "No instances selected. Pass positional paths, adjust filter flags, or "
+            "point --benchmarks-dir at a tree containing *.vrp.json files.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    time_dependent = [r for r in selected if r.problem_type in (ProblemType.TDVRP, ProblemType.TDVRPTW)]
+    if time_dependent and explicit_paths:
+        typer.echo(
+            "Error: time-dependent instance(s) have no static matrix and cannot be exported as classic .vrp: "
+            + ", ".join(str(r.path) for r in time_dependent),
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    skipped_td = 0
+    if time_dependent:
+        skipped_td = len(time_dependent)
+        typer.secho(
+            f"Warning: skipping {skipped_td} time-dependent instance(s) (no static matrix to export).",
+            fg=typer.colors.YELLOW,
+            bold=True,
+            err=True,
+        )
+        selected = [r for r in selected if r not in time_dependent]
+
+    duplicate_paths = _duplicate_resolved_paths(selected)
+    if duplicate_paths:
+        typer.echo(
+            "Error: duplicate instance path(s) selected: " + ", ".join(str(path) for path in duplicate_paths),
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    resolved_output_dir = output_dir.expanduser().resolve() if output_dir is not None else None
+    resolved_collection_root = collection_root.expanduser().resolve() if collection_root is not None else None
+    jobs_list = [
+        ExportJob(
+            record=record,
+            output_path=_export_output_path(
+                record.path, state.benchmarks_dir, resolved_output_dir, export_filename(record.path.name, options)
+            ),
+        )
+        for record in selected
+    ]
+    output_targets = [job.output_path.resolve() for job in jobs_list]
+    if len(set(output_targets)) != len(output_targets):
+        typer.echo("Error: two selected instances map to the same output path; use --output-dir.", err=True)
+        raise typer.Exit(code=2)
+
+    effective_jobs = min(jobs if jobs is not None else _default_solve_jobs(), len(jobs_list))
+    if not quiet:
+        typer.echo(
+            f"Exporting {len(jobs_list)} instance(s)  format={export_format}  "
+            f"edge_weight_type={edge_weight_type}  force={force}"
+            + (f"  jobs={effective_jobs}" if len(jobs_list) > 1 else "")
+        )
+
+    outcomes: list[ExportResult | Exception | None] = [None] * len(jobs_list)
+    worker_args = [(job, options, force, resolved_collection_root) for job in jobs_list]
+    if len(jobs_list) > 1 and effective_jobs > 1:
+        with ProcessPoolExecutor(max_workers=effective_jobs) as executor:
+            futures = {executor.submit(_export_worker, args): index for index, args in enumerate(worker_args)}
+            with tqdm(
+                total=len(jobs_list),
+                desc=f"Exporting ({effective_jobs} jobs)",
+                unit="file",
+                leave=False,
+                dynamic_ncols=True,
+                disable=quiet,
+                file=sys.stderr,
+            ) as bar:
+                for future in as_completed(futures):
+                    outcomes[futures[future]] = future.result()
+                    bar.update(1)
+    else:
+        for index, args in enumerate(worker_args):
+            outcomes[index] = _export_worker(args)
+
+    counts = {"written": 0, "exists": 0, "unsupported": 0, "error": 0}
+    header = f"{'INSTANCE_ID':<64}  {'PROBLEM':<7}  {'n':>5}  {'STATUS':<11}  OUTPUT"
+    if not quiet:
+        typer.echo(header)
+        typer.echo("-" * len(header))
+    for job, outcome in zip(jobs_list, outcomes):
+        record = job.record
+        if isinstance(outcome, Exception):
+            status, detail = "error", f"{type(outcome).__name__}: {outcome}"
+        else:
+            assert outcome is not None
+            status, detail = outcome.status, (str(outcome.output_path) if outcome.status == "written" else outcome.message)
+        counts[status] += 1
+        if quiet and status in ("written", "exists"):
+            continue
+        typer.echo(
+            f"{record.instance_id:<64}  {record.problem_type.value:<7}  {record.num_customers:>5}  "
+            f"{status:<11}  {detail}",
+            err=status == "error",
+        )
+
+    typer.echo("")
+    typer.echo("Summary:")
+    typer.echo(f"  Written        : {counts['written']}")
+    typer.echo(f"  Existing       : {counts['exists']}")
+    typer.echo(f"  Unsupported    : {counts['unsupported']}")
+    typer.echo(f"  Skipped (TD)   : {skipped_td}")
+    typer.echo(f"  Errors         : {counts['error']}")
+    if counts["error"] or counts["unsupported"]:
         raise typer.Exit(code=1)
 
 
