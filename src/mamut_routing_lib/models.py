@@ -1,3 +1,18 @@
+"""Pydantic models of the static benchmark contract (CVRP, VRPTW).
+
+Every artifact is validated on load with ``extra="forbid"``: an instance file
+(``BenchmarkInstance`` for VRPTW, ``BenchmarkInstanceCVRP`` for CVRP, both
+with an embedded ``(n+1) x (n+1)`` ``arc_costs`` matrix), a slim *collection*
+instance (``BenchmarkInstanceCVRPCollection`` / ``BenchmarkInstanceVRPTWCollection``,
+whose matrix comes from an ``arc_costs_source``: a sha-pinned distances
+sidecar or the euclidean rule), a solution (``BenchmarkSolution``), a
+best-known solution (``BenchmarkBKS``, a solution plus its objective) and
+an optimality claim (``OptimalityMetadata``, validated inside
+``metadata["optimality"]``). Node index 0 is the depot unless ``depot`` says
+otherwise; customers are ``1..num_customers``. Time-dependent instances live
+in ``mamut_routing_lib.td.models``.
+"""
+
 from __future__ import annotations
 
 from typing import Annotated, Any, Literal, TypeAlias
@@ -27,6 +42,7 @@ def _validate_relative_path(path_value: str) -> str:
 
 
 class ArtifactPaths(BaseModel):
+    """Repository-relative paths of the four artifacts of a generated instance (``.vrp.json``, ``.vrp``, meta, manifest)."""
     model_config = ConfigDict(extra="forbid")
 
     vrp_json: str
@@ -41,6 +57,12 @@ class ArtifactPaths(BaseModel):
 
 
 class InstanceMetadata(BaseModel):
+    """Structured metadata of a generated (OSM-derived) instance.
+
+    Historic families carry a free-form ``dict`` instead; ``artifacts.has_structured_metadata``
+    tells the two apart. ``num_vehicles_lb`` is the bin-packing lower bound on the
+    route count that the ``-k<K>`` name suffix advertises.
+    """
     model_config = ConfigDict(extra="forbid")
 
     authors: str
@@ -78,6 +100,7 @@ class InstanceMetadata(BaseModel):
 
 
 class ReferenceLLA(BaseModel):
+    """Geodetic origin (latitude, longitude, altitude) of the local ENU frame the coordinates are expressed in."""
     model_config = ConfigDict(extra="forbid")
 
     lat: float
@@ -141,6 +164,13 @@ class _InstanceValidationMixin(BaseModel):
 
 
 class BenchmarkInstance(_InstanceValidationMixin):
+    """A VRPTW instance with an embedded arc-cost matrix.
+
+    Adds per-node ``service_times`` and ``time_windows`` (``[ready, due]``,
+    depot included) to the CVRP core. Historic families (Sintef2008, Dimacs2021,
+    Ortec2022) and hydrated collection instances use this model; the checker
+    prices waiting at ``ready`` and rejects arrival after ``due``.
+    """
     instance_name: str
     instance_origin: InstanceOrigin
     benchmark_name: BenchmarkName
@@ -164,6 +194,7 @@ class BenchmarkInstance(_InstanceValidationMixin):
 
     @classmethod
     def from_legacy_dict(cls, legacy_instance: dict[str, Any]) -> "BenchmarkInstance":
+        """Build a BKS from the pre-contract dict shape (``routes`` + ``cost``) under ``objective_function``."""
         if "arc_costs" in legacy_instance:
             raise ValueError("Legacy instance already contains 'arc_costs'")
         if "arc_travel_times" not in legacy_instance:
@@ -175,6 +206,7 @@ class BenchmarkInstance(_InstanceValidationMixin):
 
 
 class BenchmarkInstanceCVRP(_InstanceValidationMixin):
+    """A CVRP instance with an embedded arc-cost matrix (no service times, no time windows)."""
     instance_name: str
     instance_origin: InstanceOrigin
     benchmark_name: BenchmarkName
@@ -276,10 +308,12 @@ class _SlimInstanceValidationMixin(BaseModel):
 
 
 class BenchmarkInstanceCVRPCollection(_SlimInstanceValidationMixin):
+    """Slim CVRP instance of a family-first collection: arc costs by ``arc_costs_source``, see ``artifacts.hydrate_collection_instance``."""
     pass
 
 
 class BenchmarkInstanceVRPTWCollection(_SlimInstanceValidationMixin):
+    """Slim VRPTW instance of a family-first collection (service times and windows may be floats; hydration requires integers)."""
     service_times: list[int | float]
     time_windows: list[tuple[int | float, int | float]]
 
@@ -367,10 +401,21 @@ class _SolutionValidationMixin(BaseModel):
 
 
 class BenchmarkSolution(_SolutionValidationMixin):
+    """A candidate solution: elementary routes of positive customer ids, optional cost.
+
+    ``cost`` may be ``None`` (the checker prices the routes) or the exact expected
+    value (the checker then reports ``objective_value_mismatch`` on any deviation).
+    """
     pass
 
 
 class BenchmarkBKS(_SolutionValidationMixin):
+    """A best-known solution: a solution plus the ``objective_function`` it is best under.
+
+    Stored as ``<base>.bks.<ObjectiveFunction>.json`` next to the instance and
+    written only through ``mamut_routing_lib.bks`` (checker cost, mandatory
+    ``metadata.authors``, replace-only-if-strictly-better).
+    """
     objective_function: ObjectiveFunction
 
     @classmethod

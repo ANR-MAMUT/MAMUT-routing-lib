@@ -32,7 +32,12 @@ except ImportError as exc:  # pragma: no cover - exercised via test_cli_solve mi
         "dependency. Install with: pip install 'mamut-routing-lib[pyvrp]'"
     ) from exc
 
-from mamut_routing_lib.artifacts import AnyBenchmarkInstance, get_instance_identifier, resolve_arc_costs
+from mamut_routing_lib.artifacts import (
+    AnyBenchmarkInstance,
+    get_instance_identifier,
+    hydrate_collection_instance,
+    resolve_arc_costs,
+)
 from mamut_routing_lib.bks import (
     BKSUpdateResult,
     DEFAULT_BKS_AUTHORS,
@@ -191,42 +196,6 @@ def _hydrated_arc_costs(
         )
     return resolve_arc_costs(instance, instance_path)
 
-
-def hydrate_collection_instance(
-    instance: AnyBenchmarkInstance,
-    instance_path: str | Path | None = None,
-    arc_costs: list[list[int]] | list[list[float]] | None = None,
-) -> AnyBenchmarkInstance:
-    """A v1 embedded-model view of a slim collection instance with resolved
-    arc costs, usable with ``mamut_routing_lib.checker.check_solution``.
-    Non-collection instances pass through unchanged."""
-    if not _is_collection(instance):
-        return instance
-    if arc_costs is None:
-        arc_costs = _hydrated_arc_costs(instance, instance_path)
-    common: dict[str, Any] = {
-        "instance_name": instance.instance_name,
-        "instance_origin": instance.instance_origin,
-        "benchmark_name": instance.benchmark_name,
-        "num_customers": instance.num_customers,
-        "num_vehicles": instance.num_vehicles,
-        "vehicle_capacity": instance.vehicle_capacity,
-        "coordinates": instance.coordinates,
-        "demands": instance.demands,
-        "depot": instance.depot,
-        "arc_costs": arc_costs,
-        "reference_lla": instance.reference_lla,
-        "metadata": dict(instance.metadata),
-    }
-    if isinstance(instance, BenchmarkInstanceVRPTWCollection):
-        service_times = [int(value) for value in instance.service_times]
-        time_windows = [(int(ready), int(due)) for ready, due in instance.time_windows]
-        if service_times != [float(v) for v in instance.service_times] or any(
-            (float(int(r)), float(int(d))) != (float(r), float(d)) for r, d in instance.time_windows
-        ):
-            raise ValueError("Non-integer time windows/service times cannot hydrate into the v1 checker model")
-        return BenchmarkInstance(**common, service_times=service_times, time_windows=time_windows)
-    return BenchmarkInstanceCVRP(**common)
 
 
 def to_vrplib_dict(

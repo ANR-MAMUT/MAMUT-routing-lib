@@ -1,3 +1,20 @@
+"""Benchmark tree access: layouts, discovery, loading, BKS paths.
+
+``discover_benchmark_instances`` walks a ``benchmarks/`` tree and yields one
+``DiscoveredBenchmarkInstance`` per ``*.vrp.json`` with the identity derived
+from the on-disk layout (``LayoutInfo`` lists the supported layouts; marker-
+rooted collections are parsed relative to their root). ``load_benchmark_instance``
+picks the pydantic model from the payload shape (time-dependent, CVRP,
+VRPTW, slim collection); ``hydrate_collection_instance`` turns a slim
+instance into an embedded-matrix one for the checker; ``get_bks_path_for_instance``,
+``load_bks`` and ``save_bks`` handle the BKS file next to the instance.
+
+Roots come from explicit arguments or, failing that, from the environment:
+``MAMUT_ROUTING_BENCHMARKS_ROOT`` or ``MAMUT_ROUTING_ROOT/benchmarks``. The
+library never falls back to the working directory (the ``mamut-routing`` CLI
+does, with ``--benchmarks-dir``).
+"""
+
 from __future__ import annotations
 
 import os
@@ -42,6 +59,7 @@ def _path_from_env(env_name: str) -> Path | None:
 
 
 def get_default_mamut_routing_root() -> Path:
+    """The repository root from ``MAMUT_ROUTING_ROOT``; raises ``RuntimeError`` when it is not set."""
     root = _path_from_env(DEFAULT_MAMUT_ROUTING_ROOT_ENV)
     if root is None:
         raise RuntimeError(
@@ -52,6 +70,7 @@ def get_default_mamut_routing_root() -> Path:
 
 
 def get_default_benchmarks_root() -> Path:
+    """``MAMUT_ROUTING_BENCHMARKS_ROOT`` if set, else ``<MAMUT_ROUTING_ROOT>/benchmarks``; raises when neither is set."""
     benchmark_root = _path_from_env(DEFAULT_BENCHMARKS_ROOT_ENV)
     if benchmark_root is not None:
         return benchmark_root
@@ -59,6 +78,7 @@ def get_default_benchmarks_root() -> Path:
 
 
 def get_instance_identifier(instance: AnyBenchmarkInstance) -> str:
+    """The name a BKS refers to its instance by (``instance_name``)."""
     return instance.instance_name
 
 
@@ -99,6 +119,13 @@ def build_instance_id(
 
 @dataclass(frozen=True)
 class DiscoveredBenchmarkInstance:
+    """One instance found by ``discover_benchmark_instances``: its layout-derived identity and path.
+
+    ``instance_id`` is the stable selector used by the CLIs (``build_instance_id``);
+    ``metric_variant``, ``place_slug``, ``subset``, ``base_instance_name``,
+    ``subinstance`` and ``tw_set`` are ``None`` when the layout has no such slot.
+    ``load()`` reads the file; it does not hydrate collection instances.
+    """
     problem_type: ProblemType
     benchmark_name: str
     metric_variant: MetricVariant | None
@@ -113,6 +140,7 @@ class DiscoveredBenchmarkInstance:
     tw_set: str | None = None
 
     def load(self) -> "AnyBenchmarkInstance | AnyTDBenchmarkInstance":
+        """Load the instance file (``load_benchmark_instance``)."""
         return load_benchmark_instance(self.instance_path)
 
 
@@ -161,6 +189,7 @@ class LayoutInfo:
 
 
 def parse_layout(relative_path: Path, instance_path: Path) -> LayoutInfo:
+    """Derive ``LayoutInfo`` from a path relative to the benchmarks root (4-, 5- or 7-part layouts); raises ``ValueError`` otherwise."""
     parts = relative_path.parts
     if len(parts) == 4:
         problem_type = ProblemType(parts[0])
@@ -342,6 +371,13 @@ def discover_benchmark_instances(
     places: Iterable[str] | None = None,
     instance_ids: Iterable[str] | None = None,
 ) -> list[DiscoveredBenchmarkInstance]:
+    """Every ``*.vrp.json`` under ``benchmarks_root`` (or the environment root), sorted by path.
+
+    Filters are exact-match sets on problem type, family name, metric variant,
+    place slug and instance id. Instances inside a marker-rooted collection are
+    parsed with ``parse_collection_layout``; all others with ``parse_layout``.
+    An unsupported layout raises ``ValueError``.
+    """
     benchmark_root = (benchmarks_root or get_default_benchmarks_root()).resolve()
     allowed_problem_types = {item.value if isinstance(item, ProblemType) else str(item) for item in (problem_types or [])}
     allowed_benchmark_names = {item.value if isinstance(item, BenchmarkName) else str(item) for item in (benchmark_names or [])}
@@ -387,6 +423,11 @@ def discover_benchmark_instances(
 
 
 def load_benchmark_instance(instance_path: str | Path) -> "AnyBenchmarkInstance | AnyTDBenchmarkInstance":
+    """Load and validate an instance file, choosing the model from its payload.
+
+    A ``td`` block selects the time-dependent models; ``arc_costs_source`` a
+    slim collection model; otherwise CVRP (no ``service_times``) or VRPTW.
+    """
     payload = load_json_from_file(instance_path)
     if "td" in payload:
         # Time-dependent instance: travel is described by the ATF sidecar
@@ -480,6 +521,58 @@ def resolve_arc_costs(
     raise ValueError(f"unsupported arc_costs_source model: {source!r}")
 
 
+def is_collection_instance(instance: AnyBenchmarkInstance) -> bool:
+    """True for the slim collection models (arc costs by ``arc_costs_source``)."""
+    return isinstance(instance, (BenchmarkInstanceCVRPCollection, BenchmarkInstanceVRPTWCollection))
+
+
+def hydrate_collection_instance(
+    instance: AnyBenchmarkInstance,
+    instance_path: str | Path | None = None,
+    arc_costs: list[list[int]] | list[list[float]] | None = None,
+) -> AnyBenchmarkInstance:
+    """An embedded-matrix view of a slim collection instance, usable with the checker.
+
+    Non-collection instances pass through unchanged. For a collection
+    instance the matrix is ``arc_costs`` if given, else resolved from the
+    instance's ``arc_costs_source`` (``resolve_arc_costs``, which needs
+    ``instance_path`` for sidecar sources). VRPTW collection instances with
+    non-integer service times or windows cannot hydrate into the integer
+    checker model and raise ``ValueError``.
+    """
+    if not is_collection_instance(instance):
+        return instance
+    if arc_costs is None:
+        if instance_path is None:
+            raise ValueError(
+                "Collection instances resolve arc costs from their sidecars; pass instance_path to hydrate them."
+            )
+        arc_costs = resolve_arc_costs(instance, instance_path)
+    common: dict = {
+        "instance_name": instance.instance_name,
+        "instance_origin": instance.instance_origin,
+        "benchmark_name": instance.benchmark_name,
+        "num_customers": instance.num_customers,
+        "num_vehicles": instance.num_vehicles,
+        "vehicle_capacity": instance.vehicle_capacity,
+        "coordinates": instance.coordinates,
+        "demands": instance.demands,
+        "depot": instance.depot,
+        "arc_costs": arc_costs,
+        "reference_lla": instance.reference_lla,
+        "metadata": dict(instance.metadata),
+    }
+    if isinstance(instance, BenchmarkInstanceVRPTWCollection):
+        service_times = [int(value) for value in instance.service_times]
+        time_windows = [(int(ready), int(due)) for ready, due in instance.time_windows]
+        if service_times != [float(v) for v in instance.service_times] or any(
+            (float(int(r)), float(int(d))) != (float(r), float(d)) for r, d in instance.time_windows
+        ):
+            raise ValueError("Non-integer time windows/service times cannot hydrate into the v1 checker model")
+        return BenchmarkInstance(**common, service_times=service_times, time_windows=time_windows)
+    return BenchmarkInstanceCVRP(**common)
+
+
 def has_structured_metadata(instance: AnyBenchmarkInstance) -> bool:
     """Return True if the instance carries a validated InstanceMetadata payload.
 
@@ -494,14 +587,17 @@ def get_bks_path_for_instance(
     instance_path: str | Path,
     objective_function: ObjectiveFunction,
 ) -> Path:
+    """``<base>.bks.<ObjectiveFunction>.json`` next to ``instance_path``."""
     path = Path(instance_path)
     base_name = path.name.removesuffix(".vrp.json")
     return path.with_name(f"{base_name}.bks.{objective_function.value}.json")
 
 
 def load_bks(bks_path: str | Path) -> BenchmarkBKS:
+    """Load and validate a BKS file."""
     return BenchmarkBKS(**load_json_from_file(bks_path))
 
 
 def save_bks(bks: BenchmarkBKS, bks_path: str | Path) -> None:
+    """Write a BKS as canonical JSON (creating parent directories)."""
     save_json_to_file(bks.model_dump(mode="json"), bks_path)

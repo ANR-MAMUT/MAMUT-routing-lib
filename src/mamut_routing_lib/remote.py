@@ -1,3 +1,15 @@
+"""Release archives on GitHub: the manifest contract and the download client.
+
+A MAMUT-routing release ships one zip per (problem type, family) plus a
+``snapshot-manifest.json`` (``ReleaseArchiveManifest``) listing every asset
+with its download URL, sha256 and size. ``GitHubReleaseClient`` reads the
+manifest of a tag (or of the latest release), downloads assets with retries
+and verifies their checksum; the ``mamut-routing remote`` commands are thin
+wrappers. Configuration: ``MAMUT_ROUTING_RELEASE_REPO`` (default
+``ANR-MAMUT/MAMUT-routing``) and ``MAMUT_ROUTING_GITHUB_TOKEN`` (optional,
+for rate limits or private releases).
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -33,6 +45,7 @@ ProgressCallback: TypeAlias = Callable[[int, int | None], None]
 
 
 class ReleaseArchiveScope(str, Enum):
+    """What an archive covers: today always ``problem_family`` (one problem type of one family)."""
     PROBLEM_FAMILY = "problem_family"
     #: One archive covering a whole family-first collection (all problem-type
     #: variants + the shared sidecars tree), e.g. Poryos2026. ``benchmark_name``
@@ -41,6 +54,7 @@ class ReleaseArchiveScope(str, Enum):
 
 
 class ReleaseArchiveAsset(BaseModel):
+    """One archive of a release: scope, ``filename``, ``download_url``, family identity, ``checksum_sha256``, ``size_bytes``, ``archive_root``."""
     model_config = ConfigDict(extra="forbid")
 
     scope: ReleaseArchiveScope
@@ -54,6 +68,7 @@ class ReleaseArchiveAsset(BaseModel):
 
 
 class ReleaseArchiveManifest(BaseModel):
+    """The ``snapshot-manifest.json`` of a release: snapshot identity (id, date, commit, tag) and its ``assets``."""
     model_config = ConfigDict(extra="forbid")
 
     schema_version: str = MANIFEST_SCHEMA_VERSION
@@ -71,6 +86,7 @@ class ReleaseArchiveManifest(BaseModel):
         problem_type: ProblemType | None = None,
         benchmark_name: BenchmarkName | None = None,
     ) -> list[ReleaseArchiveAsset]:
+        """Assets matching every given filter (``scope``, ``problem_type``, ``benchmark_name``); no filter returns all."""
         selected = self.assets
         if scope is not None:
             selected = [asset for asset in selected if asset.scope == scope]
@@ -83,6 +99,7 @@ class ReleaseArchiveManifest(BaseModel):
 
 @dataclass(frozen=True)
 class GitHubReleaseSource:
+    """Where releases are read from: ``owner/name`` repository, manifest filename, optional API token."""
     repo_full_name: str
     manifest_filename: str = DEFAULT_MANIFEST_FILENAME
     token: str | None = None
@@ -97,16 +114,19 @@ class GitHubReleaseSource:
 
     @classmethod
     def from_env(cls) -> "GitHubReleaseSource":
+        """Source from ``MAMUT_ROUTING_RELEASE_REPO`` and ``MAMUT_ROUTING_GITHUB_TOKEN``."""
         repo_full_name = os.getenv(DEFAULT_RELEASE_REPO_ENV, "ANR-MAMUT/MAMUT-routing")
         token = os.getenv(DEFAULT_GITHUB_TOKEN_ENV)
         return cls(repo_full_name=repo_full_name, token=token)
 
 
 def load_release_manifest(path: str | Path) -> ReleaseArchiveManifest:
+    """Load and validate a manifest file."""
     return ReleaseArchiveManifest(**load_json_from_file(path))
 
 
 def compute_sha256(filepath: str | Path) -> str:
+    """Hex sha256 of a file, streamed."""
     digest = hashlib.sha256()
     with Path(filepath).open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
@@ -115,12 +135,14 @@ def compute_sha256(filepath: str | Path) -> str:
 
 
 def verify_sha256(filepath: str | Path, expected_sha256: str) -> None:
+    """Raise ``ValueError`` unless the file's sha256 equals ``expected_sha256``."""
     actual_sha256 = compute_sha256(filepath)
     if actual_sha256 != expected_sha256:
         raise ValueError(f"SHA256 mismatch for {filepath}: expected {expected_sha256}, got {actual_sha256}")
 
 
 class GitHubReleaseClient:
+    """Reads manifests and downloads assets of GitHub releases with retries and a request timeout."""
     def __init__(
         self,
         source: GitHubReleaseSource | None = None,
@@ -135,6 +157,7 @@ class GitHubReleaseClient:
         self.request_timeout_seconds = request_timeout_seconds
 
     def fetch_manifest(self, tag: str | None = None) -> ReleaseArchiveManifest:
+        """The manifest of ``tag``, or of the latest release when ``tag`` is ``None``."""
         resolved_tag = tag if tag is not None else self._resolve_latest_tag()
         manifest_url = self._build_release_asset_url(resolved_tag, self.source.manifest_filename)
         payload = self._download_json(manifest_url)
@@ -163,6 +186,12 @@ class GitHubReleaseClient:
         extract: bool = False,
         progress_callback: ProgressCallback | None = None,
     ) -> Path:
+        """Download ``asset`` into ``destination_dir``, verify its checksum, optionally extract.
+
+        Returns the archive path, or the extraction directory (``<destination>/<stem>``,
+        replaced if it exists) when ``extract`` is true. ``progress_callback``
+        receives ``(bytes_so_far, total_or_None)``.
+        """
         destination_root = Path(destination_dir)
         destination_root.mkdir(parents=True, exist_ok=True)
         destination_path = destination_root / asset.filename
