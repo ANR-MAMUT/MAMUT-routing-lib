@@ -18,8 +18,10 @@ from mamut_routing_lib.artifacts import (
     AnyBenchmarkInstance,
     DEFAULT_BENCHMARKS_ROOT_ENV,
     DEFAULT_MAMUT_ROUTING_ROOT_ENV,
+    benchmark_tree_root,
     build_instance_id,
     instance_problem_type,
+    iter_benchmark_files,
     load_benchmark_instance,
     parse_layout,
 )
@@ -408,7 +410,8 @@ def _iter_candidate_paths(state: "CLIState", instance_paths: list[Path] | None) 
             err=True,
         )
         raise typer.Exit(code=2)
-    yield from sorted(state.benchmarks_dir.rglob("*.vrp.json"))
+    # The directory's own tree and the release archives `remote fetch` extracted into it.
+    yield from sorted(path for _, path in iter_benchmark_files(state.benchmarks_dir))
 
 
 def _enum_value(value: Any) -> Any:
@@ -444,12 +447,14 @@ def _problem_type_from_instance(instance: "AnyBenchmarkInstance") -> ProblemType
 
 def _resolve_layout_under(path: Path, benchmarks_dir: Path):
     """Return the parsed layout if `path` lives under `benchmarks_dir` and matches one
-    of the supported layouts, otherwise None.
+    of the supported layouts, otherwise None. Inside a fetched release archive, the
+    layout is relative to the archive's own tree root.
     """
-    try:
-        relative = path.resolve().relative_to(benchmarks_dir.resolve())
-    except ValueError:
+    resolved = path.resolve()
+    tree = benchmark_tree_root(resolved, benchmarks_dir.resolve())
+    if tree is None:
         return None
+    relative = resolved.relative_to(tree)
     try:
         return parse_layout(relative, path)
     except ValueError:

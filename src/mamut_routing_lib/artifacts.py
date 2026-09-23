@@ -3,7 +3,10 @@
 ``discover_benchmark_instances`` walks a ``benchmarks/`` tree and yields one
 ``DiscoveredBenchmarkInstance`` per ``*.vrp.json`` with the identity derived
 from the on-disk layout (``LayoutInfo`` lists the supported layouts; marker-
-rooted collections are parsed relative to their root). ``load_benchmark_instance``
+rooted collections are parsed relative to their root). Release archives that
+``remote fetch`` extracted into the directory are trees of their own
+(``find_release_archive_trees``), so a checkout and a fetched directory give
+the same instances and ids. ``load_benchmark_instance``
 picks the pydantic model from the payload shape (time-dependent, CVRP,
 VRPTW, slim collection); ``hydrate_collection_instance`` turns a slim
 instance into an embedded-matrix one for the checker; ``get_bks_path_for_instance``,
@@ -20,7 +23,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING, Iterable, Iterator
 
 if TYPE_CHECKING:
     from mamut_routing_lib.td.models import AnyTDBenchmarkInstance
@@ -44,6 +47,9 @@ from mamut_routing_lib.sidecars import (
     require_collection_root,
 )
 
+
+RELEASE_ARCHIVE_TREE_DIRNAME = "benchmarks"
+_SNAPSHOT_SEPARATOR = "-snapshot-"
 
 DEFAULT_MAMUT_ROUTING_ROOT_ENV = "MAMUT_ROUTING_ROOT"
 DEFAULT_BENCHMARKS_ROOT_ENV = "MAMUT_ROUTING_BENCHMARKS_ROOT"
@@ -362,6 +368,64 @@ def find_collection_roots(benchmarks_root: Path) -> dict[Path, str]:
     return roots
 
 
+def _extracted_archive_dirs(benchmarks_root: Path) -> list[Path]:
+    """Directories directly under ``benchmarks_root`` that hold an extracted release archive."""
+    return sorted(tree.parent for tree in benchmarks_root.glob(f"*/{RELEASE_ARCHIVE_TREE_DIRNAME}") if tree.is_dir())
+
+
+def find_release_archive_trees(benchmarks_root: Path) -> list[Path]:
+    """Benchmark trees of the release archives extracted directly under ``benchmarks_root``.
+
+    ``remote fetch`` extracts ``<archive>.zip`` into ``<benchmarks_root>/<archive stem>/``,
+    and every archive holds a ``benchmarks/`` tree (problem-type directories, or a
+    marker-rooted collection), so ``<benchmarks_root>/<archive stem>/benchmarks`` is a
+    tree root of its own. When several snapshots of one archive were fetched
+    (``VRPTW-Sintef2008-snapshot-<snapshot id>``), only the latest is returned: snapshot
+    ids start with their publication date, so the greatest name is the newest.
+    """
+    latest: dict[str, Path] = {}
+    for archive_dir in _extracted_archive_dirs(benchmarks_root):
+        archive = archive_dir.name.split(_SNAPSHOT_SEPARATOR, 1)[0]
+        if archive not in latest or archive_dir.name > latest[archive].name:
+            latest[archive] = archive_dir
+    return sorted(archive_dir / RELEASE_ARCHIVE_TREE_DIRNAME for archive_dir in latest.values())
+
+
+def iter_benchmark_files(benchmarks_root: Path) -> Iterator[tuple[Path, Path]]:
+    """``(tree root, instance path)`` for every ``*.vrp.json`` under ``benchmarks_root``.
+
+    The trees are ``benchmarks_root`` itself (a checkout's ``benchmarks/``) and the
+    ``find_release_archive_trees`` of the archives fetched into it; the files of an
+    older snapshot of a fetched archive are skipped. Layouts parse relative to the
+    tree root. Instance paths are sorted within each tree.
+    """
+    archive_dirs = _extracted_archive_dirs(benchmarks_root)
+    own_files = (
+        path for path in benchmarks_root.rglob("*.vrp.json") if not any(path.is_relative_to(d) for d in archive_dirs)
+    )
+    for instance_path in sorted(own_files):
+        yield benchmarks_root, instance_path
+    for tree in find_release_archive_trees(benchmarks_root):
+        for instance_path in sorted(tree.rglob("*.vrp.json")):
+            yield tree, instance_path
+
+
+def benchmark_tree_root(instance_path: Path, benchmarks_root: Path) -> Path | None:
+    """The tree root ``instance_path`` belongs to under ``benchmarks_root`` (see ``iter_benchmark_files``).
+
+    None when the path is outside ``benchmarks_root`` or in an older snapshot of a
+    fetched archive.
+    """
+    for tree in find_release_archive_trees(benchmarks_root):
+        if instance_path.is_relative_to(tree):
+            return tree
+    if not instance_path.is_relative_to(benchmarks_root):
+        return None
+    if any(instance_path.is_relative_to(d) for d in _extracted_archive_dirs(benchmarks_root)):
+        return None
+    return benchmarks_root
+
+
 def discover_benchmark_instances(
     benchmarks_root: Path | None = None,
     *,
@@ -373,6 +437,8 @@ def discover_benchmark_instances(
 ) -> list[DiscoveredBenchmarkInstance]:
     """Every ``*.vrp.json`` under ``benchmarks_root`` (or the environment root), sorted by path.
 
+    ``benchmarks_root`` is a checkout's ``benchmarks/``, a directory ``remote fetch``
+    extracted release archives into, or both at once (see ``iter_benchmark_files``).
     Filters are exact-match sets on problem type, family name, metric variant,
     place slug and instance id. Instances inside a marker-rooted collection are
     parsed with ``parse_collection_layout``; all others with ``parse_layout``.
@@ -385,23 +451,25 @@ def discover_benchmark_instances(
     allowed_places = {str(item) for item in (places or [])}
     allowed_instance_ids = {str(item) for item in (instance_ids or [])}
 
-    collection_roots = find_collection_roots(benchmark_root)
+    collection_roots_by_tree: dict[Path, dict[Path, str]] = {}
 
-    def _collection_of(instance_path: Path) -> tuple[Path, str] | None:
-        for root, family in collection_roots.items():
+    def _collection_of(tree: Path, instance_path: Path) -> tuple[Path, str] | None:
+        if tree not in collection_roots_by_tree:
+            collection_roots_by_tree[tree] = find_collection_roots(tree)
+        for root, family in collection_roots_by_tree[tree].items():
             if instance_path.is_relative_to(root):
                 return root, family
         return None
 
     discovered: list[DiscoveredBenchmarkInstance] = []
-    for instance_path in sorted(benchmark_root.rglob("*.vrp.json")):
-        collection = _collection_of(instance_path)
+    for tree, instance_path in iter_benchmark_files(benchmark_root):
+        collection = _collection_of(tree, instance_path)
         if collection is not None:
             root, family = collection
             layout = parse_collection_layout(instance_path.relative_to(root), instance_path, family)
             item = _discovered_from_layout(layout, instance_path)
         else:
-            relative_path = instance_path.relative_to(benchmark_root)
+            relative_path = instance_path.relative_to(tree)
             item = _discover_from_relative_path(relative_path, instance_path)
 
         if allowed_problem_types and item.problem_type.value not in allowed_problem_types:
@@ -419,6 +487,7 @@ def discover_benchmark_instances(
 
         discovered.append(item)
 
+    discovered.sort(key=lambda item: item.instance_path)
     return discovered
 
 

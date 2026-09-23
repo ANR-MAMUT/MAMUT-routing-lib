@@ -51,6 +51,11 @@ items = discover_benchmark_instances(
 )
 ```
 
+The root is a MAMUT-routing checkout's `benchmarks/`, or the directory `mamut-routing remote fetch`
+downloaded release archives into: each archive extracts to `<root>/<archive>/benchmarks/`, which discovery
+walks as a tree of its own, so both give the same instances and ids. If several snapshots of one archive were
+fetched, only the latest is used (`find_release_archive_trees`, `iter_benchmark_files`).
+
 ## Remote Snapshot Retrieval
 
 The optional remote module consumes release manifests and release assets published by a benchmark repository such as `MAMUT-routing`.
