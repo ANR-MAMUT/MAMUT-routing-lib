@@ -35,7 +35,8 @@ cost is the value of the contract in force when it was last priced.
   verbatim (:func:`~mamut_routing_lib.td.pwlf.restrict_domain`), every vertex
   map and the depot's due-date cut are applied exactly to the accumulator's
   breakpoints (:func:`~mamut_routing_lib.td.pwlf.apply_ready_time`), and arcs
-  are composed with the slope-one rule. On integer data the fold is exact.
+  are composed with the slope-one rule. On integer data whose pieces have
+  slope 0, 1 or are vertical (stepwise travel times) the fold is exact.
 
 The total solution cost sums per-route durations in canonical route order
 (routes sorted by their first customer), because floating-point addition is
