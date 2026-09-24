@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from mamut_routing_lib.checker import SolutionCheckStatus
 from mamut_routing_lib.models import BenchmarkSolution
 from mamut_routing_lib.td import (
+    NDCPWLF,
+    TD_CHECKER_CONTRACT,
+    InstanceATFs,
     check_td_solution,
     compute_route_duration,
     load_td_instance,
     td_instance_from_payload,
 )
 from td_utils import make_toy_atfs, toy_instance_payload, write_toy_instance_files
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 @pytest.fixture()
@@ -146,3 +154,77 @@ class TestCheckTDSolution:
         solution = BenchmarkSolution(instance_name="TOY1", routes=[[1, 2]])
         result = check_td_solution(toy_loaded_tdvrp, solution)
         assert result.status == SolutionCheckStatus.ROUTE_TIMING_INFEASIBLE
+
+
+class TestFoldV2Regressions:
+    """Routes the pre-0.12 fold (td-fold/1) mispriced; see td.checker's docstring."""
+
+    HORIZON = 43200.0
+
+    def _instance(self, with_time_windows: bool):
+        payload = toy_instance_payload(with_time_windows=with_time_windows)
+        payload["horizon"] = [0, 43200]
+        if with_time_windows:
+            payload["time_windows"] = [[0, 43200], [250, 12360], [0, 1014]]
+            payload["service_times"] = [0, 5, 0]
+        return td_instance_from_payload(payload)
+
+    def _constant(self, travel: float) -> NDCPWLF:
+        return NDCPWLF([0.0, self.HORIZON], [travel, self.HORIZON + travel])
+
+    def _atfs(self, arcs: dict) -> InstanceATFs:
+        full = {key: self._constant(1.0) for key in [(0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1)]}
+        full.update(arcs)
+        return InstanceATFs("TOY1", "Dabia2013", (0.0, self.HORIZON), 2, full)
+
+    def test_ulp_overshoot_no_longer_reads_the_upper_step_branch(self):
+        # 0 -> 1 arrives at 13; 1 -> 0 has a step at 13 (14 below, 100 above).
+        # td-fold/1 produced a ready time of 13.000000000000002 and priced 100.
+        atfs = self._atfs(
+            {
+                (0, 1): NDCPWLF([0.0, 43187.0], [13.0, 43200.0]),
+                (1, 0): NDCPWLF([0.0, 13.0, 13.0, 43200.0], [1.0, 14.0, 100.0, 43300.0]),
+            }
+        )
+        evaluation = compute_route_duration(self._instance(False), atfs, [1])
+        assert (evaluation.duration, evaluation.departure_time) == (14.0, 0.0)
+
+    def test_arrival_exactly_at_the_due_date_is_feasible(self):
+        # Ready at 1 = 1009 + 5 = 1014, zero-travel arc to 2 whose due date is 1014.
+        # td-fold/1 produced 1014.0000000000001 and declared the route infeasible.
+        atfs = self._atfs(
+            {
+                (0, 1): self._constant(1009.0),
+                (1, 2): self._constant(0.0),
+                (2, 0): self._constant(10.0),
+            }
+        )
+        evaluation = compute_route_duration(self._instance(True), atfs, [1, 2])
+        assert evaluation.feasible
+        assert (evaluation.duration, evaluation.departure_time) == (1024.0, 0.0)
+
+    def test_rifki30_route_is_priced_exactly(self):
+        # Real data, no satellite needed: the 9 arcs of Rifki-30's mispriced BKS route.
+        fixture = json.loads((FIXTURES / "td" / "rifki30-route.json").read_text())
+        num_customers = len(fixture["route"])
+        payload = {
+            "instance_name": "Rifki-30-route",
+            "instance_origin": "Solomon1987",
+            "benchmark_name": "Rifki2020",
+            "num_customers": num_customers,
+            "num_vehicles": None,
+            "vehicle_capacity": 1,
+            "coordinates": [[float(i), 0.0] for i in range(num_customers + 1)],
+            "demands": [0] * (num_customers + 1),
+            "service_times": fixture["service_times"],
+            "depot": 0,
+            "horizon": fixture["horizon"],
+            "td": {"model": "atf-ndcpwlf", "atf_path": "unused.atf.json"},
+            "metadata": {},
+        }
+        instance = td_instance_from_payload(payload)
+        arcs = {(arc["from"], arc["to"]): NDCPWLF(arc["xs"], arc["ys"]) for arc in fixture["arcs"]}
+        atfs = InstanceATFs("Rifki-30-route", "Rifki2020", tuple(fixture["horizon"]), num_customers, arcs)
+        evaluation = compute_route_duration(instance, atfs, fixture["route"])
+        expected = fixture["expected"][TD_CHECKER_CONTRACT]
+        assert (evaluation.duration, evaluation.departure_time) == (expected["duration"], expected["departure_time"])

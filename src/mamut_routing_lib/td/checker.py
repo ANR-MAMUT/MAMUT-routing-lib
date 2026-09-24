@@ -14,12 +14,28 @@ instance's time unit. Scoring ``FleetCostDuration`` on an instance without
 that field raises; scoring ``Duration`` on an instance that carries it is
 legal (the field is simply ignored).
 
-Route evaluation composes, sequentially and left-to-right, the arc
-arrival-time functions ``α`` and vertex ready-time functions ``θ`` into the
-route ready-time function ``δ_r`` (Lera-Romero 2020, Visser & Spliet 2020).
-Time-window feasibility falls out of domain restriction during composition:
-an empty domain means the route is infeasible. The optimal route duration is
-``min_t (δ_r(t) - t)``, attained at a breakpoint.
+Route evaluation folds, sequentially and left-to-right, the arc
+arrival-time functions ``α`` and the vertex ready-time maps
+``θ(t) = max(t, earliest) + service`` into the route ready-time function
+``δ_r`` (Lera-Romero 2020, Visser & Spliet 2020). Time-window feasibility
+falls out of domain restriction during the fold: an empty domain means the
+route is infeasible. The optimal route duration is ``min_t (δ_r(t) - t)``,
+attained at a breakpoint.
+
+The fold is versioned as :data:`TD_CHECKER_CONTRACT`. Every stored TD BKS
+cost is the value of the contract in force when it was last priced.
+
+- ``td-fold/1`` (lib < 0.12.0): θ was *composed* like an arc, so a ready time
+  ``u + s`` came out of the ratio interpolation
+  ``(e+s) + ((u-e)/(l-e)) * ((l+s)-(e+s))`` and could be off by an ulp; on
+  stepwise ATFs (Rifki2020) such an ulp could land past a vertical step and
+  read its upper branch (routes priced tens of units too high, or declared
+  infeasible).
+- ``td-fold/2`` (lib >= 0.12.0): the departure window restricts the first arc
+  verbatim (:func:`~mamut_routing_lib.td.pwlf.restrict_domain`), every vertex
+  map and the depot's due-date cut are applied exactly to the accumulator's
+  breakpoints (:func:`~mamut_routing_lib.td.pwlf.apply_ready_time`), and arcs
+  are composed with the slope-one rule. On integer data the fold is exact.
 
 The total solution cost sums per-route durations in canonical route order
 (routes sorted by their first customer), because floating-point addition is
@@ -30,16 +46,39 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
 
-from mamut_routing_lib.checker import SolutionCheckStatus
+from mamut_routing_lib.checker import SolutionCheckStatus, canonical_route_order
 from mamut_routing_lib.enums import ObjectiveFunction
 from mamut_routing_lib.models import BenchmarkBKS, BenchmarkSolution
 from mamut_routing_lib.td.artifacts import InstanceATFs, LoadedTDInstance
 from mamut_routing_lib.td.models import AnyTDBenchmarkInstance, BenchmarkInstanceTDVRPTW
-from mamut_routing_lib.td.pwlf import NDCPWLF, make_service_theta, make_theta
+from mamut_routing_lib.td.pwlf import NDCPWLF, apply_ready_time, restrict_domain
 
 #: Objectives the TD checker can score. Everything else is a static-checker
 #: concern and is refused loudly.
 TD_OBJECTIVES = (ObjectiveFunction.DURATION, ObjectiveFunction.FLEET_COST_DURATION)
+
+#: Version of the route fold that defines every TD cost (module docstring).
+TD_CHECKER_CONTRACT = "td-fold/2"
+
+#: Hint appended to cost mismatches: stored BKS priced under ``td-fold/1``
+#: need a re-pricing pass after the lib upgrade.
+REPRICE_HINT = (
+    "the TD checker contract changed to td-fold/2 in mamut-routing-lib 0.12.0; "
+    "re-price stored BKS with `mamut-routing bks reprice-td`"
+)
+
+__all__ = [
+    "REPRICE_HINT",
+    "TD_CHECKER_CONTRACT",
+    "TD_OBJECTIVES",
+    "TDRouteEvaluation",
+    "TDSolutionCheckResult",
+    "canonical_route_order",
+    "check_td_solution",
+    "compute_route_duration",
+    "compute_route_ready_time_function",
+    "compute_solution_cost",
+]
 
 
 def _fleet_fixed_cost_for(
@@ -107,8 +146,11 @@ def compute_route_ready_time_function(
 ) -> NDCPWLF:
     """Route ready-time function ``δ_r`` over feasible depot departure times.
 
-    Returns an empty function when the route is time-infeasible.
+    Implements contract ``td-fold/2`` (module docstring). Returns an empty
+    function when the route is time-infeasible.
     """
+    if not route:
+        raise ValueError("cannot evaluate an empty route")
     horizon_start, horizon_end = atfs.horizon
     depot = instance.depot
 
@@ -121,30 +163,35 @@ def compute_route_ready_time_function(
     if departure_low > departure_high:
         return NDCPWLF.empty()
 
-    acc = NDCPWLF.identity(departure_low, departure_high)
+    acc: NDCPWLF | None = None
     previous = depot
     for vertex in route:
-        acc = atfs.arcs[(previous, vertex)].compose(acc)
+        arc = atfs.arcs[(previous, vertex)]
+        if acc is None:
+            acc = restrict_domain(arc, departure_low, departure_high)
+        else:
+            acc = arc.compose(acc, slope_one_exact=True)
         if acc.is_empty():
             return acc
-        service_time = float(instance.service_times[vertex])
         time_window = _vertex_time_window(instance, vertex)
-        if time_window is not None:
-            theta = make_theta(time_window[0], time_window[1], service_time)
-        else:
-            theta = make_service_theta(acc.max_image, service_time)
-        acc = theta.compose(acc)
+        acc = apply_ready_time(
+            acc,
+            earliest=time_window[0] if time_window is not None else None,
+            latest=time_window[1] if time_window is not None else None,
+            service_time=float(instance.service_times[vertex]),
+        )
         if acc.is_empty():
             return acc
         previous = vertex
 
-    acc = atfs.arcs[(previous, depot)].compose(acc)
+    assert acc is not None
+    acc = atfs.arcs[(previous, depot)].compose(acc, slope_one_exact=True)
     if acc.is_empty():
         return acc
     if depot_tw is not None:
         # Restrict the return arrival to the depot due date, without any
         # waiting clamp: the route ends upon arrival.
-        acc = NDCPWLF.identity(0.0, depot_tw[1]).compose(acc)
+        acc = apply_ready_time(acc, earliest=None, latest=depot_tw[1], service_time=0.0)
     return acc
 
 
@@ -159,10 +206,6 @@ def compute_route_duration(
         return TDRouteEvaluation(route=route, feasible=False)
     duration, departure = delta.min_shifted_image()
     return TDRouteEvaluation(route=route, feasible=True, duration=duration, departure_time=departure)
-
-
-def canonical_route_order(routes: list[list[int]]) -> list[list[int]]:
-    return sorted(routes, key=lambda route: route[0])
 
 
 def compute_solution_cost(
@@ -261,6 +304,7 @@ def check_td_solution(
         evaluations.append(evaluation)
 
     total = 0.0
+    # Canonical route order (same key as canonical_route_order).
     for evaluation in sorted(evaluations, key=lambda item: item.route[0]):
         assert evaluation.duration is not None
         total += evaluation.duration
@@ -271,7 +315,7 @@ def check_td_solution(
         return TDSolutionCheckResult.make_invalid(
             SolutionCheckStatus.OBJECTIVE_VALUE_MISMATCH,
             f"Provided cost {solution.cost!r} does not match computed "
-            f"{objective_function.value} {total!r}.",
+            f"{objective_function.value} {total!r} ({REPRICE_HINT}).",
         )
 
     return TDSolutionCheckResult(
