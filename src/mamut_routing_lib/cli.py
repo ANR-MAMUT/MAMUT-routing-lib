@@ -63,6 +63,12 @@ export_app = typer.Typer(
 )
 app.add_typer(export_app, name="export")
 
+bks_app = typer.Typer(
+    help="Maintenance of stored best-known solutions.",
+    no_args_is_help=True,
+)
+app.add_typer(bks_app, name="bks")
+
 
 def _get_package_version() -> str:
     package_name = "mamut-routing-lib"
@@ -1295,6 +1301,103 @@ def remote_show_manifest(ctx: typer.Context) -> None:
     client = state.make_client()
     manifest = client.fetch_manifest(tag=state.tag)
     typer.echo(json.dumps(manifest.model_dump(mode="json"), indent=2))
+
+
+
+def _reprice_one(bks_path: str, options: dict[str, Any]) -> dict[str, Any]:
+    from mamut_routing_lib.td.reprice import reprice_td_bks
+
+    return reprice_td_bks(bks_path, **options).as_dict()
+
+
+@bks_app.command("reprice-td")
+def reprice_td(
+    paths: Annotated[
+        list[Path],
+        typer.Argument(help="TD BKS files (*.bks.Duration.json, *.bks.FleetCostDuration.json) or directories to scan."),
+    ],
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run/--write", help="Report what would change without writing (default: write)."),
+    ] = False,
+    report: Annotated[
+        Optional[Path],
+        typer.Option("--report", help="Write the per-file results as a JSON list to this path."),
+    ] = None,
+    jobs: Annotated[
+        int,
+        typer.Option("--jobs", min=1, help="Worker processes (each file loads its own instance)."),
+    ] = 1,
+    atf_dir: Annotated[
+        Optional[Path],
+        typer.Option("--atf-dir", help="Fallback directory for ATF sidecars that are pinned but not committed."),
+    ] = None,
+    allow_missing_sidecars: Annotated[
+        bool,
+        typer.Option("--allow-missing-sidecars", help="Do not fail when a sidecar is missing (the file is skipped)."),
+    ] = False,
+    verify_pins: Annotated[
+        bool,
+        typer.Option("--verify-pins", help="Check the sha256 pins of every sidecar read (slower)."),
+    ] = False,
+    note_date: Annotated[
+        Optional[str],
+        typer.Option("--note-date", help="Date written in metadata.repriced and stamp notes (default: today, UTC)."),
+    ] = None,
+) -> None:
+    """Re-price stored TD BKS under the current checker contract (routes untouched).
+
+    Rewrites a BKS only when a checker output changed (cost, validated_cost,
+    route_durations, route_departure_times); a moved cost is recorded in
+    metadata.repriced and an optimality stamp gets its proven_optimum updated
+    with a note. Exit status 1 when a file is infeasible, errors, would break a
+    stamp, or (without --allow-missing-sidecars) misses a sidecar.
+    """
+    from mamut_routing_lib.td.reprice import iter_td_bks_files
+
+    files = [str(path) for path in iter_td_bks_files(list(paths))]
+    if not files:
+        typer.echo("No TD BKS files found.", err=True)
+        raise typer.Exit(code=2)
+    options: dict[str, Any] = {
+        "dry_run": dry_run,
+        "atf_dir": str(atf_dir) if atf_dir is not None else None,
+        "verify_sidecar_sha256": verify_pins,
+        "note_date": note_date,
+    }
+    results: list[dict[str, Any]] = []
+    progress = tqdm(total=len(files), desc="reprice-td", unit="bks", disable=len(files) < 2)
+    if jobs == 1:
+        for path in files:
+            results.append(_reprice_one(path, options))
+            progress.update(1)
+    else:
+        with ProcessPoolExecutor(max_workers=jobs) as pool:
+            futures = {pool.submit(_reprice_one, path, options): path for path in files}
+            for future in as_completed(futures):
+                results.append(future.result())
+                progress.update(1)
+    progress.close()
+    results.sort(key=lambda item: item["bks_path"])
+
+    counts: dict[str, int] = {}
+    for item in results:
+        counts[item["action"]] = counts.get(item["action"], 0) + 1
+    cost_moves = [item for item in results if "cost" in item["changed_fields"]]
+    typer.echo(f"{len(results)} TD BKS files: " + ", ".join(f"{action} {n}" for action, n in sorted(counts.items())))
+    typer.echo(f"cost moved: {len(cost_moves)} (stamped: {sum(1 for item in cost_moves if item['stamped'])})")
+    for item in cost_moves:
+        if abs(item["new_cost"] - item["previous_cost"]) > 1e-6:
+            typer.echo(f"  {item['bks_path']}: {item['previous_cost']!r} -> {item['new_cost']!r}")
+    failures = [item for item in results if item["action"] in {"infeasible", "error", "stamp-conflict"}]
+    missing = [item for item in results if item["action"] == "skipped-missing-sidecar"]
+    for item in failures + missing:
+        typer.echo(f"{item['action']}: {item['bks_path']}: {item['detail']}", err=True)
+    if report is not None:
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(json.dumps(results, indent=1) + "\n", encoding="utf-8")
+    if failures or (missing and not allow_missing_sidecars):
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":
