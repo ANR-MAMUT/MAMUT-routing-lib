@@ -8,9 +8,11 @@ specification: instance ``.vrp.json`` files reference an ATF sidecar
 from mamut_routing_lib.td.artifacts import (
     ATF_GZIP_SUFFIX,
     ATF_PLAIN_SUFFIX,
+    ATFChecksumError,
     ATFFormatError,
     InstanceATFs,
     LoadedTDInstance,
+    atf_file_sha256,
     atfs_to_canonical_json_bytes,
     compute_atf_sha256,
     get_atf_path_for_instance,
@@ -41,6 +43,8 @@ from mamut_routing_lib.td.igp import (
     save_instance_categories,
 )
 from mamut_routing_lib.td.checker import (
+    REPRICE_HINT,
+    TD_CHECKER_CONTRACT,
     TD_OBJECTIVES,
     TDRouteEvaluation,
     TDSolutionCheckResult,
@@ -69,7 +73,14 @@ from mamut_routing_lib.td.models import (
     TDIGPProfileRef,
     TDRoadGraphRef,
 )
-from mamut_routing_lib.td.pwlf import NDCPWLF, PWLFError, make_service_theta, make_theta
+from mamut_routing_lib.td.pwlf import (
+    NDCPWLF,
+    PWLFError,
+    apply_ready_time,
+    make_service_theta,
+    make_theta,
+    restrict_domain,
+)
 from mamut_routing_lib.td.roadgraph import (
     ROAD_GZIP_SUFFIX,
     ROAD_MATERIALIZER_GENERATOR,
@@ -102,6 +113,7 @@ __all__ = [
     "ATF_FORMAT_VERSION",
     "ATF_GZIP_SUFFIX",
     "ATF_PLAIN_SUFFIX",
+    "ATFChecksumError",
     "ATFFormatError",
     "AnyTDBenchmarkInstance",
     "BenchmarkInstanceTDVRP",
@@ -118,6 +130,7 @@ __all__ = [
     "LoadedTDInstance",
     "NDCPWLF",
     "PWLFError",
+    "REPRICE_HINT",
     "ROAD_GRAPH_FORMAT",
     "ROAD_GRAPH_FORMAT_VERSION",
     "ROAD_GZIP_SUFFIX",
@@ -129,6 +142,7 @@ __all__ = [
     "TDRoadGraphRef",
     "TDRouteEvaluation",
     "TDSolutionCheckResult",
+    "TD_CHECKER_CONTRACT",
     "TD_ATF_MODEL",
     "TD_IGP_MODEL",
     "TD_ROAD_MODEL",
@@ -139,6 +153,8 @@ __all__ = [
     "TRAFFIC_PLAIN_SUFFIX",
     "TrafficOverlay",
     "annotate_td_bks_optimality",
+    "apply_ready_time",
+    "atf_file_sha256",
     "atfs_to_canonical_json_bytes",
     "build_adjacency",
     "build_arc_atf",
@@ -170,6 +186,7 @@ __all__ = [
     "materialize_instance_atfs",
     "materialize_instance_atfs_roadgraph",
     "materialize_selected_atfs_roadgraph",
+    "restrict_domain",
     "road_graph_to_canonical_json_bytes",
     "save_instance_atfs",
     "save_instance_categories",

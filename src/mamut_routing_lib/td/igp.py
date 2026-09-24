@@ -317,3 +317,36 @@ def materialize_instance_atfs(
         arcs=arcs,
         generator=dict(IGP_MATERIALIZER_GENERATOR),
     )
+
+
+def materialize_selected_atfs_igp(
+    instance: AnyTDBenchmarkInstance,
+    categories: InstanceCategories,
+    selected_arcs: set[tuple[int, int]],
+) -> dict[tuple[int, int], NDCPWLF]:
+    """Materialize only ``selected_arcs`` of an igp-profile instance.
+
+    Sparse counterpart of :func:`materialize_instance_atfs`: each arc is built
+    by the same ``build_arc_atf`` call, so the result is bit-identical to the
+    corresponding entries of the full materialization.
+    """
+    td = instance.td
+    if not isinstance(td, TDIGPProfileRef):
+        raise IGPFormatError(f"instance td model is {td.model!r}, expected igp-profile")
+    if categories.num_customers != instance.num_customers:
+        raise IGPFormatError(
+            f"categories num_customers {categories.num_customers} does not match "
+            f"instance {instance.num_customers}"
+        )
+    num_vertices = instance.num_customers + 1
+    horizon = (float(instance.horizon[0]), float(instance.horizon[1]))
+    zones = [(float(a), float(b)) for a, b in td.time_periods]
+    speeds = [[float(v) for v in row] for row in td.speeds]
+    coordinates = instance.coordinates
+    arcs: dict[tuple[int, int], NDCPWLF] = {}
+    for i, j in sorted(selected_arcs):
+        if not (0 <= i < num_vertices and 0 <= j < num_vertices) or i == j:
+            raise IGPFormatError(f"invalid selected arc {(i, j)}")
+        distance = euclidean_distance(coordinates[i], coordinates[j])
+        arcs[(i, j)] = build_arc_atf(zones, speeds[categories.category(i, j)], distance, horizon)
+    return arcs

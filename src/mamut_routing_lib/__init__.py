@@ -6,6 +6,7 @@ except PackageNotFoundError:
     __version__ = "0.0.0+unknown"
 
 from mamut_routing_lib.artifacts import (
+    BenchmarkLayoutResolver,
     DEFAULT_BENCHMARKS_ROOT_ENV,
     DEFAULT_MAMUT_ROUTING_ROOT_ENV,
     DiscoveredBenchmarkInstance,
@@ -16,6 +17,7 @@ from mamut_routing_lib.artifacts import (
     get_default_mamut_routing_root,
     get_instance_identifier,
     has_structured_metadata,
+    instance_id_for_layout,
     instance_problem_type,
     load_benchmark_instance,
     load_bks,
@@ -68,9 +70,13 @@ from mamut_routing_lib.checker import (
     SolutionCheckStatus,
     check_cvrp_solution,
     check_solution,
+    canonical_route_order,
     check_vrptw_solution,
+    compute_exact_solution_cost,
     compute_route_cost,
     compute_solution_cost,
+    exact_cost_value,
+    is_better_exact,
     is_better_solution,
 )
 from mamut_routing_lib.cvrplib import (
@@ -121,6 +127,7 @@ from mamut_routing_lib.remote import (
 )
 
 __all__ = [
+    "BenchmarkLayoutResolver",
     "__version__",
     "ArcCostsDistancesRef",
     "ArcCostsEuclidean",
@@ -172,17 +179,20 @@ __all__ = [
     "SolutionCheckStatus",
     "UnsupportedInstanceError",
     "VrpExportOptions",
+    "canonical_route_order",
     "check_cvrp_solution",
     "check_solution",
     "check_vrptw_solution",
     "compute_distances_sha256",
     "compute_geo_sha256",
+    "compute_exact_solution_cost",
     "compute_route_cost",
     "compute_sha256",
     "compute_solution_cost",
     "create_bks_from_solution",
     "discover_benchmark_instances",
     "distances_to_canonical_json_bytes",
+    "exact_cost_value",
     "export_instance_file",
     "find_collection_root",
     "find_collection_roots",
@@ -194,8 +204,10 @@ __all__ = [
     "get_default_mamut_routing_root",
     "get_instance_identifier",
     "has_structured_metadata",
+    "instance_id_for_layout",
     "instance_problem_type",
     "instance_to_vrp_text",
+    "is_better_exact",
     "is_better_solution",
     "load_benchmark_instance",
     "load_bks",

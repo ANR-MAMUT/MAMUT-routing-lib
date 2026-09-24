@@ -15,13 +15,15 @@ import typer
 from tqdm import tqdm
 
 from mamut_routing_lib.artifacts import (
+    RELEASE_STAGING_DIRNAME,
     AnyBenchmarkInstance,
+    BenchmarkLayoutResolver,
     DEFAULT_BENCHMARKS_ROOT_ENV,
     DEFAULT_MAMUT_ROUTING_ROOT_ENV,
     build_instance_id,
     instance_problem_type,
+    is_collection_instance,
     load_benchmark_instance,
-    parse_layout,
 )
 from mamut_routing_lib.cvrplib import (
     EDGE_WEIGHT_TYPES,
@@ -32,7 +34,8 @@ from mamut_routing_lib.cvrplib import (
     export_instance_file,
 )
 from mamut_routing_lib.enums import BenchmarkName, MetricVariant, ObjectiveFunction, ProblemType
-from mamut_routing_lib.models import BenchmarkInstanceCVRP
+from mamut_routing_lib.models import ArcCostsDistancesRef
+from mamut_routing_lib.sidecars import require_collection_root
 from mamut_routing_lib.remote import (
     DEFAULT_GITHUB_TOKEN_ENV,
     DEFAULT_RELEASE_REPO_ENV,
@@ -40,7 +43,11 @@ from mamut_routing_lib.remote import (
     GitHubReleaseSource,
     ReleaseArchiveAsset,
     ReleaseArchiveManifest,
+    ReleaseArchiveScope,
+    ReleaseExtractionError,
     compute_sha256,
+    read_release_stamp,
+    release_target_relpath,
 )
 
 
@@ -62,6 +69,12 @@ export_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(export_app, name="export")
+
+bks_app = typer.Typer(
+    help="Maintenance of stored best-known solutions.",
+    no_args_is_help=True,
+)
+app.add_typer(bks_app, name="bks")
 
 
 def _get_package_version() -> str:
@@ -124,6 +137,7 @@ class SolveSummaryRow:
     route_count: int
     wall_time: float
     bks_label: str
+    detail: str = ""
 
 
 T = TypeVar("T")
@@ -280,7 +294,7 @@ def remote_list_assets(
         typer.echo(
             f"{asset.filename:<60}  "
             f"{asset.scope.value:<14}  "
-            f"{(asset.problem_type.value if asset.problem_type else '-'):<6}  "
+            f"{(asset.problem_type.value if asset.problem_type else ('all' if asset.scope == ReleaseArchiveScope.FAMILY_COLLECTION else '-')):<6}  "
             f"{(asset.benchmark_name.value if asset.benchmark_name else '-'):<14}  "
             f"{_format_size_mb(asset.size_bytes):>8}  "
             f"{_short_sha(asset.checksum_sha256):<8}"
@@ -297,9 +311,30 @@ def remote_fetch_assets(
     problem_type: Annotated[Optional[ProblemType], typer.Option("--problem-type", case_sensitive=False)] = None,
     benchmark_name: Annotated[Optional[BenchmarkName], typer.Option("--benchmark-name", case_sensitive=False)] = None,
     select_all: Annotated[bool, typer.Option("--all", help="Download every asset in the manifest.")] = False,
-    extract: Annotated[bool, typer.Option("--extract/--no-extract", help="Extract zip archives after download.")] = True,
+    extract: Annotated[
+        bool,
+        typer.Option(
+            "--extract/--no-extract",
+            help="Extract each archive into the canonical tree under --benchmarks-dir (default).",
+        ),
+    ] = True,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Replace an existing family directory even if it was not extracted by `remote fetch` "
+            "(e.g. a git checkout). A previously fetched directory is always replaced.",
+        ),
+    ] = False,
 ) -> None:
-    """Download (and optionally extract) one or more benchmark archives."""
+    """Download (and optionally extract) one or more benchmark archives.
+
+    Archives are kept at <benchmarks-dir>/<filename>. With --extract (default)
+    each one lands in the canonical tree, e.g. <benchmarks-dir>/VRPTW/Sintef2008
+    or <benchmarks-dir>/Poryos2026, so `list` and `discover_benchmark_instances`
+    work on the fetched tree. Re-fetching replaces the family directory,
+    including files written into it since (e.g. BKS saved by `solve`).
+    """
     state: RemoteCLIState = ctx.obj
     client = state.make_client()
     manifest = client.fetch_manifest(tag=state.tag)
@@ -315,6 +350,16 @@ def remote_fetch_assets(
         raise typer.Exit(code=2)
 
     state.benchmarks_dir.mkdir(parents=True, exist_ok=True)
+    for asset in selected:
+        legacy = state.benchmarks_dir / Path(asset.filename).stem / "benchmarks"
+        if legacy.is_dir():
+            typer.secho(
+                f"Warning: {legacy.parent} is a legacy extraction (lib < 0.12, <stem>/benchmarks/...) that breaks "
+                "discover_benchmark_instances on this dir; it is left in place (it may hold solve output), "
+                "remove it once the canonical tree is fetched.",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
     typer.echo(f"Downloading {len(selected)} asset(s) into {state.benchmarks_dir}")
 
     for asset in selected:
@@ -333,13 +378,21 @@ def remote_fetch_assets(
                 _bar.n = downloaded
                 _bar.refresh()
 
-            destination = client.download_asset(
-                asset,
-                state.benchmarks_dir,
-                extract=extract,
-                progress_callback=_on_progress,
-            )
+            try:
+                destination = client.download_asset(
+                    asset,
+                    state.benchmarks_dir,
+                    extract=extract,
+                    progress_callback=_on_progress,
+                    manifest=manifest,
+                    force=force,
+                )
+            except ReleaseExtractionError as exc:
+                typer.echo(f"Error: {asset.filename}: {exc}", err=True)
+                raise typer.Exit(code=2) from exc
         typer.echo(f"  -> {destination}")
+        if extract:
+            typer.echo(f"     archive kept at {state.benchmarks_dir / asset.filename}")
 
 
 @remote_app.command("verify")
@@ -361,9 +414,18 @@ def remote_verify_local(
     has_failure = False
     for asset in assets:
         local_path = state.benchmarks_dir / asset.filename
+        tree_stamp = None
+        if asset.archive_root:
+            tree_stamp = read_release_stamp(state.benchmarks_dir / release_target_relpath(asset.archive_root))
         if not local_path.exists():
-            typer.echo(f"  MISSING   {asset.filename}")
-            has_failure = True
+            if tree_stamp is not None and tree_stamp.get("checksum_sha256") == asset.checksum_sha256:
+                typer.echo(f"  EXTRACTED {asset.filename} (archive removed; extracted tree stamped with this checksum)")
+            elif tree_stamp is not None:
+                typer.echo(f"  STALE     {asset.filename} (extracted tree comes from {tree_stamp.get('snapshot_id') or 'another archive'})")
+                has_failure = True
+            else:
+                typer.echo(f"  MISSING   {asset.filename}")
+                has_failure = True
             continue
         if asset.checksum_sha256 is None:
             typer.echo(f"  NO_SHA    {asset.filename} (no checksum recorded in manifest)")
@@ -408,7 +470,11 @@ def _iter_candidate_paths(state: "CLIState", instance_paths: list[Path] | None) 
             err=True,
         )
         raise typer.Exit(code=2)
-    yield from sorted(state.benchmarks_dir.rglob("*.vrp.json"))
+    yield from sorted(
+        path
+        for path in state.benchmarks_dir.rglob("*.vrp.json")
+        if RELEASE_STAGING_DIRNAME not in path.relative_to(state.benchmarks_dir).parts
+    )
 
 
 def _enum_value(value: Any) -> Any:
@@ -442,21 +508,20 @@ def _problem_type_from_instance(instance: "AnyBenchmarkInstance") -> ProblemType
     return instance_problem_type(instance)
 
 
-def _resolve_layout_under(path: Path, benchmarks_dir: Path):
-    """Return the parsed layout if `path` lives under `benchmarks_dir` and matches one
-    of the supported layouts, otherwise None.
-    """
+def _resolve_layout(path: Path, resolver: BenchmarkLayoutResolver):
+    """The layout discovery would give `path` (collections included), or None."""
     try:
-        relative = path.resolve().relative_to(benchmarks_dir.resolve())
-    except ValueError:
-        return None
-    try:
-        return parse_layout(relative, path)
+        return resolver.layout_for(path)
     except ValueError:
         return None
 
 
-def _local_instance_record(path: Path, instance: "AnyBenchmarkInstance", benchmarks_dir: Path) -> LocalInstanceRecord:
+def _local_instance_record(
+    path: Path,
+    instance: "AnyBenchmarkInstance",
+    benchmarks_dir: Path,
+    resolver: BenchmarkLayoutResolver | None = None,
+) -> LocalInstanceRecord:
     metadata = getattr(instance, "metadata", None)
     instance_name = str(getattr(instance, "instance_name"))
     problem_type = _problem_type_from_instance(instance)
@@ -466,8 +531,10 @@ def _local_instance_record(path: Path, instance: "AnyBenchmarkInstance", benchma
     subset = _metadata_value(metadata, "subset")
     num_customers = int(getattr(instance, "num_customers"))
 
-    layout = _resolve_layout_under(path, benchmarks_dir)
+    layout = _resolve_layout(path, resolver or BenchmarkLayoutResolver(benchmarks_dir))
     if layout is not None:
+        # The layout is the one discovery uses (family-first collections
+        # included), so the ID below equals the discovered/website ID.
         # Path overrides metadata for fields the path actually carries. Historical
         # 4-part layouts have neither metric_variant nor place_slug — fall back to
         # whatever metadata supplies (e.g. enriched Dimacs/Sintef instances now
@@ -486,7 +553,7 @@ def _local_instance_record(path: Path, instance: "AnyBenchmarkInstance", benchma
         place_for_id = layout.place_slug
         subset_for_id = layout.subset
         # When the path resolves, the bucket label is the canonical n for IDs —
-        # matches ``_discover_from_relative_path`` and keeps catalogue-derived
+        # matches ``discover_benchmark_instances`` and keeps catalogue-derived
         # IDs consistent. For Ortec2022 the bucket (e.g. 200) intentionally
         # differs from the per-instance ``num_customers`` (e.g. 212).
         num_for_id = layout.num_customers
@@ -563,9 +630,10 @@ def _filter_loaded_instances(
     benchmarks_dir: Path,
 ) -> list[LocalInstanceRecord]:
     selected: list[LocalInstanceRecord] = []
+    resolver = BenchmarkLayoutResolver(benchmarks_dir)
     for path in paths:
         instance = load_benchmark_instance(path)
-        record = _local_instance_record(path, instance, benchmarks_dir)
+        record = _local_instance_record(path, instance, benchmarks_dir, resolver)
         if _instance_matches(
             record,
             problem_type=problem_type,
@@ -576,6 +644,19 @@ def _filter_loaded_instances(
         ):
             selected.append(record)
     return selected
+
+
+def _missing_arc_cost_sidecar(record: LocalInstanceRecord) -> Path | None:
+    """The distances sidecar a collection instance needs but the tree lacks (sha256 pins only), else None."""
+    instance = record.instance
+    if not is_collection_instance(instance) or not isinstance(instance.arc_costs_source, ArcCostsDistancesRef):
+        return None
+    try:
+        root = require_collection_root(record.path)
+    except ValueError:
+        return None  # let the solve itself report the unresolvable root
+    target = root / instance.arc_costs_source.distances.path
+    return None if target.is_file() else target
 
 
 def _base_objective_for_record(record: LocalInstanceRecord) -> ObjectiveFunction | None:
@@ -734,10 +815,11 @@ def list_instances(
         typer.echo(header)
         typer.echo("-" * len(header))
 
+    resolver = BenchmarkLayoutResolver(state.benchmarks_dir)
     for path in candidate_paths:
         scanned_count += 1
         instance = load_benchmark_instance(path)
-        record = _local_instance_record(path, instance, state.benchmarks_dir)
+        record = _local_instance_record(path, instance, state.benchmarks_dir, resolver)
         if not _instance_matches(
             record,
             problem_type=problem_type,
@@ -895,8 +977,57 @@ def solve_instances(
         )
         raise typer.Exit(code=2)
 
+    explicit_paths = bool(instance_paths)
+    time_dependent = [r for r in selected if r.problem_type in (ProblemType.TDVRP, ProblemType.TDVRPTW)]
+    if time_dependent:
+        if explicit_paths:
+            typer.echo(
+                f"Error: {len(time_dependent)} time-dependent instance(s) selected (e.g. "
+                f"{time_dependent[0].instance_id}); `solve` covers CVRP and VRPTW only "
+                "(time-dependent instances are checked with mamut_routing_lib.td).",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+        typer.secho(
+            f"Warning: skipping {len(time_dependent)} time-dependent instance(s); "
+            "`solve` covers CVRP and VRPTW only.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+        selected = [r for r in selected if r.problem_type not in (ProblemType.TDVRP, ProblemType.TDVRPTW)]
+
+    unmaterialized = {id(r): path for r in selected if (path := _missing_arc_cost_sidecar(r)) is not None}
+    sidecar_error_rows: list[SolveSummaryRow] = []
+    if unmaterialized:
+        missing_records = [r for r in selected if id(r) in unmaterialized]
+        selected = [r for r in selected if id(r) not in unmaterialized]
+        if explicit_paths:
+            sidecar_error_rows = [
+                SolveSummaryRow(
+                    instance_id=r.instance_id,
+                    instance_name=r.instance_name,
+                    status="error",
+                    cost=None,
+                    route_count=0,
+                    wall_time=0.0,
+                    bks_label="-",
+                    detail=f"distances sidecar not in the tree (sha256-pinned; materialize it first): {unmaterialized[id(r)]}",
+                )
+                for r in missing_records
+            ]
+        else:
+            typer.secho(
+                f"Warning: skipping {len(missing_records)} instance(s) whose distances sidecar is sha256-pinned "
+                f"but not in the tree (e.g. {missing_records[0].instance_id}); materialize it first.",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
+    if not selected and not sidecar_error_rows:
+        typer.echo("No solvable instances left after skipping.", err=True)
+        raise typer.Exit(code=2)
+
     if objective != ObjectiveFunction.MONO_COST:
-        cvrp_in_batch = [r for r in selected if isinstance(r.instance, BenchmarkInstanceCVRP)]
+        cvrp_in_batch = [r for r in selected if r.problem_type is ProblemType.CVRP]
         if cvrp_in_batch:
             raise typer.BadParameter(
                 f"--objective {objective.value} is VRPTW-only but the selection includes "
@@ -988,11 +1119,28 @@ def solve_instances(
             bks_label=bks_label,
         )
 
+    def _solve_record_safe(record: LocalInstanceRecord) -> SolveSummaryRow:
+        # One bad instance must not take the whole batch (and its summary) down.
+        started = time.perf_counter()
+        try:
+            return _solve_record(record)
+        except Exception as exc:  # noqa: BLE001 - reported as an error row
+            return SolveSummaryRow(
+                instance_id=record.instance_id,
+                instance_name=record.instance_name,
+                status="error",
+                cost=None,
+                route_count=0,
+                wall_time=time.perf_counter() - started,
+                bks_label="-",
+                detail=f"{type(exc).__name__}: {exc}",
+            )
+
     if multi_instance:
         future_indices = {}
         with ThreadPoolExecutor(max_workers=effective_jobs) as executor:
             for index, record in enumerate(selected):
-                future_indices[executor.submit(_solve_record, record)] = index
+                future_indices[executor.submit(_solve_record_safe, record)] = index
             with tqdm(
                 total=len(selected),
                 desc=f"Solving ({effective_jobs} jobs)",
@@ -1005,10 +1153,10 @@ def solve_instances(
                     index = future_indices[future]
                     rows[index] = future.result()
                     bar.update(1)
-    else:
-        rows[0] = _solve_record(selected[0])
+    elif selected:
+        rows[0] = _solve_record_safe(selected[0])
 
-    solved_rows = [row for row in rows if row is not None]
+    solved_rows = [row for row in rows if row is not None] + sidecar_error_rows
     any_failure = any(row.status != "feasible" for row in solved_rows)
 
     header = (
@@ -1024,6 +1172,17 @@ def solve_instances(
             f"{row.instance_id:<64}  {row.instance_name:<24}  {row.status:<10}  {cost_str}  {row.route_count:>6}  "
             f"{row.wall_time:>7.2f}  {row.bks_label:<14}"
         )
+
+    for row in solved_rows:
+        if row.status == "error":
+            typer.echo(f"error: {row.instance_id}: {row.detail}", err=True)
+    counts = {status: sum(1 for row in solved_rows if row.status == status) for status in ("feasible", "infeasible", "error")}
+    skipped_td = len(time_dependent) if not explicit_paths else 0
+    skipped_sidecar = len(unmaterialized) if not explicit_paths else 0
+    typer.echo(
+        f"Summary: feasible {counts['feasible']} · infeasible {counts['infeasible']} · errors {counts['error']} · "
+        f"skipped (TD) {skipped_td} · skipped (sidecar) {skipped_sidecar}"
+    )
 
     if any_failure:
         raise typer.Exit(code=1)
@@ -1115,8 +1274,9 @@ def export_vrp(
         typer.Option(
             "--edge-weight-type",
             help="'EXPLICIT' writes the full cost matrix (faithful to the published costs). 'EUC_2D' writes "
-            "coordinates only for euclidean-metric instances; classic readers then use TSPLIB nint "
-            "distances, which differ from the published 3-decimal costs.",
+            "coordinates only, for instances whose costs are a rounding of the Euclidean distance of their "
+            "coordinates (not Dimacs2021, whose costs are floor(10 * d)); classic readers then use TSPLIB nint "
+            "distances, which can differ from the published costs by that rounding.",
         ),
     ] = "EXPLICIT",
     comment: Annotated[
@@ -1295,6 +1455,103 @@ def remote_show_manifest(ctx: typer.Context) -> None:
     client = state.make_client()
     manifest = client.fetch_manifest(tag=state.tag)
     typer.echo(json.dumps(manifest.model_dump(mode="json"), indent=2))
+
+
+
+def _reprice_one(bks_path: str, options: dict[str, Any]) -> dict[str, Any]:
+    from mamut_routing_lib.td.reprice import reprice_td_bks
+
+    return reprice_td_bks(bks_path, **options).as_dict()
+
+
+@bks_app.command("reprice-td")
+def reprice_td(
+    paths: Annotated[
+        list[Path],
+        typer.Argument(help="TD BKS files (*.bks.Duration.json, *.bks.FleetCostDuration.json) or directories to scan."),
+    ],
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run/--write", help="Report what would change without writing (default: write)."),
+    ] = False,
+    report: Annotated[
+        Optional[Path],
+        typer.Option("--report", help="Write the per-file results as a JSON list to this path."),
+    ] = None,
+    jobs: Annotated[
+        int,
+        typer.Option("--jobs", min=1, help="Worker processes (each file loads its own instance)."),
+    ] = 1,
+    atf_dir: Annotated[
+        Optional[Path],
+        typer.Option("--atf-dir", help="Fallback directory for ATF sidecars that are pinned but not committed."),
+    ] = None,
+    allow_missing_sidecars: Annotated[
+        bool,
+        typer.Option("--allow-missing-sidecars", help="Do not fail when a sidecar is missing (the file is skipped)."),
+    ] = False,
+    verify_pins: Annotated[
+        bool,
+        typer.Option("--verify-pins", help="Check the sha256 pins of every sidecar read (slower)."),
+    ] = False,
+    note_date: Annotated[
+        Optional[str],
+        typer.Option("--note-date", help="Date written in metadata.repriced and stamp notes (default: today, UTC)."),
+    ] = None,
+) -> None:
+    """Re-price stored TD BKS under the current checker contract (routes untouched).
+
+    Rewrites a BKS only when a checker output changed (cost, validated_cost,
+    route_durations, route_departure_times); a moved cost is recorded in
+    metadata.repriced and an optimality stamp gets its proven_optimum updated
+    with a note. Exit status 1 when a file is infeasible, errors, would break a
+    stamp, or (without --allow-missing-sidecars) misses a sidecar.
+    """
+    from mamut_routing_lib.td.reprice import iter_td_bks_files
+
+    files = [str(path) for path in iter_td_bks_files(list(paths))]
+    if not files:
+        typer.echo("No TD BKS files found.", err=True)
+        raise typer.Exit(code=2)
+    options: dict[str, Any] = {
+        "dry_run": dry_run,
+        "atf_dir": str(atf_dir) if atf_dir is not None else None,
+        "verify_sidecar_sha256": verify_pins,
+        "note_date": note_date,
+    }
+    results: list[dict[str, Any]] = []
+    progress = tqdm(total=len(files), desc="reprice-td", unit="bks", disable=len(files) < 2)
+    if jobs == 1:
+        for path in files:
+            results.append(_reprice_one(path, options))
+            progress.update(1)
+    else:
+        with ProcessPoolExecutor(max_workers=jobs) as pool:
+            futures = {pool.submit(_reprice_one, path, options): path for path in files}
+            for future in as_completed(futures):
+                results.append(future.result())
+                progress.update(1)
+    progress.close()
+    results.sort(key=lambda item: item["bks_path"])
+
+    counts: dict[str, int] = {}
+    for item in results:
+        counts[item["action"]] = counts.get(item["action"], 0) + 1
+    cost_moves = [item for item in results if "cost" in item["changed_fields"]]
+    typer.echo(f"{len(results)} TD BKS files: " + ", ".join(f"{action} {n}" for action, n in sorted(counts.items())))
+    typer.echo(f"cost moved: {len(cost_moves)} (stamped: {sum(1 for item in cost_moves if item['stamped'])})")
+    for item in cost_moves:
+        if abs(item["new_cost"] - item["previous_cost"]) > 1e-6:
+            typer.echo(f"  {item['bks_path']}: {item['previous_cost']!r} -> {item['new_cost']!r}")
+    failures = [item for item in results if item["action"] in {"infeasible", "error", "stamp-conflict"}]
+    missing = [item for item in results if item["action"] == "skipped-missing-sidecar"]
+    for item in failures + missing:
+        typer.echo(f"{item['action']}: {item['bks_path']}: {item['detail']}", err=True)
+    if report is not None:
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(json.dumps(results, indent=1) + "\n", encoding="utf-8")
+    if failures or (missing and not allow_missing_sidecars):
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":

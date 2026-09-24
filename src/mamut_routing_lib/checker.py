@@ -12,11 +12,22 @@ cost is this value. Slim collection instances must be hydrated first
 ``is_better_solution`` defines the order of each objective: ``MonoCost``,
 ``Duration`` and ``FleetCostDuration`` compare the cost alone,
 ``HierarchicalVehicleCost`` compares the route count first.
+
+The float total depends on the order in which arcs are added, so the same
+route set listed in another order, reversed on a symmetric matrix, or a
+different route set with the same exact cost can price a few ulps apart. The
+BKS store therefore never ranks solutions on float totals: it compares
+``compute_exact_solution_cost`` (the exact rational sum of the decimal arc
+costs written in the instance, see ``exact_cost_value``) with
+``is_better_exact``, so a tie is a tie. Stored BKS keep their routes in
+``canonical_route_order`` and their ``cost`` is the float total in that order.
 """
 
 from __future__ import annotations
 
 from enum import Enum
+from fractions import Fraction
+from numbers import Integral
 
 from pydantic import BaseModel, ConfigDict
 
@@ -90,6 +101,47 @@ def compute_solution_cost(
 ) -> int | float:
     """Sum of ``compute_route_cost`` over the routes of a solution, BKS or plain route list."""
     return sum(compute_route_cost(instance, route) for route in _iter_routes(solution_or_routes))
+
+
+def canonical_route_order(routes: list[list[int]]) -> list[list[int]]:
+    """Routes sorted by their first customer: the canonical storage and summation order of every BKS."""
+    return sorted(routes, key=lambda route: route[0])
+
+
+def exact_cost_value(value: int | float) -> Fraction:
+    """The exact decimal value a stored cost denotes.
+
+    Integers map to themselves; a float maps to the decimal number its
+    shortest ``repr`` spells (``0.1`` is one tenth, not the nearest binary
+    double). That is the value written in the instance or BKS JSON, and the map
+    is injective and strictly increasing on finite doubles, so it never merges
+    two distinct costs or swaps their order.
+    """
+    if isinstance(value, bool):
+        raise TypeError("a cost cannot be a boolean")
+    if isinstance(value, Integral):
+        return Fraction(int(value))
+    return Fraction(repr(float(value)))
+
+
+def compute_exact_solution_cost(
+    instance: AnyBenchmarkInstance,
+    solution_or_routes: BenchmarkSolution | BenchmarkBKS | list[list[int]],
+) -> Fraction:
+    """Exact rational routing cost: the sum of ``exact_cost_value`` over every arc, depot to depot.
+
+    Independent of route order and, on a symmetric matrix, of route direction.
+    No feasibility check.
+    """
+    total = Fraction(0)
+    depot = instance.depot
+    for route in _iter_routes(solution_or_routes):
+        previous_node = depot
+        for customer in route:
+            total += exact_cost_value(instance.arc_costs[previous_node][customer])
+            previous_node = customer
+        total += exact_cost_value(instance.arc_costs[previous_node][depot])
+    return total
 
 
 def _check_common_route_constraints(
@@ -225,9 +277,9 @@ def check_solution(
 
 def get_objective_tuple(
     routes: list[list[int]],
-    cost: int | float,
+    cost: int | float | Fraction,
     objective_function: ObjectiveFunction,
-) -> tuple[int | float, ...]:
+) -> tuple[int | float | Fraction, ...]:
     """The comparison key of a solution under ``objective_function``: ``(cost,)`` or ``(num_routes, cost)`` for the hierarchical objective."""
     if objective_function in (
         ObjectiveFunction.MONO_COST,
@@ -248,9 +300,28 @@ def is_better_solution(
     existing_cost: int | float,
     objective_function: ObjectiveFunction,
 ) -> bool:
-    """True when the candidate strictly precedes the existing solution under ``objective_function`` (see ``get_objective_tuple``)."""
+    """True when the candidate strictly precedes the existing solution under ``objective_function`` (see ``get_objective_tuple``).
+
+    Compares the float costs as given, so it is order-sensitive at the ulp
+    level; the BKS store uses :func:`is_better_exact` instead.
+    """
     return get_objective_tuple(candidate_routes, candidate_cost, objective_function) < get_objective_tuple(
         existing_routes,
         existing_cost,
+        objective_function,
+    )
+
+
+def is_better_exact(
+    candidate_routes: list[list[int]],
+    candidate_exact_cost: Fraction,
+    existing_routes: list[list[int]],
+    existing_exact_cost: Fraction,
+    objective_function: ObjectiveFunction,
+) -> bool:
+    """``is_better_solution`` on exact costs (``compute_exact_solution_cost``): ties are never improvements."""
+    return get_objective_tuple(candidate_routes, candidate_exact_cost, objective_function) < get_objective_tuple(
+        existing_routes,
+        existing_exact_cost,
         objective_function,
     )

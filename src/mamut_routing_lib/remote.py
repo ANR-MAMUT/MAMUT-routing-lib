@@ -1,13 +1,26 @@
 """Release archives on GitHub: the manifest contract and the download client.
 
-A MAMUT-routing release ships one zip per (problem type, family) plus a
-``snapshot-manifest.json`` (``ReleaseArchiveManifest``) listing every asset
-with its download URL, sha256 and size. ``GitHubReleaseClient`` reads the
-manifest of a tag (or of the latest release), downloads assets with retries
-and verifies their checksum; the ``mamut-routing remote`` commands are thin
-wrappers. Configuration: ``MAMUT_ROUTING_RELEASE_REPO`` (default
-``ANR-MAMUT/MAMUT-routing``) and ``MAMUT_ROUTING_GITHUB_TOKEN`` (optional,
-for rate limits or private releases).
+A MAMUT-routing release ships one zip per classic (problem type, family) and
+one per family-first collection, plus a ``snapshot-manifest.json``
+(``ReleaseArchiveManifest``) listing every asset with its download URL,
+sha256, size and ``archive_root``. Archive entries are paths relative to the
+repository root (``benchmarks/...``); ``archive_root`` is the subtree an
+archive covers (``benchmarks/<ProblemType>/<Family>`` or
+``benchmarks/<Family>`` for a collection).
+
+``GitHubReleaseClient`` reads the manifest of a tag (or of the latest
+release), downloads assets with retries and verifies their checksum.
+Extraction (``extract_release_archive``) lands every archive in the canonical
+benchmarks tree: the ``archive_root`` subtree becomes
+``<benchmarks-dir>/<archive_root without "benchmarks/">``, so
+``discover_benchmark_instances(<benchmarks-dir>)`` works on a fetched tree
+exactly as on a repository checkout. An extracted subtree carries a
+``.mamut-release.json`` stamp; an existing subtree without one (a git
+checkout, hand-made data) is never replaced unless forced. The
+``mamut-routing remote`` commands are thin wrappers. Configuration:
+``MAMUT_ROUTING_RELEASE_REPO`` (default ``ANR-MAMUT/MAMUT-routing``) and
+``MAMUT_ROUTING_GITHUB_TOKEN`` (optional, for rate limits or private
+releases).
 """
 
 from __future__ import annotations
@@ -23,11 +36,12 @@ import urllib.request
 import zipfile
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
-from typing import Callable, TypeAlias
+from pathlib import Path, PurePosixPath
+from typing import Any, Callable, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from mamut_routing_lib.artifacts import RELEASE_STAGING_DIRNAME
 from mamut_routing_lib.enums import BenchmarkName, ProblemType
 from mamut_routing_lib.json_utils import load_json_from_file
 
@@ -40,12 +54,14 @@ DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 30
 DEFAULT_RETRY_ATTEMPTS = 3
 DEFAULT_RETRY_DELAY_SECONDS = 0.5
+#: Stamp written at the root of every subtree extracted by ``extract_release_archive``.
+RELEASE_STAMP_FILENAME = ".mamut-release.json"
 
 ProgressCallback: TypeAlias = Callable[[int, int | None], None]
 
 
 class ReleaseArchiveScope(str, Enum):
-    """What an archive covers: today always ``problem_family`` (one problem type of one family)."""
+    """What an archive covers: one problem type of one classic family, or a whole collection."""
     PROBLEM_FAMILY = "problem_family"
     #: One archive covering a whole family-first collection (all problem-type
     #: variants + the shared sidecars tree), e.g. Poryos2026. ``benchmark_name``
@@ -86,12 +102,22 @@ class ReleaseArchiveManifest(BaseModel):
         problem_type: ProblemType | None = None,
         benchmark_name: BenchmarkName | None = None,
     ) -> list[ReleaseArchiveAsset]:
-        """Assets matching every given filter (``scope``, ``problem_type``, ``benchmark_name``); no filter returns all."""
+        """Assets matching every given filter (``scope``, ``problem_type``, ``benchmark_name``); no filter returns all.
+
+        A ``problem_type`` filter also keeps the ``family_collection`` assets
+        (``problem_type`` None): a collection archive ships every problem type
+        of its family, so it may contain the requested one.
+        """
         selected = self.assets
         if scope is not None:
             selected = [asset for asset in selected if asset.scope == scope]
         if problem_type is not None:
-            selected = [asset for asset in selected if asset.problem_type == problem_type]
+            selected = [
+                asset
+                for asset in selected
+                if asset.problem_type == problem_type
+                or (asset.scope == ReleaseArchiveScope.FAMILY_COLLECTION and asset.problem_type is None)
+            ]
         if benchmark_name is not None:
             selected = [asset for asset in selected if asset.benchmark_name == benchmark_name]
         return selected
@@ -141,6 +167,125 @@ def verify_sha256(filepath: str | Path, expected_sha256: str) -> None:
         raise ValueError(f"SHA256 mismatch for {filepath}: expected {expected_sha256}, got {actual_sha256}")
 
 
+class ReleaseExtractionError(RuntimeError):
+    """An archive cannot be extracted safely into the benchmarks tree."""
+
+
+def release_target_relpath(archive_root: str) -> PurePosixPath:
+    """Where an ``archive_root`` lands under the benchmarks dir (``benchmarks/`` stripped once)."""
+    root = PurePosixPath(archive_root.rstrip("/"))
+    if root.is_absolute() or ".." in root.parts or not root.parts:
+        raise ReleaseExtractionError(f"invalid archive_root {archive_root!r}")
+    parts = root.parts[1:] if root.parts[0] == "benchmarks" else root.parts
+    if not parts:
+        raise ReleaseExtractionError(f"archive_root {archive_root!r} would replace the whole benchmarks dir")
+    return PurePosixPath(*parts)
+
+
+def _infer_archive_root(names: list[str]) -> str:
+    """The family-level root shared by every member (``benchmarks/<PT>/<Family>`` or ``benchmarks/<Family>``)."""
+    parents = [PurePosixPath(name).parent.parts for name in names]
+    if not parents:
+        raise ReleaseExtractionError("empty archive")
+    prefix: list[str] = []
+    for level in zip(*parents):
+        if len(set(level)) != 1:
+            break
+        prefix.append(level[0])
+    if len(prefix) < 2 or prefix[0] != "benchmarks":
+        raise ReleaseExtractionError("cannot infer archive_root: members do not share a benchmarks/<...> root")
+    problem_types = {item.value for item in ProblemType}
+    depth = 3 if prefix[1] in problem_types and len(prefix) >= 3 else 2
+    return "/".join(prefix[:depth])
+
+
+def read_release_stamp(directory: str | Path) -> dict[str, Any] | None:
+    """The stamp of an extracted subtree, or None."""
+    path = Path(directory) / RELEASE_STAMP_FILENAME
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def extract_release_archive(
+    archive_path: str | Path,
+    benchmarks_dir: str | Path,
+    *,
+    archive_root: str | None = None,
+    stamp: dict[str, Any] | None = None,
+    force: bool = False,
+) -> Path:
+    """Extract a release archive into the canonical benchmarks tree; return the target directory.
+
+    The members under ``archive_root`` (inferred from the members when None)
+    land in ``<benchmarks_dir>/<archive_root without "benchmarks/">``. Every
+    member is validated first (relative, no ``..``, inside ``archive_root``);
+    extraction goes to ``<benchmarks_dir>/.mamut-staging/`` and the result is
+    swapped in, so a failure leaves the previous subtree untouched. An
+    existing target is replaced only when it carries a release stamp (a
+    previous fetch) or with ``force``; ``stamp`` (plus ``archive_root``) is
+    written to ``<target>/.mamut-release.json``.
+    """
+    archive_path = Path(archive_path)
+    benchmarks_dir = Path(benchmarks_dir)
+    with zipfile.ZipFile(archive_path) as archive:
+        members = [info for info in archive.infolist() if not info.is_dir()]
+        root = (archive_root or _infer_archive_root([info.filename for info in members])).rstrip("/")
+        target = benchmarks_dir / release_target_relpath(root)
+        prefix = f"{root}/"
+        for info in members:
+            name = info.filename
+            member = PurePosixPath(name)
+            if "\\" in name or member.is_absolute() or ".." in member.parts or not name.startswith(prefix):
+                raise ReleaseExtractionError(f"unsafe or out-of-root archive member {name!r} (archive_root {root!r})")
+        if target.exists() and not force and read_release_stamp(target) is None:
+            raise ReleaseExtractionError(
+                f"{target} exists and was not extracted by `remote fetch` (no {RELEASE_STAMP_FILENAME}); "
+                "pass --force to replace it"
+            )
+        staging_parent = benchmarks_dir / RELEASE_STAGING_DIRNAME
+        staging = staging_parent / f"{os.getpid()}-{archive_path.stem}"
+        if staging.exists():
+            shutil.rmtree(staging)
+        staging.mkdir(parents=True)
+        try:
+            for info in members:
+                destination = staging.joinpath(*PurePosixPath(info.filename).relative_to(root).parts)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(info) as source, destination.open("wb") as handle:
+                    shutil.copyfileobj(source, handle)
+            stamp_payload = dict(stamp or {})
+            stamp_payload["archive_root"] = root
+            (staging / RELEASE_STAMP_FILENAME).write_text(
+                json.dumps(stamp_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            previous = None
+            if target.exists():
+                previous = target.parent / f".{target.name}.old-{os.getpid()}"
+                os.replace(target, previous)
+            try:
+                try:
+                    os.replace(staging, target)
+                except OSError:
+                    shutil.move(str(staging), str(target))
+            except BaseException:
+                if previous is not None and not target.exists():
+                    os.replace(previous, target)
+                raise
+            if previous is not None:
+                shutil.rmtree(previous)
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
+            if staging_parent.is_dir() and not any(staging_parent.iterdir()):
+                staging_parent.rmdir()
+    return target
+
+
 class GitHubReleaseClient:
     """Reads manifests and downloads assets of GitHub releases with retries and a request timeout."""
     def __init__(
@@ -185,11 +330,16 @@ class GitHubReleaseClient:
         *,
         extract: bool = False,
         progress_callback: ProgressCallback | None = None,
+        manifest: ReleaseArchiveManifest | None = None,
+        force: bool = False,
     ) -> Path:
         """Download ``asset`` into ``destination_dir``, verify its checksum, optionally extract.
 
-        Returns the archive path, or the extraction directory (``<destination>/<stem>``,
-        replaced if it exists) when ``extract`` is true. ``progress_callback``
+        ``destination_dir`` is the benchmarks dir: the archive is kept at
+        ``<destination_dir>/<filename>``. Returns the archive path, or with
+        ``extract`` the canonical target directory (``extract_release_archive``,
+        stamped with the snapshot of ``manifest`` when given; ``force``
+        replaces an unstamped existing subtree). ``progress_callback``
         receives ``(bytes_so_far, total_or_None)``.
         """
         destination_root = Path(destination_dir)
@@ -208,13 +358,19 @@ class GitHubReleaseClient:
         if not extract:
             return destination_path
 
-        extract_dir = destination_root / destination_path.stem
-        if extract_dir.exists():
-            shutil.rmtree(extract_dir)
-        extract_dir.mkdir(parents=True, exist_ok=True)
-        with zipfile.ZipFile(destination_path, "r") as archive:
-            archive.extractall(extract_dir)
-        return extract_dir
+        stamp = {
+            "filename": asset.filename,
+            "checksum_sha256": asset.checksum_sha256,
+            "snapshot_id": manifest.snapshot_id if manifest is not None else None,
+            "release_tag": manifest.release_tag if manifest is not None else None,
+        }
+        return extract_release_archive(
+            destination_path,
+            destination_root,
+            archive_root=asset.archive_root,
+            stamp=stamp,
+            force=force,
+        )
 
     def _download_json(self, url: str) -> dict:
         with self._open_url(url) as response:

@@ -14,6 +14,9 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import os
+import threading
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -36,6 +39,10 @@ ATF_GZIP_SUFFIX = ".atf.json.gz"
 
 class ATFFormatError(ValueError):
     """Raised when an ATF sidecar file violates the canonical format."""
+
+
+class ATFChecksumError(ATFFormatError):
+    """Raised when an ATF sidecar's canonical bytes do not match the expected sha256."""
 
 
 @dataclass
@@ -152,24 +159,71 @@ def compute_atf_sha256(atfs: InstanceATFs) -> str:
     return hashlib.sha256(atfs_to_canonical_json_bytes(atfs)).hexdigest()
 
 
+def _atomic_write_bytes(target: Path, payload: bytes) -> None:
+    """Write ``payload`` to a sibling temp file, then ``os.replace`` it over ``target``.
+
+    A reader never sees a partial file, an interrupted write leaves the old
+    file intact, and a ``target`` hard-linked from elsewhere is replaced (a new
+    inode), never truncated in place.
+    """
+    partial = target.with_name(f"{target.name}.{os.getpid()}.{threading.get_ident()}.partial")
+    try:
+        with partial.open("xb") as handle:
+            handle.write(payload)
+        os.replace(partial, target)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+
+
 def save_instance_atfs(atfs: InstanceATFs, path: str | Path) -> None:
-    """Write the sidecar; gzip iff the path ends with ``.atf.json.gz``."""
+    """Write the sidecar atomically; gzip iff the path ends with ``.atf.json.gz``."""
     target = Path(path)
     data = atfs_to_canonical_json_bytes(atfs)
-    target.parent.mkdir(parents=True, exist_ok=True)
     if target.name.endswith(ATF_GZIP_SUFFIX):
-        target.write_bytes(gzip.compress(data, mtime=0))
+        payload = gzip.compress(data, mtime=0)
     elif target.name.endswith(ATF_PLAIN_SUFFIX):
-        target.write_bytes(data)
+        payload = data
     else:
         raise ATFFormatError(f"ATF path must end with {ATF_PLAIN_SUFFIX} or {ATF_GZIP_SUFFIX}: {target.name}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_bytes(target, payload)
 
 
-def load_instance_atfs(path: str | Path, *, validate_complete: bool = True) -> InstanceATFs:
+def atf_file_sha256(path: str | Path) -> str:
+    """sha256 of a sidecar's uncompressed bytes, streamed (no JSON parsing).
+
+    Equals the instance's ``atf_sha256`` when the file holds the canonical
+    bytes (every file written by ``save_instance_atfs``). A truncated or
+    corrupt gzip raises (``EOFError``, ``zlib.error`` or ``OSError``).
+    """
+    source = Path(path)
+    digest = hashlib.sha256()
+    opener = gzip.open if source.name.endswith(ATF_GZIP_SUFFIX) else open
+    with opener(source, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def load_instance_atfs(
+    path: str | Path,
+    *,
+    validate_complete: bool = True,
+    expected_sha256: str | None = None,
+) -> InstanceATFs:
+    """Load a sidecar; with ``expected_sha256`` its uncompressed bytes must hash to it (``ATFChecksumError``)."""
     source = Path(path)
     raw = source.read_bytes()
     if source.name.endswith(ATF_GZIP_SUFFIX):
-        raw = gzip.decompress(raw)
+        try:
+            raw = gzip.decompress(raw)
+        except (EOFError, OSError, zlib.error) as exc:
+            raise ATFFormatError(f"{source}: corrupt or truncated gzip ({exc})") from exc
+    if expected_sha256 is not None:
+        digest = hashlib.sha256(raw).hexdigest()
+        if digest != expected_sha256:
+            raise ATFChecksumError(f"{source}: sha256 {digest} does not match the expected {expected_sha256}")
     payload = json.loads(raw.decode("utf-8"))
     return _atfs_from_payload(payload, validate_complete=validate_complete)
 

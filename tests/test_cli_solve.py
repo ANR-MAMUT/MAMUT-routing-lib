@@ -433,3 +433,102 @@ def test_solve_no_selection_errors_with_exit_2(tmp_path: Path) -> None:
     )
     assert result.exit_code == 2
     assert "No instances selected" in (result.stderr + result.stdout) or "does not exist" in (result.stderr + result.stdout)
+
+
+def test_solve_reports_a_failing_instance_and_keeps_the_batch(
+    tmp_path: Path, toy_cvrp_instance, toy_vrptw_instance
+) -> None:
+    _write_instance(tmp_path, toy_cvrp_instance)
+    _write_instance(tmp_path, toy_vrptw_instance)
+
+    def _fake_solve(instance, **_kwargs):
+        if instance.instance_name == toy_vrptw_instance.instance_name:
+            raise RuntimeError("solver exploded")
+        return _fake_method_result(instance_name=instance.instance_name)
+
+    with patch("mamut_routing_lib.solvers.pyvrp.solve_instance", side_effect=_fake_solve):
+        result = _runner().invoke(
+            app, ["--benchmarks-dir", str(tmp_path), "solve", "--time-limit-s", "1", "--no-save-bks", "--jobs", "2"]
+        )
+
+    assert result.exit_code == 1, result.stdout + result.stderr
+    assert isinstance(result.exception, SystemExit)
+    assert "feasible" in result.stdout and "error" in result.stdout
+    assert "RuntimeError: solver exploded" in result.stderr
+    assert "Summary: feasible 1 · infeasible 0 · errors 1" in result.stdout
+
+
+def test_solve_single_instance_error_is_a_clean_exit(tmp_path: Path, toy_cvrp_instance) -> None:
+    instance_path = _write_instance(tmp_path, toy_cvrp_instance)
+    with patch("mamut_routing_lib.solvers.pyvrp.solve_instance", side_effect=ValueError("bad matrix")):
+        result = _runner().invoke(app, ["solve", str(instance_path), "--time-limit-s", "1", "--no-save-bks"])
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)
+    assert "ValueError: bad matrix" in result.stderr
+
+
+def test_solve_skips_scanned_time_dependent_instances(tmp_path: Path, toy_cvrp_instance) -> None:
+    from td_utils import write_toy_instance_files
+
+    _write_instance(tmp_path, toy_cvrp_instance)
+    td_dir = tmp_path / "TDVRPTW" / "Dabia2013" / "n=2"
+    td_dir.mkdir(parents=True)
+    write_toy_instance_files(td_dir)
+
+    with patch(
+        "mamut_routing_lib.solvers.pyvrp.solve_instance",
+        side_effect=lambda instance, **_: _fake_method_result(instance_name=instance.instance_name),
+    ) as mock_solve:
+        result = _runner().invoke(app, ["--benchmarks-dir", str(tmp_path), "solve", "--time-limit-s", "1", "--no-save-bks"])
+
+    assert result.exit_code == 0, result.stdout + result.stderr
+    assert mock_solve.call_count == 1
+    assert "skipping 1 time-dependent instance" in result.stderr
+    assert "skipped (TD) 1" in result.stdout
+
+
+def test_solve_refuses_an_explicit_time_dependent_path(tmp_path: Path) -> None:
+    from td_utils import write_toy_instance_files
+
+    instance_path = write_toy_instance_files(tmp_path)
+    result = _runner().invoke(app, ["solve", str(instance_path), "--time-limit-s", "1", "--no-save-bks"])
+    assert result.exit_code == 2
+    assert "time-dependent" in result.stderr
+
+
+def test_solve_handles_unmaterialized_distances_sidecars(tmp_path: Path) -> None:
+    from collection_utils import write_toy_collection
+
+    root = write_toy_collection(tmp_path)
+    for sidecar in (root / "Poryos2026" / "sidecars").rglob("*.distances-*.json.gz"):
+        sidecar.unlink()
+    fastest = next((root / "Poryos2026" / "CVRP" / "fastest").rglob("*.vrp.json"))
+
+    def _fake_solve(instance, **_kwargs):
+        return _fake_method_result(instance_name=instance.instance_name)
+
+    with patch("mamut_routing_lib.solvers.pyvrp.solve_instance", side_effect=_fake_solve) as mock_solve:
+        scanned = _runner().invoke(
+            app,
+            ["--benchmarks-dir", str(root), "solve", "--problem-type", "CVRP", "--time-limit-s", "1", "--no-save-bks"],
+        )
+        explicit = _runner().invoke(app, ["solve", str(fastest), "--time-limit-s", "1", "--no-save-bks"])
+
+    assert scanned.exit_code == 0, scanned.stdout + scanned.stderr
+    assert "skipping 1 instance(s) whose distances sidecar" in scanned.stderr
+    assert "skipped (sidecar) 1" in scanned.stdout
+    assert explicit.exit_code == 1
+    assert "distances sidecar not in the tree" in explicit.stderr
+    assert mock_solve.call_count == 1  # only the euclidean CVRP of the scan
+
+
+def test_solve_rejects_hierarchical_objective_on_collection_cvrp(tmp_path: Path) -> None:
+    from collection_utils import write_toy_collection
+
+    root = write_toy_collection(tmp_path)
+    euclidean = next((root / "Poryos2026" / "CVRP" / "euclidean").rglob("*.vrp.json"))
+    result = _runner().invoke(
+        app, ["solve", str(euclidean), "--objective", "hierarchicalvehiclecost", "--time-limit-s", "1"]
+    )
+    assert result.exit_code == 2
+    assert "VRPTW-only" in result.output

@@ -1,0 +1,1741 @@
+{
+ "format": "mamut-td-fold-vectors",
+ "contract": "td-fold/2",
+ "description": "Test vectors for reimplementations of the MAMUT-routing TD checker fold (contract td-fold/2, mamut-routing-lib >= 0.12.0; specification in docs/benchmarks/formats/time-dependent.md). 'micro' vectors exercise one operation each; 'expected' is the td-fold/2 result and 'td_fold_1' the pre-0.12 result where it differs or illustrates the change. 'routes' are published BKS routes with their re-priced duration and optimal departure time (instance paths relative to the MAMUT-routing benchmarks/ tree; fetch the family release to reproduce them). All floats are exact IEEE-754 doubles (JSON repr).",
+ "micro": [
+  {
+   "name": "slope-one arrival crossing earliest",
+   "op": "apply_ready_time",
+   "note": "wait until 43 then serve 5; the fold stops at the due date 90",
+   "acc": {
+    "xs": [
+     0.0,
+     100.0
+    ],
+    "ys": [
+     10.0,
+     110.0
+    ]
+   },
+   "earliest": 43.0,
+   "latest": 90.0,
+   "service_time": 5.0,
+   "expected": {
+    "xs": [
+     0.0,
+     33.0,
+     80.0
+    ],
+    "ys": [
+     48.0,
+     48.0,
+     95.0
+    ]
+   },
+   "td_fold_1": {
+    "xs": [
+     0.0,
+     33.0,
+     80.0
+    ],
+    "ys": [
+     48.0,
+     48.0,
+     95.0
+    ]
+   }
+  },
+  {
+   "name": "ulp trap: time window theta",
+   "op": "apply_ready_time",
+   "note": "td-fold/1 read 1014.0000000000001 at arrival 1009 (ratio interpolation through the window)",
+   "acc": {
+    "xs": [
+     1000.0,
+     1018.0
+    ],
+    "ys": [
+     1009.0,
+     1027.0
+    ]
+   },
+   "earliest": 250.0,
+   "latest": 12360.0,
+   "service_time": 5.0,
+   "expected": {
+    "xs": [
+     1000.0,
+     1018.0
+    ],
+    "ys": [
+     1014.0,
+     1032.0
+    ]
+   },
+   "td_fold_1": {
+    "xs": [
+     1000.0,
+     1018.0
+    ],
+    "ys": [
+     1014.0000000000001,
+     1032.0
+    ]
+   }
+  },
+  {
+   "name": "ulp trap: service theta without window",
+   "op": "apply_ready_time",
+   "note": "TDVRP vertex; td-fold/1 read 13.000000000000002 at arrival 13",
+   "acc": {
+    "xs": [
+     0.0,
+     30.0
+    ],
+    "ys": [
+     13.0,
+     43.0
+    ]
+   },
+   "earliest": null,
+   "latest": null,
+   "service_time": 0.0,
+   "expected": {
+    "xs": [
+     0.0,
+     30.0
+    ],
+    "ys": [
+     13.0,
+     43.0
+    ]
+   },
+   "td_fold_1": {
+    "xs": [
+     0.0,
+     30.0
+    ],
+    "ys": [
+     13.000000000000002,
+     43.0
+    ]
+   }
+  },
+  {
+   "name": "ulp trap: service time 5 from zero",
+   "op": "apply_ready_time",
+   "note": "td-fold/1 read 15.999999999999998 at arrival 11",
+   "acc": {
+    "xs": [
+     0.0,
+     10.0
+    ],
+    "ys": [
+     11.0,
+     21.0
+    ]
+   },
+   "earliest": 0.0,
+   "latest": 43200.0,
+   "service_time": 5.0,
+   "expected": {
+    "xs": [
+     0.0,
+     10.0
+    ],
+    "ys": [
+     16.0,
+     26.0
+    ]
+   },
+   "td_fold_1": {
+    "xs": [
+     0.0,
+     10.0
+    ],
+    "ys": [
+     15.999999999999998,
+     26.0
+    ]
+   }
+  },
+  {
+   "name": "due-date cut inside a piece",
+   "op": "apply_ready_time",
+   "note": "the cut is inserted at the piece's inverse interpolation of 30",
+   "acc": {
+    "xs": [
+     0.0,
+     10.0,
+     20.0
+    ],
+    "ys": [
+     5.0,
+     15.0,
+     40.0
+    ]
+   },
+   "earliest": 0.0,
+   "latest": 30.0,
+   "service_time": 0.0,
+   "expected": {
+    "xs": [
+     0.0,
+     10.0,
+     16.0
+    ],
+    "ys": [
+     5.0,
+     15.0,
+     30.0
+    ]
+   },
+   "td_fold_1": {
+    "xs": [
+     0.0,
+     10.0,
+     16.0
+    ],
+    "ys": [
+     5.0,
+     15.0,
+     30.0
+    ]
+   }
+  },
+  {
+   "name": "one piece crosses both bounds",
+   "op": "apply_ready_time",
+   "note": "the earliest crossing is emitted before the latest crossing",
+   "acc": {
+    "xs": [
+     0.0,
+     10.0
+    ],
+    "ys": [
+     0.0,
+     100.0
+    ]
+   },
+   "earliest": 20.0,
+   "latest": 60.0,
+   "service_time": 3.0,
+   "expected": {
+    "xs": [
+     0.0,
+     2.0,
+     6.0
+    ],
+    "ys": [
+     23.0,
+     23.0,
+     63.0
+    ]
+   },
+   "td_fold_1": {
+    "xs": [
+     0.0,
+     2.0,
+     6.0
+    ],
+    "ys": [
+     23.0,
+     23.0,
+     63.0
+    ]
+   }
+  },
+  {
+   "name": "infeasible: first arrival after the due date",
+   "op": "apply_ready_time",
+   "note": "empty result: time-window violation",
+   "acc": {
+    "xs": [
+     0.0,
+     10.0
+    ],
+    "ys": [
+     70.0,
+     80.0
+    ]
+   },
+   "earliest": 20.0,
+   "latest": 60.0,
+   "service_time": 3.0,
+   "expected": {
+    "xs": [],
+    "ys": []
+   },
+   "td_fold_1": {
+    "xs": [],
+    "ys": []
+   }
+  },
+  {
+   "name": "restrict the first arc to the departure window, keeping a step",
+   "op": "restrict_domain",
+   "note": "both points of the step at x=50 are kept verbatim; x=75 is evaluated with the slope-one rule",
+   "f": {
+    "xs": [
+     0.0,
+     50.0,
+     50.0,
+     100.0
+    ],
+    "ys": [
+     10.0,
+     60.0,
+     70.0,
+     120.0
+    ]
+   },
+   "low": 50.0,
+   "high": 75.0,
+   "expected": {
+    "xs": [
+     50.0,
+     50.0,
+     75.0
+    ],
+    "ys": [
+     60.0,
+     70.0,
+     95.0
+    ]
+   },
+   "td_fold_1": {
+    "xs": [
+     50.0,
+     50.0,
+     75.0
+    ],
+    "ys": [
+     60.0,
+     70.0,
+     95.0
+    ]
+   }
+  },
+  {
+   "name": "restrict a slope-one arc to the departure window",
+   "op": "restrict_domain",
+   "note": "the window end 15 lies inside the piece: td-fold/1 (composition with the identity) read 15.999999999999998",
+   "f": {
+    "xs": [
+     0.0,
+     22.0
+    ],
+    "ys": [
+     1.0,
+     23.0
+    ]
+   },
+   "low": 0.0,
+   "high": 15.0,
+   "expected": {
+    "xs": [
+     0.0,
+     15.0
+    ],
+    "ys": [
+     1.0,
+     16.0
+    ]
+   },
+   "td_fold_1": {
+    "xs": [
+     0.0,
+     15.0
+    ],
+    "ys": [
+     1.0,
+     15.999999999999998
+    ]
+   }
+  },
+  {
+   "name": "compose a slope-one arc",
+   "op": "compose",
+   "note": "f(g(x)) with f a constant 1-unit travel time; td-fold/1 read 15.999999999999998 at g = 15",
+   "f": {
+    "xs": [
+     0.0,
+     22.0
+    ],
+    "ys": [
+     1.0,
+     23.0
+    ]
+   },
+   "g": {
+    "xs": [
+     0.0,
+     10.0
+    ],
+    "ys": [
+     5.0,
+     15.0
+    ]
+   },
+   "expected": {
+    "xs": [
+     0.0,
+     10.0
+    ],
+    "ys": [
+     6.0,
+     16.0
+    ]
+   },
+   "td_fold_1": {
+    "xs": [
+     0.0,
+     10.0
+    ],
+    "ys": [
+     6.0,
+     15.999999999999998
+    ]
+   }
+  }
+ ],
+ "routes": [
+  {
+   "tree": "TDVRP/Dabia2013",
+   "instance": "TDVRP/Dabia2013/n=25/C101.vrp.json",
+   "route": [
+    16,
+    14,
+    12,
+    15,
+    19,
+    17,
+    18,
+    13
+   ],
+   "expected": {
+    "duration": 7901.099735551761,
+    "departure_time": 681.0000224999891
+   },
+   "td_fold_1": {
+    "duration": 7901.099735551759,
+    "departure_time": 681.0000224999891
+   }
+  },
+  {
+   "tree": "TDVRP/Dabia2013",
+   "instance": "TDVRP/Dabia2013/n=25/C102.vrp.json",
+   "route": [
+    16,
+    14,
+    12,
+    15,
+    19,
+    17,
+    18,
+    13
+   ],
+   "expected": {
+    "duration": 7901.099735551761,
+    "departure_time": 681.0000224999891
+   },
+   "td_fold_1": {
+    "duration": 7901.099735551759,
+    "departure_time": 681.0000224999891
+   }
+  },
+  {
+   "tree": "TDVRP/Dabia2013",
+   "instance": "TDVRP/Dabia2013/n=25/C103.vrp.json",
+   "route": [
+    16,
+    14,
+    12,
+    15,
+    19,
+    17,
+    18,
+    13
+   ],
+   "expected": {
+    "duration": 7901.099735551761,
+    "departure_time": 681.0000224999891
+   },
+   "td_fold_1": {
+    "duration": 7901.099735551759,
+    "departure_time": 681.0000224999891
+   }
+  },
+  {
+   "tree": "TDVRP/Dabia2013",
+   "instance": "TDVRP/Dabia2013/n=25/C104.vrp.json",
+   "route": [
+    16,
+    14,
+    12,
+    15,
+    19,
+    17,
+    18,
+    13
+   ],
+   "expected": {
+    "duration": 7901.099735551761,
+    "departure_time": 681.0000224999891
+   },
+   "td_fold_1": {
+    "duration": 7901.099735551759,
+    "departure_time": 681.0000224999891
+   }
+  },
+  {
+   "tree": "TDVRP/Dabia2013",
+   "instance": "TDVRP/Dabia2013/n=25/C105.vrp.json",
+   "route": [
+    16,
+    14,
+    12,
+    15,
+    19,
+    17,
+    18,
+    13
+   ],
+   "expected": {
+    "duration": 7901.099735551761,
+    "departure_time": 681.0000224999891
+   },
+   "td_fold_1": {
+    "duration": 7901.099735551759,
+    "departure_time": 681.0000224999891
+   }
+  },
+  {
+   "tree": "TDVRPTW/Dabia2013",
+   "instance": "TDVRPTW/Dabia2013/n=25/C101.vrp.json",
+   "route": [
+    13,
+    17,
+    18,
+    19,
+    15,
+    16,
+    14,
+    12
+   ],
+   "expected": {
+    "duration": 8155.7151632474815,
+    "departure_time": 0.0
+   },
+   "td_fold_1": {
+    "duration": 8155.7151632474815,
+    "departure_time": 128.78554400450778
+   }
+  },
+  {
+   "tree": "TDVRPTW/Dabia2013",
+   "instance": "TDVRPTW/Dabia2013/n=25/C102.vrp.json",
+   "route": [
+    13,
+    17,
+    18,
+    19,
+    15,
+    16,
+    14,
+    12
+   ],
+   "expected": {
+    "duration": 8155.7151632474815,
+    "departure_time": 0.0
+   },
+   "td_fold_1": {
+    "duration": 8155.7151632474815,
+    "departure_time": 128.78554400450778
+   }
+  },
+  {
+   "tree": "TDVRPTW/Dabia2013",
+   "instance": "TDVRPTW/Dabia2013/n=25/C103.vrp.json",
+   "route": [
+    13,
+    17,
+    18,
+    19,
+    15,
+    12,
+    14,
+    16
+   ],
+   "expected": {
+    "duration": 8079.5139206468175,
+    "departure_time": 0.0
+   },
+   "td_fold_1": {
+    "duration": 8079.513920646815,
+    "departure_time": 128.7855440045083
+   }
+  },
+  {
+   "tree": "TDVRPTW/Dabia2013",
+   "instance": "TDVRPTW/Dabia2013/n=25/C104.vrp.json",
+   "route": [
+    13,
+    18,
+    17,
+    19,
+    15,
+    12,
+    14,
+    16
+   ],
+   "expected": {
+    "duration": 8007.513599218586,
+    "departure_time": 0.0
+   },
+   "td_fold_1": {
+    "duration": 8007.513599218584,
+    "departure_time": 200.78586543273929
+   }
+  },
+  {
+   "tree": "TDVRPTW/Dabia2013",
+   "instance": "TDVRPTW/Dabia2013/n=25/C105.vrp.json",
+   "route": [
+    13,
+    17,
+    18,
+    19,
+    15,
+    16,
+    14,
+    12
+   ],
+   "expected": {
+    "duration": 8155.7151632474815,
+    "departure_time": 0.0
+   },
+   "td_fold_1": {
+    "duration": 8155.7151632474815,
+    "departure_time": 298.2857877548922
+   }
+  },
+  {
+   "tree": "TDVRP/Ari2018",
+   "instance": "TDVRP/Ari2018/n=30/Ari-C3-pB-d80-w25.vrp.json",
+   "route": [
+    19,
+    17,
+    26,
+    7,
+    22,
+    27,
+    18,
+    5,
+    3
+   ],
+   "expected": {
+    "duration": 507.6899999999996,
+    "departure_time": 1583.3000000000002
+   },
+   "td_fold_1": {
+    "duration": 507.6899999999996,
+    "departure_time": 1065.0
+   }
+  },
+  {
+   "tree": "TDVRP/Ari2018",
+   "instance": "TDVRP/Ari2018/n=30/Ari-C6-pA-d80-w100.vrp.json",
+   "route": [
+    2,
+    23,
+    20,
+    16,
+    7,
+    26,
+    12,
+    29,
+    22,
+    6,
+    21
+   ],
+   "expected": {
+    "duration": 429.8799999999994,
+    "departure_time": 1643.8900000000006
+   },
+   "td_fold_1": {
+    "duration": 429.8799999999994,
+    "departure_time": 1065.0
+   }
+  },
+  {
+   "tree": "TDVRP/Ari2018",
+   "instance": "TDVRP/Ari2018/n=30/Ari-C6-pA-d80-w25.vrp.json",
+   "route": [
+    2
+   ],
+   "expected": {
+    "duration": 90.31999999999994,
+    "departure_time": 1950.8400000000001
+   },
+   "td_fold_1": {
+    "duration": 90.31999999999994,
+    "departure_time": 1065.0
+   }
+  },
+  {
+   "tree": "TDVRP/Ari2018",
+   "instance": "TDVRP/Ari2018/n=40/Ari-B1-pB-d98-w25.vrp.json",
+   "route": [
+    29,
+    11,
+    1,
+    35,
+    24,
+    15
+   ],
+   "expected": {
+    "duration": 281.3699999999999,
+    "departure_time": 1065.0
+   },
+   "td_fold_1": {
+    "duration": 281.3699999999999,
+    "departure_time": 1080.0
+   }
+  },
+  {
+   "tree": "TDVRP/Ari2018",
+   "instance": "TDVRP/Ari2018/n=40/Ari-B10-pA-d90-w50.vrp.json",
+   "route": [
+    15,
+    1,
+    2,
+    4,
+    10,
+    6,
+    39
+   ],
+   "expected": {
+    "duration": 204.11000000000013,
+    "departure_time": 1065.0
+   },
+   "td_fold_1": {
+    "duration": 204.1099999999999,
+    "departure_time": 1080.0
+   }
+  },
+  {
+   "tree": "TDVRPTW/Ari2018",
+   "instance": "TDVRPTW/Ari2018/n=15/Ari-A10-pB-d70-w50.vrp.json",
+   "route": [
+    2,
+    6,
+    9,
+    5,
+    12,
+    8,
+    15,
+    11
+   ],
+   "expected": {
+    "duration": 396.7284022257552,
+    "departure_time": 38.335985691573924
+   },
+   "td_fold_1": {
+    "duration": 396.72840222575513,
+    "departure_time": 38.335985691573924
+   }
+  },
+  {
+   "tree": "TDVRPTW/Ari2018",
+   "instance": "TDVRPTW/Ari2018/n=15/Ari-A3-pB-d95-w0.vrp.json",
+   "route": [
+    3,
+    1,
+    12,
+    7,
+    6,
+    15,
+    9
+   ],
+   "expected": {
+    "duration": 471.08335073710066,
+    "departure_time": 0.0
+   },
+   "td_fold_1": {
+    "duration": 471.0833507371006,
+    "departure_time": 0.0
+   }
+  },
+  {
+   "tree": "TDVRPTW/Ari2018",
+   "instance": "TDVRPTW/Ari2018/n=15/Ari-A7-pA-d70-w0.vrp.json",
+   "route": [
+    5,
+    3,
+    14,
+    13,
+    9,
+    8
+   ],
+   "expected": {
+    "duration": 438.2974811580883,
+    "departure_time": 0.0
+   },
+   "td_fold_1": {
+    "duration": 438.29748115808843,
+    "departure_time": 0.0
+   }
+  },
+  {
+   "tree": "TDVRPTW/Ari2018",
+   "instance": "TDVRPTW/Ari2018/n=15/Ari-A7-pB-d80-w50.vrp.json",
+   "route": [
+    1,
+    3,
+    8,
+    9,
+    13,
+    14,
+    12,
+    15,
+    10,
+    11
+   ],
+   "expected": {
+    "duration": 428.67316013733154,
+    "departure_time": 3.5343310810810693
+   },
+   "td_fold_1": {
+    "duration": 428.6731601373316,
+    "departure_time": 3.5343310810810693
+   }
+  },
+  {
+   "tree": "TDVRPTW/Ari2018",
+   "instance": "TDVRPTW/Ari2018/n=15/Ari-A7-pB-d90-w100.vrp.json",
+   "route": [
+    1,
+    3,
+    2,
+    4,
+    5,
+    8,
+    9,
+    11
+   ],
+   "expected": {
+    "duration": 467.175861706737,
+    "departure_time": 3.7573377088948154
+   },
+   "td_fold_1": {
+    "duration": 467.17586170673695,
+    "departure_time": 3.757337708894815
+   }
+  },
+  {
+   "tree": "TDVRP/Rifki2020",
+   "instance": "TDVRP/Rifki2020/n=10/Rifki-1.vrp.json",
+   "route": [
+    6,
+    3,
+    7,
+    2
+   ],
+   "expected": {
+    "duration": 1427.0,
+    "departure_time": 369.0
+   },
+   "td_fold_1": {
+    "duration": 1426.9999999999998,
+    "departure_time": 440.00000000000006
+   }
+  },
+  {
+   "tree": "TDVRP/Rifki2020",
+   "instance": "TDVRP/Rifki2020/n=10/Rifki-10.vrp.json",
+   "route": [
+    4,
+    5,
+    8
+   ],
+   "expected": {
+    "duration": 1441.0,
+    "departure_time": 1013.0
+   },
+   "td_fold_1": {
+    "duration": 1441.0,
+    "departure_time": 1013.0000000000001
+   }
+  },
+  {
+   "tree": "TDVRP/Rifki2020",
+   "instance": "TDVRP/Rifki2020/n=10/Rifki-12.vrp.json",
+   "route": [
+    7,
+    6
+   ],
+   "expected": {
+    "duration": 705.0,
+    "departure_time": 7323.0
+   },
+   "td_fold_1": {
+    "duration": 704.9999999999991,
+    "departure_time": 7527.999999999999
+   }
+  },
+  {
+   "tree": "TDVRP/Rifki2020",
+   "instance": "TDVRP/Rifki2020/n=10/Rifki-14.vrp.json",
+   "route": [
+    6,
+    10,
+    2,
+    4
+   ],
+   "expected": {
+    "duration": 1438.0,
+    "departure_time": 1858.0
+   },
+   "td_fold_1": {
+    "duration": 1437.9999999999995,
+    "departure_time": 1858.0
+   }
+  },
+  {
+   "tree": "TDVRP/Rifki2020",
+   "instance": "TDVRP/Rifki2020/n=10/Rifki-16.vrp.json",
+   "route": [
+    4,
+    6,
+    5,
+    8
+   ],
+   "expected": {
+    "duration": 1653.0,
+    "departure_time": 1759.0
+   },
+   "td_fold_1": {
+    "duration": 1652.9999999999998,
+    "departure_time": 1759.0000000000002
+   }
+  },
+  {
+   "tree": "TDVRPTW/Rifki2020",
+   "instance": "TDVRPTW/Rifki2020/n=10/Rifki-1.vrp.json",
+   "route": [
+    9,
+    10,
+    1
+   ],
+   "expected": {
+    "duration": 1219.0,
+    "departure_time": 4320.0
+   },
+   "td_fold_1": {
+    "duration": 1219.0,
+    "departure_time": 4407.0
+   }
+  },
+  {
+   "tree": "TDVRPTW/Rifki2020",
+   "instance": "TDVRPTW/Rifki2020/n=10/Rifki-11.vrp.json",
+   "route": [
+    2,
+    3
+   ],
+   "expected": {
+    "duration": 841.0,
+    "departure_time": 28122.0
+   },
+   "td_fold_1": {
+    "duration": 840.9999999999964,
+    "departure_time": 28478.0
+   }
+  },
+  {
+   "tree": "TDVRPTW/Rifki2020",
+   "instance": "TDVRPTW/Rifki2020/n=10/Rifki-12.vrp.json",
+   "route": [
+    5,
+    10,
+    7,
+    6
+   ],
+   "expected": {
+    "duration": 1324.0,
+    "departure_time": 6704.0
+   },
+   "td_fold_1": {
+    "duration": 1323.999999999999,
+    "departure_time": 6704.0
+   }
+  },
+  {
+   "tree": "TDVRPTW/Rifki2020",
+   "instance": "TDVRPTW/Rifki2020/n=10/Rifki-13.vrp.json",
+   "route": [
+    1,
+    7,
+    6
+   ],
+   "expected": {
+    "duration": 1227.0,
+    "departure_time": 28080.0
+   },
+   "td_fold_1": {
+    "duration": 1226.9999999999964,
+    "departure_time": 28080.0
+   }
+  },
+  {
+   "tree": "TDVRPTW/Rifki2020",
+   "instance": "TDVRPTW/Rifki2020/n=10/Rifki-15.vrp.json",
+   "route": [
+    9,
+    7,
+    2
+   ],
+   "expected": {
+    "duration": 1295.0,
+    "departure_time": 7686.0
+   },
+   "td_fold_1": {
+    "duration": 1295.000000000001,
+    "departure_time": 7685.999999999999
+   }
+  },
+  {
+   "tree": "TDVRP/Vu2020",
+   "instance": "TDVRP/Vu2020/n=59/Vu-A5-pA-d70-w40.vrp.json",
+   "route": [
+    10,
+    23,
+    35,
+    34
+   ],
+   "expected": {
+    "duration": 7.680000000000014,
+    "departure_time": 45.0
+   },
+   "td_fold_1": {
+    "duration": 7.679999999999993,
+    "departure_time": 52.32000000000001
+   }
+  },
+  {
+   "tree": "TDVRP/Vu2020",
+   "instance": "TDVRP/Vu2020/n=99/Vu-A1-pA-d98-w40.vrp.json",
+   "route": [
+    46,
+    65,
+    32,
+    18,
+    20,
+    88
+   ],
+   "expected": {
+    "duration": 14.090000000000003,
+    "departure_time": 45.0
+   },
+   "td_fold_1": {
+    "duration": 14.09000000000001,
+    "departure_time": 45.0
+   }
+  },
+  {
+   "tree": "TDVRPTW/Vu2020",
+   "instance": "TDVRPTW/Vu2020/n=59/Vu-A1-pA-d70-w150.vrp.json",
+   "route": [
+    4,
+    44,
+    58,
+    24,
+    5
+   ],
+   "expected": {
+    "duration": 154.50642358614516,
+    "departure_time": 839.353128909552
+   },
+   "td_fold_1": {
+    "duration": 154.50642358614505,
+    "departure_time": 839.353128909552
+   }
+  },
+  {
+   "tree": "TDVRPTW/Vu2020",
+   "instance": "TDVRPTW/Vu2020/n=59/Vu-A1-pA-d80-w100.vrp.json",
+   "route": [
+    7,
+    39,
+    35
+   ],
+   "expected": {
+    "duration": 17.510169491525403,
+    "departure_time": 929.3898305084746
+   },
+   "td_fold_1": {
+    "duration": 17.51016949152529,
+    "departure_time": 929.3898305084746
+   }
+  },
+  {
+   "tree": "TDVRPTW/Vu2020",
+   "instance": "TDVRPTW/Vu2020/n=59/Vu-A1-pA-d80-w180.vrp.json",
+   "route": [
+    9,
+    54,
+    45,
+    58,
+    49,
+    56,
+    42,
+    4
+   ],
+   "expected": {
+    "duration": 249.87902216427642,
+    "departure_time": 896.7009778357235
+   },
+   "td_fold_1": {
+    "duration": 249.8790221642763,
+    "departure_time": 896.7009778357236
+   }
+  },
+  {
+   "tree": "TDVRPTW/Vu2020",
+   "instance": "TDVRPTW/Vu2020/n=59/Vu-A1-pA-d90-w100.vrp.json",
+   "route": [
+    9,
+    41,
+    39
+   ],
+   "expected": {
+    "duration": 64.26203833567085,
+    "departure_time": 119.61594202898551
+   },
+   "td_fold_1": {
+    "duration": 64.26203833567087,
+    "departure_time": 119.6159420289855
+   }
+  },
+  {
+   "tree": "TDVRPTW/Vu2020",
+   "instance": "TDVRPTW/Vu2020/n=59/Vu-A1-pA-d90-w60.vrp.json",
+   "route": [
+    29,
+    22,
+    40
+   ],
+   "expected": {
+    "duration": 171.2444230769231,
+    "departure_time": 713.5055769230769
+   },
+   "td_fold_1": {
+    "duration": 171.244423076923,
+    "departure_time": 713.5055769230769
+   }
+  },
+  {
+   "tree": "TDVRP/Lera2026",
+   "instance": "TDVRP/Lera2026/S1/n=200/Lera-C1_2_1-S1.vrp.json",
+   "route": [
+    17,
+    183,
+    137,
+    37,
+    184,
+    135,
+    93,
+    55
+   ],
+   "expected": {
+    "duration": 804.9542230642897,
+    "departure_time": 140.74577693571018
+   },
+   "td_fold_1": {
+    "duration": 804.9542230642896,
+    "departure_time": 140.74577693571027
+   }
+  },
+  {
+   "tree": "TDVRP/Lera2026",
+   "instance": "TDVRP/Lera2026/S1/n=200/Lera-C1_2_10-S1.vrp.json",
+   "route": [
+    11,
+    147,
+    66,
+    164,
+    47,
+    160,
+    70,
+    91
+   ],
+   "expected": {
+    "duration": 788.2456151175503,
+    "departure_time": 60.554509858602955
+   },
+   "td_fold_1": {
+    "duration": 788.2456151175504,
+    "departure_time": 14.419941957368355
+   }
+  },
+  {
+   "tree": "TDVRP/Lera2026",
+   "instance": "TDVRP/Lera2026/S1/n=200/Lera-C1_2_5-S1.vrp.json",
+   "route": [
+    2,
+    190,
+    5,
+    10,
+    128,
+    46,
+    193,
+    106,
+    158,
+    95,
+    34,
+    167
+   ],
+   "expected": {
+    "duration": 1168.528821321203,
+    "departure_time": 37.413487808748904
+   },
+   "td_fold_1": {
+    "duration": 1168.5288213212027,
+    "departure_time": 37.413487808749046
+   }
+  },
+  {
+   "tree": "TDVRP/Lera2026",
+   "instance": "TDVRP/Lera2026/S1/n=200/Lera-C2_2_1-S1.vrp.json",
+   "route": [
+    92,
+    60,
+    32,
+    149,
+    152,
+    109,
+    95,
+    73,
+    50,
+    12,
+    13,
+    33,
+    86,
+    118,
+    81,
+    93,
+    130,
+    112,
+    120,
+    182,
+    45,
+    77,
+    125,
+    59,
+    10,
+    153,
+    100,
+    74,
+    103,
+    141,
+    139,
+    96,
+    132,
+    67,
+    16,
+    72,
+    36
+   ],
+   "expected": {
+    "duration": 3562.2063927141216,
+    "departure_time": 12.742300712961885
+   },
+   "td_fold_1": {
+    "duration": 3562.2063927141216,
+    "departure_time": 12.742300712961756
+   }
+  },
+  {
+   "tree": "TDVRP/Lera2026",
+   "instance": "TDVRP/Lera2026/S1/n=200/Lera-C2_2_10-S1.vrp.json",
+   "route": [
+    52,
+    160,
+    68,
+    46,
+    114,
+    34,
+    157,
+    174,
+    164,
+    198,
+    64,
+    137,
+    123,
+    121,
+    111,
+    124,
+    55,
+    88,
+    78,
+    38,
+    166,
+    119,
+    40,
+    39,
+    17,
+    7
+   ],
+   "expected": {
+    "duration": 2475.230647131889,
+    "departure_time": 43.409695322409334
+   },
+   "td_fold_1": {
+    "duration": 2475.2306471318893,
+    "departure_time": 43.409695322409334
+   }
+  },
+  {
+   "tree": "TDVRPTW/Lera2026",
+   "instance": "TDVRPTW/Lera2026/S1/n=200/Lera-C1_2_1-S1.vrp.json",
+   "route": [
+    20,
+    41,
+    85,
+    80,
+    31,
+    25,
+    172,
+    77,
+    110,
+    162
+   ],
+   "expected": {
+    "duration": 992.0276177630429,
+    "departure_time": 31.19203865417331
+   },
+   "td_fold_1": {
+    "duration": 992.0276177630429,
+    "departure_time": 31.192038654173317
+   }
+  },
+  {
+   "tree": "TDVRPTW/Lera2026",
+   "instance": "TDVRPTW/Lera2026/S1/n=200/Lera-C1_2_10-S1.vrp.json",
+   "route": [
+    3,
+    88,
+    177,
+    16,
+    151,
+    56,
+    199,
+    37,
+    183,
+    137,
+    138
+   ],
+   "expected": {
+    "duration": 1119.420780135163,
+    "departure_time": 82.4739449688284
+   },
+   "td_fold_1": {
+    "duration": 1119.420780135163,
+    "departure_time": 82.47394496882843
+   }
+  },
+  {
+   "tree": "TDVRPTW/Lera2026",
+   "instance": "TDVRPTW/Lera2026/S1/n=200/Lera-C1_2_5-S1.vrp.json",
+   "route": [
+    20,
+    41,
+    85,
+    80,
+    31,
+    25,
+    172,
+    77,
+    162,
+    109
+   ],
+   "expected": {
+    "duration": 986.3671713976515,
+    "departure_time": 37.6090898069128
+   },
+   "td_fold_1": {
+    "duration": 986.3671713976515,
+    "departure_time": 37.609089806912806
+   }
+  },
+  {
+   "tree": "TDVRPTW/Lera2026",
+   "instance": "TDVRPTW/Lera2026/S1/n=200/Lera-C2_2_1-S1.vrp.json",
+   "route": [
+    136,
+    104,
+    64,
+    137,
+    198,
+    164,
+    174,
+    115,
+    140,
+    26,
+    18,
+    57,
+    113,
+    131,
+    169,
+    192,
+    84,
+    27,
+    53,
+    56,
+    185,
+    180,
+    37,
+    123,
+    121,
+    124,
+    55,
+    85,
+    88,
+    135,
+    1,
+    111,
+    157,
+    34,
+    176,
+    114
+   ],
+   "expected": {
+    "duration": 3554.754063739168,
+    "departure_time": 0.6596471284026991
+   },
+   "td_fold_1": {
+    "duration": 3554.754063739168,
+    "departure_time": 0.6596471284026969
+   }
+  },
+  {
+   "tree": "TDVRPTW/Lera2026",
+   "instance": "TDVRPTW/Lera2026/S1/n=200/Lera-C2_2_10-S1.vrp.json",
+   "route": [
+    41,
+    200,
+    167,
+    39,
+    40,
+    119,
+    38,
+    166,
+    102,
+    98,
+    76,
+    8,
+    191,
+    78,
+    177,
+    134,
+    22,
+    43,
+    150,
+    69,
+    151,
+    97,
+    31,
+    181,
+    172,
+    75,
+    163,
+    87,
+    51,
+    21,
+    154,
+    168
+   ],
+   "expected": {
+    "duration": 3108.668936242588,
+    "departure_time": 107.95336149725351
+   },
+   "td_fold_1": {
+    "duration": 3108.6689362425877,
+    "departure_time": 107.95336149725358
+   }
+  },
+  {
+   "tree": "TDVRPTW/Blauth2024",
+   "instance": "TDVRPTW/Blauth2024/n=10/Blauth-berlin.vrp.json",
+   "route": [
+    6,
+    5,
+    8,
+    4,
+    9,
+    7,
+    2,
+    10,
+    1,
+    3
+   ],
+   "expected": {
+    "duration": 10078612.787003681,
+    "departure_time": 58452576.21264471
+   }
+  },
+  {
+   "tree": "TDVRPTW/Blauth2024",
+   "instance": "TDVRPTW/Blauth2024/n=10/Blauth-cincinnati.vrp.json",
+   "route": [
+    6,
+    7,
+    5,
+    1,
+    2,
+    3,
+    10,
+    9,
+    4,
+    8
+   ],
+   "expected": {
+    "duration": 15870582.281945437,
+    "departure_time": 57019702.060448945
+   }
+  },
+  {
+   "tree": "TDVRPTW/Blauth2024",
+   "instance": "TDVRPTW/Blauth2024/n=10/Blauth-kyiv.vrp.json",
+   "route": [
+    5,
+    1,
+    8,
+    9,
+    6,
+    2,
+    3,
+    4,
+    10,
+    7
+   ],
+   "expected": {
+    "duration": 11077304.280384384,
+    "departure_time": 58534587.39396732
+   }
+  },
+  {
+   "tree": "TDVRPTW/Blauth2024",
+   "instance": "TDVRPTW/Blauth2024/n=10/Blauth-london.vrp.json",
+   "route": [
+    4,
+    5,
+    8,
+    10,
+    6,
+    3,
+    2,
+    7,
+    1,
+    9
+   ],
+   "expected": {
+    "duration": 20273610.628274225,
+    "departure_time": 56499873.371725775
+   }
+  },
+  {
+   "tree": "TDVRPTW/Blauth2024",
+   "instance": "TDVRPTW/Blauth2024/n=10/Blauth-madrid.vrp.json",
+   "route": [
+    8,
+    7,
+    9,
+    1,
+    2,
+    4,
+    10,
+    5,
+    6,
+    3
+   ],
+   "expected": {
+    "duration": 11581745.670434423,
+    "departure_time": 64468657.09529332
+   }
+  },
+  {
+   "tree": "Poryos2026/TDVRPTW",
+   "instance": "Poryos2026/TDVRPTW/hong_kong/n=10/poryos-hong_kong-n10-hyb/bpr-moderate/poryos-hong_kong-n10-hyb-bpr-moderate.vrp.json",
+   "route": [
+    10,
+    4
+   ],
+   "expected": {
+    "duration": 2980.5269478431906,
+    "departure_time": 0.0
+   },
+   "td_fold_1": {
+    "duration": 2980.526947843191,
+    "departure_time": 0.0
+   }
+  },
+  {
+   "tree": "Poryos2026/TDVRPTW",
+   "instance": "Poryos2026/TDVRPTW/hong_kong/n=10/poryos-hong_kong-n10-hyb/wave-heavy/poryos-hong_kong-n10-hyb-wave-heavy.vrp.json",
+   "route": [
+    7,
+    6,
+    8,
+    5
+   ],
+   "expected": {
+    "duration": 5187.931221119309,
+    "departure_time": 0.0
+   },
+   "td_fold_1": {
+    "duration": 5187.931221119308,
+    "departure_time": 0.0
+   }
+  },
+  {
+   "tree": "Poryos2026/TDVRPTW",
+   "instance": "Poryos2026/TDVRPTW/hong_kong/n=10/poryos-hong_kong-n10-poi/bpr-heavy/poryos-hong_kong-n10-poi-bpr-heavy.vrp.json",
+   "route": [
+    4,
+    1,
+    6
+   ],
+   "expected": {
+    "duration": 4334.089118215736,
+    "departure_time": 0.0
+   },
+   "td_fold_1": {
+    "duration": 4334.089118215735,
+    "departure_time": 0.0
+   }
+  },
+  {
+   "tree": "Poryos2026/TDVRPTW",
+   "instance": "Poryos2026/TDVRPTW/hong_kong/n=10/poryos-hong_kong-n10-poi/bpr-moderate/poryos-hong_kong-n10-poi-bpr-moderate.vrp.json",
+   "route": [
+    4,
+    1,
+    6
+   ],
+   "expected": {
+    "duration": 4334.143458421952,
+    "departure_time": 0.0
+   },
+   "td_fold_1": {
+    "duration": 4334.1434584219505,
+    "departure_time": 0.0
+   }
+  },
+  {
+   "tree": "Poryos2026/TDVRPTW",
+   "instance": "Poryos2026/TDVRPTW/hong_kong/n=10/poryos-hong_kong-n10-poi/wave-heavy/poryos-hong_kong-n10-poi-wave-heavy.vrp.json",
+   "route": [
+    4,
+    1,
+    6
+   ],
+   "expected": {
+    "duration": 4378.8620362196,
+    "departure_time": 0.0
+   },
+   "td_fold_1": {
+    "duration": 4378.862036219599,
+    "departure_time": 0.0
+   }
+  },
+  {
+   "tree": "Poryos2026/TDVRP",
+   "instance": "Poryos2026/TDVRP/hong_kong/n=10/poryos-hong_kong-n10-hyb/bpr-moderate/poryos-hong_kong-n10-hyb-bpr-moderate.vrp.json",
+   "route": [
+    7,
+    6,
+    8,
+    5
+   ],
+   "expected": {
+    "duration": 5129.630279141875,
+    "departure_time": 0.0
+   },
+   "td_fold_1": {
+    "duration": 5129.630279141877,
+    "departure_time": 0.0
+   }
+  },
+  {
+   "tree": "Poryos2026/TDVRP",
+   "instance": "Poryos2026/TDVRP/hong_kong/n=10/poryos-hong_kong-n10-hyb/wave-heavy/poryos-hong_kong-n10-hyb-wave-heavy.vrp.json",
+   "route": [
+    7,
+    6,
+    8,
+    5
+   ],
+   "expected": {
+    "duration": 5187.931221119309,
+    "departure_time": 0.0
+   },
+   "td_fold_1": {
+    "duration": 5187.931221119311,
+    "departure_time": 0.0
+   }
+  },
+  {
+   "tree": "Poryos2026/TDVRP",
+   "instance": "Poryos2026/TDVRP/hong_kong/n=10/poryos-hong_kong-n10-hyb/wave-light/poryos-hong_kong-n10-hyb-wave-light.vrp.json",
+   "route": [
+    10,
+    4
+   ],
+   "expected": {
+    "duration": 3010.7677768145527,
+    "departure_time": 0.0
+   },
+   "td_fold_1": {
+    "duration": 3010.767776814553,
+    "departure_time": 0.0
+   }
+  },
+  {
+   "tree": "Poryos2026/TDVRP",
+   "instance": "Poryos2026/TDVRP/hong_kong/n=10/poryos-hong_kong-n10-poi/bpr-heavy/poryos-hong_kong-n10-poi-bpr-heavy.vrp.json",
+   "route": [
+    4,
+    1,
+    6
+   ],
+   "expected": {
+    "duration": 4334.089118215736,
+    "departure_time": 0.0
+   },
+   "td_fold_1": {
+    "duration": 4334.089118215735,
+    "departure_time": 0.0
+   }
+  },
+  {
+   "tree": "Poryos2026/TDVRP",
+   "instance": "Poryos2026/TDVRP/hong_kong/n=10/poryos-hong_kong-n10-poi/wave-moderate/poryos-hong_kong-n10-poi-wave-moderate.vrp.json",
+   "route": [
+    4,
+    1,
+    6
+   ],
+   "expected": {
+    "duration": 4371.793484469258,
+    "departure_time": 0.0
+   },
+   "td_fold_1": {
+    "duration": 4371.793484469257,
+    "departure_time": 0.0
+   }
+  }
+ ],
+ "see_also": "rifki30-route.json (a full route, renumbered, with its arcs inlined)"
+}

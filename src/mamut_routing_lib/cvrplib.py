@@ -35,10 +35,17 @@ int/float distinction) produces the same bytes:
 - the ``EXPLICIT`` default is byte-identical to the ``.vrp`` files committed
   next to the Poryos2026/Mamut2026 CVRP instances.
 
-``EUC_2D`` is an opt-in for euclidean-metric instances only: it drops the
-matrix, and TSPLIB readers then use ``nint(hypot)`` distances, which differ
-from the published 3-decimal costs. Time-dependent instances have no static
-matrix and are refused (:class:`UnsupportedInstanceError`).
+``EUC_2D`` and the Solomon format keep only the coordinates, so they are
+offered only when the coordinates define the costs
+(:func:`coordinates_define_arc_costs`): the metric is euclidean and every
+published arc cost is a rounding of the Euclidean distance of the stored
+coordinates. TSPLIB readers then use ``nint(hypot)`` distances, which can
+still differ from the published costs by that rounding. Instances whose costs
+follow another scale are refused -- Dimacs2021 stores the original Solomon
+coordinates but ``floor(10 * d)`` costs and ×10 times, so a coordinate-only
+export would be a different instance; only ``EXPLICIT`` is faithful there.
+Time-dependent instances have no static matrix and are refused
+(:class:`UnsupportedInstanceError`).
 """
 
 from __future__ import annotations
@@ -338,12 +345,68 @@ def instance_metric_variant(instance: AnyBenchmarkInstance) -> MetricVariant | N
         return None
 
 
-def _require_euclidean(instance: AnyBenchmarkInstance, what: str) -> None:
+def _arc_within_rounding(cost: float, distance: float) -> bool:
+    slack = 1e-9 * max(1.0, distance)
+    return math.floor(distance) - slack <= cost <= math.ceil(distance) + slack
+
+
+def coordinates_define_arc_costs(
+    instance: AnyBenchmarkInstance,
+    arc_costs: Sequence[Sequence[Any]] | None = None,
+) -> bool:
+    """True when a coordinates-only export (``EUC_2D``, Solomon) reproduces the instance.
+
+    That requires the euclidean metric and every arc cost ``a_ij`` to be a
+    rounding of the Euclidean distance ``d_ij`` of the stored coordinates:
+    ``floor(d) - eps <= a_ij <= ceil(d) + eps`` with ``eps = 1e-9 * max(1, d)``
+    (full-precision, 3-decimal and ceil'd costs pass; a different scale such
+    as Dimacs2021's ``floor(10 * d)`` does not). Collection instances with a
+    euclidean ``arc_costs_source`` pass by declaration; time-dependent and
+    sidecar-backed instances never do. ``arc_costs`` overrides the embedded
+    matrix (hydrated collection instances).
+    """
+    if instance_problem_type(instance) in (ProblemType.TDVRP, ProblemType.TDVRPTW):
+        return False
+    if instance_metric_variant(instance) != MetricVariant.EUCLIDEAN:
+        return False
+    if _is_collection(instance) and arc_costs is None:
+        return isinstance(instance.arc_costs_source, ArcCostsEuclidean)
+    matrix = arc_costs if arc_costs is not None else instance.arc_costs
+    coordinates = instance.coordinates
+    try:
+        import numpy as np
+    except ImportError:  # pragma: no cover - numpy ships with the pyvrp extra
+        np = None
+    if np is not None:
+        points = np.asarray(coordinates, dtype=np.float64)
+        distances = np.hypot(points[:, None, 0] - points[None, :, 0], points[:, None, 1] - points[None, :, 1])
+        costs = np.asarray(matrix, dtype=np.float64)
+        slack = 1e-9 * np.maximum(1.0, distances)
+        return bool(np.all((costs >= np.floor(distances) - slack) & (costs <= np.ceil(distances) + slack)))
+    for i, (xi, yi) in enumerate(coordinates):
+        row = matrix[i]
+        for j, (xj, yj) in enumerate(coordinates):
+            if not _arc_within_rounding(float(row[j]), math.hypot(float(xi) - float(xj), float(yi) - float(yj))):
+                return False
+    return True
+
+
+def _require_coordinate_costs(
+    instance: AnyBenchmarkInstance,
+    what: str,
+    arc_costs: Sequence[Sequence[Any]] | None,
+) -> None:
     metric = instance_metric_variant(instance)
     if metric != MetricVariant.EUCLIDEAN:
         raise UnsupportedInstanceError(
             f"{what} is only meaningful for euclidean-metric instances; "
             f"{instance.instance_name} has metric {metric.value if metric else 'unknown'}"
+        )
+    if not coordinates_define_arc_costs(instance, arc_costs):
+        raise UnsupportedInstanceError(
+            f"{what} would not reproduce {instance.instance_name}: its arc costs are not a rounding of the "
+            "Euclidean distance of its stored coordinates (e.g. Dimacs2021 publishes floor(10 * d) with x10 "
+            "times); only EDGE_WEIGHT_TYPE EXPLICIT is faithful"
         )
 
 
@@ -385,7 +448,7 @@ def format_vrp_comment(instance: AnyBenchmarkInstance, *, edge_weight_type: Edge
         parts.append("converted from MAMUT-routing .vrp.json")
         comment = "; ".join(parts)
     if edge_weight_type == "EUC_2D":
-        comment = f"{comment}; EUC_2D: costs are TSPLIB nint distances, not the published 3-decimal costs"
+        comment = f"{comment}; EUC_2D: costs are TSPLIB nint distances, not the published costs"
     return comment
 
 
@@ -433,7 +496,7 @@ def instance_to_vrp_text(
             raise UnsupportedInstanceError(
                 f"the Solomon format is VRPTW-only; {instance.instance_name} is a CVRP instance"
             )
-        _require_euclidean(instance, "the Solomon format (coordinates only)")
+        _require_coordinate_costs(instance, "the Solomon format (coordinates only)", arc_costs)
         assert time_windows is not None and service_times is not None
         return render_solomon(
             name=instance.instance_name,
@@ -449,7 +512,7 @@ def instance_to_vrp_text(
     matrix: Sequence[Sequence[Any]] | None = None
     decimals: int | None = None
     if options.edge_weight_type == "EUC_2D":
-        _require_euclidean(instance, "EUC_2D (coordinates only)")
+        _require_coordinate_costs(instance, "EUC_2D (coordinates only)", arc_costs)
     else:
         matrix, decimals = _explicit_matrix(instance, arc_costs, instance_path, collection_root)
 
@@ -520,6 +583,7 @@ __all__ = [
     "VrpExportOptions",
     "collection_cost_decimals",
     "coordinate_formatter",
+    "coordinates_define_arc_costs",
     "euclidean_arc_costs",
     "export_filename",
     "export_instance_file",

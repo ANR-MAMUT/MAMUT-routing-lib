@@ -204,3 +204,44 @@ def test_list_displays_metadata_metric_variant_for_historical_instance(tmp_path:
     rows = [line for line in result.stdout.splitlines() if "C101" in line]
     assert rows, result.stdout
     assert any("euclidean" in row for row in rows), result.stdout
+
+
+def test_collection_ids_match_discovery(tmp_path: Path) -> None:
+    from collection_utils import write_toy_collection
+
+    from mamut_routing_lib import discover_benchmark_instances
+
+    root = write_toy_collection(tmp_path)
+    expected = {str(item.instance_path): item.instance_id for item in discover_benchmark_instances(root)}
+    result = _runner().invoke(app, ["--benchmarks-dir", str(root), "list", "--show-path", "--no-summary"])
+    assert result.exit_code == 0, result.stdout + result.stderr
+    for path, instance_id in expected.items():
+        assert instance_id in result.stdout
+    # Metric variants of one base no longer share an ID.
+    assert len(set(expected.values())) == len(expected) == 6
+    assert "cvrp-poryos2026-euclidean-toyville-n2-poryos-toyville-n2-hyb" in expected.values()
+    assert "cvrp-poryos2026-fastest-toyville-n2-poryos-toyville-n2-hyb" in expected.values()
+
+
+def test_instance_id_filter_selects_one_collection_instance(tmp_path: Path) -> None:
+    from collection_utils import write_toy_collection
+
+    root = write_toy_collection(tmp_path)
+    instance_id = "cvrp-poryos2026-fastest-toyville-n2-poryos-toyville-n2-hyb"
+    result = _runner().invoke(
+        app, ["--benchmarks-dir", str(root), "list", "--instance-id", instance_id, "--paths-only"]
+    )
+    assert result.exit_code == 0, result.stdout + result.stderr
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    assert len(lines) == 1 and "/CVRP/fastest/" in lines[0]
+
+
+def test_collection_path_outside_benchmarks_dir_keeps_its_id(tmp_path: Path) -> None:
+    from collection_utils import write_toy_collection
+
+    from mamut_routing_lib import load_benchmark_instance
+
+    root = write_toy_collection(tmp_path)
+    path = root / "Poryos2026" / "CVRP" / "fastest" / "toyville" / "n=2" / "poryos-toyville-n2-hyb" / "poryos-toyville-n2-hyb.vrp.json"
+    record = _local_instance_record(path, load_benchmark_instance(path), tmp_path / "elsewhere")
+    assert record.instance_id == "cvrp-poryos2026-fastest-toyville-n2-poryos-toyville-n2-hyb"

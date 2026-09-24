@@ -4,7 +4,14 @@ import random
 
 import pytest
 
-from mamut_routing_lib.td import NDCPWLF, PWLFError, make_service_theta, make_theta
+from mamut_routing_lib.td import (
+    NDCPWLF,
+    PWLFError,
+    apply_ready_time,
+    make_service_theta,
+    make_theta,
+    restrict_domain,
+)
 
 
 class TestNDCPWLFBasics:
@@ -168,6 +175,151 @@ class TestMakeServiceTheta:
         composed = make_service_theta(acc.max_image, 7.0).compose(acc)
         assert composed.evaluate(0.0) == 7.0
         assert composed.evaluate(10.0) == 7.0
+
+
+class TestSlopeOneRule:
+    def test_default_evaluate_keeps_the_ratio_formula(self):
+        # The ATF materializers (and their sha256 pins) depend on this path.
+        f = NDCPWLF([0.0, 49.0], [0.0, 49.0])
+        assert f.evaluate(1.0) == 0.9999999999999999
+
+    def test_slope_one_evaluate_is_exact(self):
+        f = NDCPWLF([0.0, 22.0], [0.0, 22.0])
+        assert f.evaluate(15.0) == 14.999999999999998
+        assert f.evaluate(15.0, slope_one_exact=True) == 15.0
+
+    def test_other_slopes_are_unaffected(self):
+        f = NDCPWLF([0.0, 49.0], [0.0, 98.0])
+        assert f.evaluate(1.0, slope_one_exact=True) == f.evaluate(1.0)
+
+    def test_slope_one_compose_is_exact_both_ways(self):
+        arc = NDCPWLF([0.0, 22.0], [100.0, 122.0])
+        acc = NDCPWLF([0.0, 49.0], [0.0, 49.0])
+        composed = arc.compose(acc, slope_one_exact=True)
+        assert composed.xs == [0.0, 22.0]
+        assert composed.ys == [100.0, 122.0]
+
+
+class TestRestrictDomain:
+    def test_breakpoints_inside_the_window_are_verbatim(self):
+        f = NDCPWLF([0.0, 10.0, 20.0, 30.0], [5.0, 15.0, 40.0, 50.0])
+        restricted = restrict_domain(f, 5.0, 25.0)
+        assert restricted.xs == [5.0, 10.0, 20.0, 25.0]
+        assert restricted.ys == [10.0, 15.0, 40.0, 45.0]
+
+    def test_whole_domain_is_unchanged(self):
+        f = NDCPWLF([0.0, 10.0, 10.0, 30.0], [5.0, 15.0, 18.0, 50.0])
+        assert restrict_domain(f, 0.0, 30.0) == f
+        assert restrict_domain(f, -5.0, 99.0) == f
+
+    def test_steps_at_the_window_ends_keep_both_points(self):
+        f = NDCPWLF([0.0, 10.0, 10.0, 20.0, 20.0, 30.0], [1.0, 11.0, 15.0, 25.0, 29.0, 39.0])
+        restricted = restrict_domain(f, 10.0, 20.0)
+        assert restricted.xs == [10.0, 10.0, 20.0, 20.0]
+        assert restricted.ys == [11.0, 15.0, 25.0, 29.0]
+
+    def test_single_departure_time(self):
+        f = NDCPWLF([0.0, 10.0], [5.0, 15.0])
+        restricted = restrict_domain(f, 4.0, 4.0)
+        assert restricted.xs == [4.0]
+        assert restricted.ys == [9.0]
+
+    def test_disjoint_window_is_empty(self):
+        f = NDCPWLF([0.0, 10.0], [5.0, 15.0])
+        assert restrict_domain(f, 11.0, 20.0).is_empty()
+
+    def test_replaces_identity_composition(self):
+        # Same function as f ∘ identity; the composition only rounds the
+        # abscissas it re-derives through the identity (by ulps), which the
+        # verbatim restriction avoids.
+        rng = random.Random(3)
+        for _ in range(50):
+            f = _random_ndcpwlf(rng, 8)
+            high = rng.uniform(f.xs[0], f.xs[-1])
+            restricted = restrict_domain(f, 0.0, high, slope_one_exact=False)
+            composed = f.compose(NDCPWLF.identity(0.0, high))
+            assert restricted.ys == composed.ys
+            assert restricted.xs == pytest.approx(composed.xs, rel=1e-15, abs=1e-15)
+            assert all(x in f.xs or x == high for x in restricted.xs)
+
+
+class TestApplyReadyTime:
+    def test_td_fold_v1_rounding_canaries_are_exact(self):
+        # Measured on the pre-0.12 fold: θ composed like an arc rounds these.
+        acc = NDCPWLF([0.0, 1.0], [13.0, 14.0])
+        assert make_service_theta(43200.0, 0.0).compose(acc).ys[0] == 13.000000000000002
+        assert apply_ready_time(acc, earliest=None, latest=None, service_time=0.0).ys[0] == 13.0
+        acc = NDCPWLF([0.0, 1.0], [1009.0, 1010.0])
+        assert make_theta(250.0, 12360.0, 5.0).compose(acc).ys[0] == 1014.0000000000001
+        assert apply_ready_time(acc, earliest=250.0, latest=12360.0, service_time=5.0).ys[0] == 1014.0
+        acc = NDCPWLF([0.0, 1.0], [11.0, 12.0])
+        assert make_theta(0.0, 43200.0, 5.0).compose(acc).ys[0] == 15.999999999999998
+        assert apply_ready_time(acc, earliest=0.0, latest=43200.0, service_time=5.0).ys[0] == 16.0
+
+    def test_breakpoints_map_to_max_plus_service(self):
+        acc = NDCPWLF([0.0, 10.0, 20.0], [3.0, 7.0, 30.0])
+        result = apply_ready_time(acc, earliest=None, latest=None, service_time=2.0)
+        assert result.xs == [0.0, 10.0, 20.0]
+        assert result.ys == [5.0, 9.0, 32.0]
+
+    def test_crossing_earliest_inserts_the_plateau_corner(self):
+        acc = NDCPWLF([0.0, 10.0], [0.0, 10.0])
+        result = apply_ready_time(acc, earliest=4.0, latest=None, service_time=1.0)
+        assert result.xs == [0.0, 4.0, 10.0]
+        assert result.ys == [5.0, 5.0, 11.0]
+
+    def test_cut_at_latest_inserts_the_crossing(self):
+        acc = NDCPWLF([0.0, 10.0], [0.0, 10.0])
+        result = apply_ready_time(acc, earliest=None, latest=6.0, service_time=1.0)
+        assert result.xs == [0.0, 6.0]
+        assert result.ys == [1.0, 7.0]
+
+    def test_one_piece_crossing_both_bounds_emits_earliest_first(self):
+        acc = NDCPWLF([0.0, 10.0], [0.0, 10.0])
+        result = apply_ready_time(acc, earliest=3.0, latest=8.0, service_time=0.5)
+        assert result.xs == [0.0, 3.0, 8.0]
+        assert result.ys == [3.5, 3.5, 8.5]
+
+    def test_vertical_piece_crossing_latest_cuts_at_the_step(self):
+        acc = NDCPWLF([0.0, 5.0, 5.0, 10.0], [1.0, 6.0, 20.0, 25.0])
+        result = apply_ready_time(acc, earliest=None, latest=9.0, service_time=0.0)
+        assert result.xs == [0.0, 5.0, 5.0]
+        assert result.ys == [1.0, 6.0, 9.0]
+
+    def test_plateau_at_latest_is_kept(self):
+        acc = NDCPWLF([0.0, 4.0, 8.0, 10.0], [2.0, 6.0, 6.0, 9.0])
+        result = apply_ready_time(acc, earliest=None, latest=6.0, service_time=0.0)
+        assert result.xs == [0.0, 4.0, 8.0]
+        assert result.ys == [2.0, 6.0, 6.0]
+
+    def test_first_value_past_latest_is_infeasible(self):
+        acc = NDCPWLF([0.0, 10.0], [7.0, 17.0])
+        assert apply_ready_time(acc, earliest=0.0, latest=6.0, service_time=0.0).is_empty()
+
+    def test_invalid_window_raises(self):
+        acc = NDCPWLF([0.0, 10.0], [0.0, 10.0])
+        with pytest.raises(PWLFError):
+            apply_ready_time(acc, earliest=6.0, latest=5.0, service_time=0.0)
+
+    def test_point_window(self):
+        acc = NDCPWLF([0.0, 10.0], [0.0, 10.0])
+        result = apply_ready_time(acc, earliest=5.0, latest=5.0, service_time=2.0)
+        assert result.xs == [0.0, 5.0]
+        assert result.ys == [7.0, 7.0]
+
+    def test_matches_theta_composition_where_both_are_exact(self):
+        # Integer data with power-of-two window widths: the two forms agree.
+        rng = random.Random(11)
+        for _ in range(200):
+            xs = sorted(rng.sample(range(0, 64), 6))
+            ys = sorted(rng.sample(range(0, 64), 6))
+            acc = NDCPWLF([float(v) for v in xs], [float(v) for v in ys])
+            earliest = float(rng.randint(0, 32))
+            latest = earliest + 32.0
+            service = float(rng.randint(0, 8))
+            expected = make_theta(earliest, latest, service).compose(acc)
+            result = apply_ready_time(acc, earliest=earliest, latest=latest, service_time=service)
+            assert result == expected
 
 
 def _random_ndcpwlf(rng: random.Random, num_points: int) -> NDCPWLF:
