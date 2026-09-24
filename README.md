@@ -79,27 +79,37 @@ backed by the remote retrieval module:
 # List archives available in the latest release of the configured repo
 mamut-routing remote --repo ANR-MAMUT/MAMUT-routing list
 
-# Filter by problem-type/benchmark-name
-mamut-routing remote list --problem-type CVRP --benchmark-name Poryos2026
+# Filter by problem-type/benchmark-name (a problem-type filter also keeps the
+# family-first collections, which ship every problem type of their family)
+mamut-routing remote list --problem-type CVRP
 
-# Download (and extract) one or more archives into --benchmarks-dir
+# Download and extract archives into --benchmarks-dir
 mamut-routing --benchmarks-dir ./benchmarks remote \
-    fetch CVRP-Poryos2026-snapshot-2026-05-22-28f9199.zip
+    fetch Poryos2026-snapshot-2026-09-23-70ca946.zip
 
 # Or fetch by filter:
-mamut-routing remote fetch --problem-type CVRP --benchmark-name Poryos2026
+mamut-routing --benchmarks-dir ./benchmarks remote fetch --benchmark-name Sintef2008
 
-# Verify local zip checksums against the remote manifest
+# Verify local zips (or extracted trees) against the remote manifest
 mamut-routing --benchmarks-dir ./benchmarks remote verify
 
 # Print the parsed manifest as JSON
 mamut-routing remote manifest | jq .snapshot_id
 ```
 
-Release archives are published at the problem-family level, for example
-`CVRP-Poryos2026` or `VRPTW-Sintef2008`. Extracted archives are placed in a
-directory named after the archive stem, containing the archived `benchmarks/...`
-tree.
+A release ships one archive per classic (problem type, family), e.g.
+`VRPTW-Sintef2008-snapshot-<id>.zip`, and one per family-first collection,
+e.g. `Poryos2026-snapshot-<id>.zip`. `fetch` keeps each zip at
+`<benchmarks-dir>/<filename>` and extracts it into the canonical tree
+(`<benchmarks-dir>/VRPTW/Sintef2008`, `<benchmarks-dir>/Poryos2026`), the same
+layout as a repository checkout, so `list` and
+`discover_benchmark_instances(<benchmarks-dir>)` work on a fetched tree. An
+extracted directory carries a `.mamut-release.json` stamp and is replaced by
+the next fetch of that family (including files written into it since, such as
+BKS saved by `solve`); an existing directory without a stamp (a git checkout,
+local data) is only replaced with `fetch --force`. Trees extracted by lib <
+0.12 (`<benchmarks-dir>/<archive stem>/benchmarks/...`) are not discoverable:
+re-fetch, then delete them.
 
 The `--benchmarks-dir` flag is also read from `MAMUT_ROUTING_BENCHMARKS_ROOT`
 or `MAMUT_ROUTING_ROOT`. Remote flags `--repo`, `--token`, and `--tag` are read
@@ -159,12 +169,20 @@ mamut-routing --benchmarks-dir ./benchmarks list \
 mamut-routing solve path/to/inst1.vrp.json path/to/inst2.vrp.json \
     --time-limit-s 30 --seed 42
 
-# Or discover under --benchmarks-dir and filter
+# Or discover under --benchmarks-dir and filter (Sintef2008 BKS use the
+# hierarchical objective)
 mamut-routing --benchmarks-dir ./benchmarks solve \
-    --problem-type VRPTW --benchmark-name Poryos2026 \
-    --objective hierarchical_vehicle_cost \
+    --problem-type VRPTW --benchmark-name Sintef2008 \
+    --objective hierarchicalvehiclecost \
     --time-limit-s 60
 ```
+
+`solve` covers CVRP and VRPTW: scanned time-dependent instances are skipped
+with a warning (an explicit TD path is an error), and so are collection
+instances whose distances sidecar is a sha256 pin not present in the tree. A
+failing instance becomes an `error` row instead of stopping the batch; the
+table and a summary line are always printed. Exit status: 0 when every solved
+instance is feasible, 1 when one is infeasible or errors, 2 on usage errors.
 
 ## Exporting to CVRPLIB `.vrp` (classic solvers)
 
@@ -182,10 +200,10 @@ mamut-routing export vrp path/to/inst.vrp.json
 mamut-routing --benchmarks-dir ./benchmarks export vrp \
     --problem-type CVRP --benchmark-name Mamut2026 --output-dir ./vrp-out --jobs 4
 
-# Coordinates-only TSPLIB file (euclidean-metric instances only, see below)
+# Coordinates-only TSPLIB file (instances whose costs the coordinates define, see below)
 mamut-routing export vrp inst.vrp.json --edge-weight-type EUC_2D
 
-# Solomon / Gehring-Homberger .txt (VRPTW, euclidean metric only)
+# Solomon / Gehring-Homberger .txt (VRPTW, same condition)
 mamut-routing export vrp R1_4_6.vrp.json --format solomon
 ```
 
@@ -209,13 +227,40 @@ when the fleet is fixed. Node ids are 1-based, the depot is node 1.
 
 Caveats:
 
-- `--edge-weight-type EUC_2D` drops the matrix; TSPLIB readers then compute
-  `nint(euclidean)` distances, which are **not** the published 3-decimal costs,
-  so BKS values do not transfer. It is refused for `shortest`/`fastest`
-  instances, whose road metrics need the explicit matrix.
+- `--edge-weight-type EUC_2D` and `--format solomon` keep only the
+  coordinates. They are offered only when every published arc cost is a
+  rounding of the Euclidean distance of the stored coordinates
+  (`coordinates_define_arc_costs`): full-precision (Sintef2008) and 3-decimal
+  (collections) costs qualify; `shortest`/`fastest` road metrics and Dimacs2021
+  (original coordinates, `floor(10 * d)` costs and x10 times) do not, and
+  `EXPLICIT` is the faithful form for them. TSPLIB readers compute
+  `nint(euclidean)` distances, which can still differ from the published costs
+  by that rounding, so BKS values do not transfer exactly.
 - Time-dependent instances (TDVRP/TDVRPTW) have no static matrix and are
   refused: explicit paths are an error, scanned ones are skipped with a warning.
 - Existing outputs are reported as `exists` and left alone unless `--force`.
+
+## Time-dependent checker contract and re-pricing
+
+The TD checker (`mamut_routing_lib.td.check_td_solution`) defines every TD
+cost; its route fold is versioned as `TD_CHECKER_CONTRACT`. Since 0.12.0 it is
+`td-fold/2`: vertex ready-time maps (`max(t, earliest) + service`) and the
+depot due-date cut are applied exactly to the accumulator's breakpoints, and
+arcs compose with the slope-one rule, so integer data is folded without any
+rounding (see the module docstring and `docs/benchmarks/formats/time-dependent.md`
+of the benchmark repository). After a contract change every stored TD BKS is
+re-priced once, routes untouched:
+
+```bash
+# Dry run with a JSON report, then write
+mamut-routing bks reprice-td benchmarks/TDVRPTW benchmarks/TDVRP --dry-run --jobs 8 --report reprice.json
+mamut-routing bks reprice-td benchmarks/TDVRPTW benchmarks/TDVRP --jobs 8
+```
+
+A file is rewritten only when a checker output changed (`cost`,
+`validated_cost`, `route_durations`, `route_departure_times`); a moved cost is
+recorded in `metadata.repriced`, and an optimality stamp gets its
+`proven_optimum` updated with a note.
 
 ## Development
 
