@@ -40,9 +40,14 @@ from mamut_routing_lib.models import (
 )
 from mamut_routing_lib.sidecars import (
     COLLECTION_MARKER_FILENAME,
+    find_collection_root,
     load_collection_marker,
     require_collection_root,
 )
+
+#: Directory name of in-progress release extractions (``remote.extract_release_archive``);
+#: discovery never looks inside it.
+RELEASE_STAGING_DIRNAME = ".mamut-staging"
 
 
 DEFAULT_MAMUT_ROUTING_ROOT_ENV = "MAMUT_ROUTING_ROOT"
@@ -317,6 +322,19 @@ def parse_collection_layout(
     )
 
 
+def instance_id_for_layout(layout: LayoutInfo) -> str:
+    """The canonical instance ID of a parsed layout (what discovery, the CLI and the website use)."""
+    return build_instance_id(
+        problem_type=layout.problem_type,
+        benchmark_name=layout.benchmark_name,
+        metric_variant=layout.metric_variant,
+        place_slug=layout.place_slug,
+        num_customers=layout.num_customers,
+        instance_name=layout.instance_name,
+        subset=layout.subset,
+    )
+
+
 def _discovered_from_layout(layout: LayoutInfo, instance_path: Path) -> DiscoveredBenchmarkInstance:
     return DiscoveredBenchmarkInstance(
         problem_type=layout.problem_type,
@@ -324,15 +342,7 @@ def _discovered_from_layout(layout: LayoutInfo, instance_path: Path) -> Discover
         metric_variant=layout.metric_variant,
         place_slug=layout.place_slug,
         num_customers=layout.num_customers,
-        instance_id=build_instance_id(
-            problem_type=layout.problem_type,
-            benchmark_name=layout.benchmark_name,
-            metric_variant=layout.metric_variant,
-            place_slug=layout.place_slug,
-            num_customers=layout.num_customers,
-            instance_name=layout.instance_name,
-            subset=layout.subset,
-        ),
+        instance_id=instance_id_for_layout(layout),
         instance_name=layout.instance_name,
         instance_path=instance_path,
         subset=layout.subset,
@@ -362,6 +372,76 @@ def find_collection_roots(benchmarks_root: Path) -> dict[Path, str]:
     return roots
 
 
+class BenchmarkLayoutResolver:
+    """Map instance paths to ``LayoutInfo`` exactly as discovery does.
+
+    Paths inside a marker-rooted collection at or directly under
+    ``benchmarks_root`` are parsed with ``parse_collection_layout``, other paths
+    under the root with ``parse_layout``. A path outside the root is looked up
+    by marker walk-up (a collection instance passed explicitly), else refused.
+    """
+
+    def __init__(self, benchmarks_root: Path) -> None:
+        self.benchmarks_root = Path(benchmarks_root).resolve()
+        self.collection_roots = find_collection_roots(self.benchmarks_root)
+        self._walked_up: dict[Path, tuple[Path, str] | None] = {}
+
+    def _known_collection(self, path: Path) -> tuple[Path, str] | None:
+        for root, family in self.collection_roots.items():
+            if path.is_relative_to(root):
+                return root, family
+        return None
+
+    def _walked_up_collection(self, path: Path) -> tuple[Path, str] | None:
+        directory = path.parent
+        if directory not in self._walked_up:
+            root = find_collection_root(directory)
+            self._walked_up[directory] = (
+                (root, load_collection_marker(root / COLLECTION_MARKER_FILENAME).family) if root else None
+            )
+        return self._walked_up[directory]
+
+    def layout_for(self, instance_path: str | Path) -> LayoutInfo:
+        """``LayoutInfo`` of ``instance_path``; ``ValueError`` when no layout applies."""
+        path = Path(instance_path).absolute()
+        candidates = [path]
+        resolved = path.resolve()
+        if resolved != path:
+            candidates.append(resolved)
+        for candidate in candidates:
+            collection = self._known_collection(candidate)
+            if collection is not None:
+                root, family = collection
+                return parse_collection_layout(candidate.relative_to(root), candidate, family)
+        for candidate in candidates:
+            if candidate.is_relative_to(self.benchmarks_root):
+                relative_path = candidate.relative_to(self.benchmarks_root)
+                try:
+                    return parse_layout(relative_path, candidate)
+                except ValueError as exc:
+                    raise ValueError(_layout_error_hint(relative_path, exc)) from exc
+        collection = self._walked_up_collection(resolved)
+        if collection is not None:
+            root, family = collection
+            return parse_collection_layout(resolved.relative_to(root), resolved, family)
+        raise ValueError(
+            f"{instance_path} is neither under the benchmarks root {self.benchmarks_root} nor inside a collection"
+        )
+
+
+def _layout_error_hint(relative_path: Path, exc: ValueError) -> str:
+    """Name the legacy release extraction (``<archive stem>/benchmarks/...``) when that is the cause."""
+    parts = relative_path.parts
+    if "benchmarks" in parts[1:] and "-snapshot-" in parts[parts.index("benchmarks", 1) - 1]:
+        stem = Path(*parts[: parts.index("benchmarks", 1)])
+        return (
+            f"{exc}. {stem}/ looks like a release archive extracted by mamut-routing-lib < 0.12 "
+            f"(<archive stem>/benchmarks/...): re-run `mamut-routing remote fetch` (lib >= 0.12 extracts "
+            f"into the canonical tree) or discover {stem}/benchmarks instead"
+        )
+    return str(exc)
+
+
 def discover_benchmark_instances(
     benchmarks_root: Path | None = None,
     *,
@@ -385,24 +465,13 @@ def discover_benchmark_instances(
     allowed_places = {str(item) for item in (places or [])}
     allowed_instance_ids = {str(item) for item in (instance_ids or [])}
 
-    collection_roots = find_collection_roots(benchmark_root)
-
-    def _collection_of(instance_path: Path) -> tuple[Path, str] | None:
-        for root, family in collection_roots.items():
-            if instance_path.is_relative_to(root):
-                return root, family
-        return None
+    resolver = BenchmarkLayoutResolver(benchmark_root)
 
     discovered: list[DiscoveredBenchmarkInstance] = []
     for instance_path in sorted(benchmark_root.rglob("*.vrp.json")):
-        collection = _collection_of(instance_path)
-        if collection is not None:
-            root, family = collection
-            layout = parse_collection_layout(instance_path.relative_to(root), instance_path, family)
-            item = _discovered_from_layout(layout, instance_path)
-        else:
-            relative_path = instance_path.relative_to(benchmark_root)
-            item = _discover_from_relative_path(relative_path, instance_path)
+        if RELEASE_STAGING_DIRNAME in instance_path.relative_to(benchmark_root).parts:
+            continue
+        item = _discovered_from_layout(resolver.layout_for(instance_path), instance_path)
 
         if allowed_problem_types and item.problem_type.value not in allowed_problem_types:
             continue

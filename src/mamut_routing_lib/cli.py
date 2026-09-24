@@ -15,13 +15,14 @@ import typer
 from tqdm import tqdm
 
 from mamut_routing_lib.artifacts import (
+    RELEASE_STAGING_DIRNAME,
     AnyBenchmarkInstance,
+    BenchmarkLayoutResolver,
     DEFAULT_BENCHMARKS_ROOT_ENV,
     DEFAULT_MAMUT_ROUTING_ROOT_ENV,
     build_instance_id,
     instance_problem_type,
     load_benchmark_instance,
-    parse_layout,
 )
 from mamut_routing_lib.cvrplib import (
     EDGE_WEIGHT_TYPES,
@@ -414,7 +415,11 @@ def _iter_candidate_paths(state: "CLIState", instance_paths: list[Path] | None) 
             err=True,
         )
         raise typer.Exit(code=2)
-    yield from sorted(state.benchmarks_dir.rglob("*.vrp.json"))
+    yield from sorted(
+        path
+        for path in state.benchmarks_dir.rglob("*.vrp.json")
+        if RELEASE_STAGING_DIRNAME not in path.relative_to(state.benchmarks_dir).parts
+    )
 
 
 def _enum_value(value: Any) -> Any:
@@ -448,21 +453,20 @@ def _problem_type_from_instance(instance: "AnyBenchmarkInstance") -> ProblemType
     return instance_problem_type(instance)
 
 
-def _resolve_layout_under(path: Path, benchmarks_dir: Path):
-    """Return the parsed layout if `path` lives under `benchmarks_dir` and matches one
-    of the supported layouts, otherwise None.
-    """
+def _resolve_layout(path: Path, resolver: BenchmarkLayoutResolver):
+    """The layout discovery would give `path` (collections included), or None."""
     try:
-        relative = path.resolve().relative_to(benchmarks_dir.resolve())
-    except ValueError:
-        return None
-    try:
-        return parse_layout(relative, path)
+        return resolver.layout_for(path)
     except ValueError:
         return None
 
 
-def _local_instance_record(path: Path, instance: "AnyBenchmarkInstance", benchmarks_dir: Path) -> LocalInstanceRecord:
+def _local_instance_record(
+    path: Path,
+    instance: "AnyBenchmarkInstance",
+    benchmarks_dir: Path,
+    resolver: BenchmarkLayoutResolver | None = None,
+) -> LocalInstanceRecord:
     metadata = getattr(instance, "metadata", None)
     instance_name = str(getattr(instance, "instance_name"))
     problem_type = _problem_type_from_instance(instance)
@@ -472,8 +476,10 @@ def _local_instance_record(path: Path, instance: "AnyBenchmarkInstance", benchma
     subset = _metadata_value(metadata, "subset")
     num_customers = int(getattr(instance, "num_customers"))
 
-    layout = _resolve_layout_under(path, benchmarks_dir)
+    layout = _resolve_layout(path, resolver or BenchmarkLayoutResolver(benchmarks_dir))
     if layout is not None:
+        # The layout is the one discovery uses (family-first collections
+        # included), so the ID below equals the discovered/website ID.
         # Path overrides metadata for fields the path actually carries. Historical
         # 4-part layouts have neither metric_variant nor place_slug — fall back to
         # whatever metadata supplies (e.g. enriched Dimacs/Sintef instances now
@@ -492,7 +498,7 @@ def _local_instance_record(path: Path, instance: "AnyBenchmarkInstance", benchma
         place_for_id = layout.place_slug
         subset_for_id = layout.subset
         # When the path resolves, the bucket label is the canonical n for IDs —
-        # matches ``_discover_from_relative_path`` and keeps catalogue-derived
+        # matches ``discover_benchmark_instances`` and keeps catalogue-derived
         # IDs consistent. For Ortec2022 the bucket (e.g. 200) intentionally
         # differs from the per-instance ``num_customers`` (e.g. 212).
         num_for_id = layout.num_customers
@@ -569,9 +575,10 @@ def _filter_loaded_instances(
     benchmarks_dir: Path,
 ) -> list[LocalInstanceRecord]:
     selected: list[LocalInstanceRecord] = []
+    resolver = BenchmarkLayoutResolver(benchmarks_dir)
     for path in paths:
         instance = load_benchmark_instance(path)
-        record = _local_instance_record(path, instance, benchmarks_dir)
+        record = _local_instance_record(path, instance, benchmarks_dir, resolver)
         if _instance_matches(
             record,
             problem_type=problem_type,
@@ -740,10 +747,11 @@ def list_instances(
         typer.echo(header)
         typer.echo("-" * len(header))
 
+    resolver = BenchmarkLayoutResolver(state.benchmarks_dir)
     for path in candidate_paths:
         scanned_count += 1
         instance = load_benchmark_instance(path)
-        record = _local_instance_record(path, instance, state.benchmarks_dir)
+        record = _local_instance_record(path, instance, state.benchmarks_dir, resolver)
         if not _instance_matches(
             record,
             problem_type=problem_type,

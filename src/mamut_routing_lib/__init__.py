@@ -6,6 +6,7 @@ except PackageNotFoundError:
     __version__ = "0.0.0+unknown"
 
 from mamut_routing_lib.artifacts import (
+    BenchmarkLayoutResolver,
     DEFAULT_BENCHMARKS_ROOT_ENV,
     DEFAULT_MAMUT_ROUTING_ROOT_ENV,
     DiscoveredBenchmarkInstance,
@@ -16,6 +17,7 @@ from mamut_routing_lib.artifacts import (
     get_default_mamut_routing_root,
     get_instance_identifier,
     has_structured_metadata,
+    instance_id_for_layout,
     instance_problem_type,
     load_benchmark_instance,
     load_bks,
@@ -125,6 +127,7 @@ from mamut_routing_lib.remote import (
 )
 
 __all__ = [
+    "BenchmarkLayoutResolver",
     "__version__",
     "ArcCostsDistancesRef",
     "ArcCostsEuclidean",
@@ -201,6 +204,7 @@ __all__ = [
     "get_default_mamut_routing_root",
     "get_instance_identifier",
     "has_structured_metadata",
+    "instance_id_for_layout",
     "instance_problem_type",
     "instance_to_vrp_text",
     "is_better_exact",
