@@ -43,7 +43,11 @@ from mamut_routing_lib.remote import (
     GitHubReleaseSource,
     ReleaseArchiveAsset,
     ReleaseArchiveManifest,
+    ReleaseArchiveScope,
+    ReleaseExtractionError,
     compute_sha256,
+    read_release_stamp,
+    release_target_relpath,
 )
 
 
@@ -290,7 +294,7 @@ def remote_list_assets(
         typer.echo(
             f"{asset.filename:<60}  "
             f"{asset.scope.value:<14}  "
-            f"{(asset.problem_type.value if asset.problem_type else '-'):<6}  "
+            f"{(asset.problem_type.value if asset.problem_type else ('all' if asset.scope == ReleaseArchiveScope.FAMILY_COLLECTION else '-')):<6}  "
             f"{(asset.benchmark_name.value if asset.benchmark_name else '-'):<14}  "
             f"{_format_size_mb(asset.size_bytes):>8}  "
             f"{_short_sha(asset.checksum_sha256):<8}"
@@ -307,9 +311,30 @@ def remote_fetch_assets(
     problem_type: Annotated[Optional[ProblemType], typer.Option("--problem-type", case_sensitive=False)] = None,
     benchmark_name: Annotated[Optional[BenchmarkName], typer.Option("--benchmark-name", case_sensitive=False)] = None,
     select_all: Annotated[bool, typer.Option("--all", help="Download every asset in the manifest.")] = False,
-    extract: Annotated[bool, typer.Option("--extract/--no-extract", help="Extract zip archives after download.")] = True,
+    extract: Annotated[
+        bool,
+        typer.Option(
+            "--extract/--no-extract",
+            help="Extract each archive into the canonical tree under --benchmarks-dir (default).",
+        ),
+    ] = True,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Replace an existing family directory even if it was not extracted by `remote fetch` "
+            "(e.g. a git checkout). A previously fetched directory is always replaced.",
+        ),
+    ] = False,
 ) -> None:
-    """Download (and optionally extract) one or more benchmark archives."""
+    """Download (and optionally extract) one or more benchmark archives.
+
+    Archives are kept at <benchmarks-dir>/<filename>. With --extract (default)
+    each one lands in the canonical tree, e.g. <benchmarks-dir>/VRPTW/Sintef2008
+    or <benchmarks-dir>/Poryos2026, so `list` and `discover_benchmark_instances`
+    work on the fetched tree. Re-fetching replaces the family directory,
+    including files written into it since (e.g. BKS saved by `solve`).
+    """
     state: RemoteCLIState = ctx.obj
     client = state.make_client()
     manifest = client.fetch_manifest(tag=state.tag)
@@ -325,6 +350,16 @@ def remote_fetch_assets(
         raise typer.Exit(code=2)
 
     state.benchmarks_dir.mkdir(parents=True, exist_ok=True)
+    for asset in selected:
+        legacy = state.benchmarks_dir / Path(asset.filename).stem / "benchmarks"
+        if legacy.is_dir():
+            typer.secho(
+                f"Warning: {legacy.parent} is a legacy extraction (lib < 0.12, <stem>/benchmarks/...) that breaks "
+                "discover_benchmark_instances on this dir; it is left in place (it may hold solve output), "
+                "remove it once the canonical tree is fetched.",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
     typer.echo(f"Downloading {len(selected)} asset(s) into {state.benchmarks_dir}")
 
     for asset in selected:
@@ -343,13 +378,21 @@ def remote_fetch_assets(
                 _bar.n = downloaded
                 _bar.refresh()
 
-            destination = client.download_asset(
-                asset,
-                state.benchmarks_dir,
-                extract=extract,
-                progress_callback=_on_progress,
-            )
+            try:
+                destination = client.download_asset(
+                    asset,
+                    state.benchmarks_dir,
+                    extract=extract,
+                    progress_callback=_on_progress,
+                    manifest=manifest,
+                    force=force,
+                )
+            except ReleaseExtractionError as exc:
+                typer.echo(f"Error: {asset.filename}: {exc}", err=True)
+                raise typer.Exit(code=2) from exc
         typer.echo(f"  -> {destination}")
+        if extract:
+            typer.echo(f"     archive kept at {state.benchmarks_dir / asset.filename}")
 
 
 @remote_app.command("verify")
@@ -371,9 +414,18 @@ def remote_verify_local(
     has_failure = False
     for asset in assets:
         local_path = state.benchmarks_dir / asset.filename
+        tree_stamp = None
+        if asset.archive_root:
+            tree_stamp = read_release_stamp(state.benchmarks_dir / release_target_relpath(asset.archive_root))
         if not local_path.exists():
-            typer.echo(f"  MISSING   {asset.filename}")
-            has_failure = True
+            if tree_stamp is not None and tree_stamp.get("checksum_sha256") == asset.checksum_sha256:
+                typer.echo(f"  EXTRACTED {asset.filename} (archive removed; extracted tree stamped with this checksum)")
+            elif tree_stamp is not None:
+                typer.echo(f"  STALE     {asset.filename} (extracted tree comes from {tree_stamp.get('snapshot_id') or 'another archive'})")
+                has_failure = True
+            else:
+                typer.echo(f"  MISSING   {asset.filename}")
+                has_failure = True
             continue
         if asset.checksum_sha256 is None:
             typer.echo(f"  NO_SHA    {asset.filename} (no checksum recorded in manifest)")

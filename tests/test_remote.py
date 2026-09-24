@@ -99,3 +99,31 @@ def test_family_collection_scope_selects_by_benchmark_name() -> None:
         ReleaseArchiveScope.PROBLEM_FAMILY,
         ReleaseArchiveScope.FAMILY_COLLECTION,
     }
+
+
+def test_problem_type_filter_includes_collections() -> None:
+    payload = make_manifest_payload()
+    payload["assets"].append(
+        {
+            "scope": "family_collection",
+            "filename": "Mamut2026-snapshot-2026-04-24-deadbee.zip",
+            "download_url": "https://example.invalid/Mamut2026.zip",
+            "problem_type": None,
+            "benchmark_name": "Mamut2026",
+            "archive_root": "benchmarks/Mamut2026",
+        }
+    )
+    manifest = ReleaseArchiveManifest(**payload)
+    # A collection ships every problem type of its family, so it may hold the requested one.
+    cvrp = manifest.select_assets(problem_type=ProblemType.CVRP)
+    assert {asset.filename for asset in cvrp} == {
+        "CVRP-Poryos2026-snapshot-2026-04-24-deadbee.zip",
+        "Mamut2026-snapshot-2026-04-24-deadbee.zip",
+    }
+    assert [a.filename for a in manifest.select_assets(problem_type=ProblemType.CVRP, benchmark_name=BenchmarkName.MAMUT_2026)] == [
+        "Mamut2026-snapshot-2026-04-24-deadbee.zip"
+    ]
+    assert all(
+        asset.scope == ReleaseArchiveScope.PROBLEM_FAMILY
+        for asset in manifest.select_assets(scope=ReleaseArchiveScope.PROBLEM_FAMILY, problem_type=ProblemType.CVRP)
+    )

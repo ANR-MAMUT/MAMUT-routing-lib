@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from mamut_routing_lib.enums import BenchmarkName, ProblemType
+from mamut_routing_lib.artifacts import discover_benchmark_instances
 from mamut_routing_lib.remote import (
     GitHubReleaseClient,
     GitHubReleaseSource,
@@ -57,13 +58,15 @@ def test_real_release_download_cvrp_poryos2026(tmp_path: Path) -> None:
     assert asset.checksum_sha256 is not None
     assert asset.size_bytes is not None and asset.size_bytes > 0
 
-    extracted_dir = client.download_asset(asset, tmp_path, extract=True)
+    extracted_dir = client.download_asset(asset, tmp_path, extract=True, manifest=manifest)
 
-    assert extracted_dir.is_dir()
-    expected_subdir = extracted_dir / "benchmarks" / "CVRP" / "Poryos2026"
+    # Canonical extraction: the archive_root subtree lands in the benchmarks tree itself.
+    expected_subdir = tmp_path / "CVRP" / "Poryos2026"
+    assert extracted_dir == expected_subdir
     assert expected_subdir.is_dir(), f"Expected directory missing: {expected_subdir}"
     extracted_files = list(expected_subdir.rglob("*"))
     assert any(p.is_file() for p in extracted_files), "Extracted archive contained no files"
+    assert discover_benchmark_instances(tmp_path), "fetched tree is not discoverable"
 
     zip_path = tmp_path / TARGET_FILENAME
     assert zip_path.is_file()
