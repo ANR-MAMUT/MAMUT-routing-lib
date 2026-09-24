@@ -207,3 +207,63 @@ class TestReferenceLLA:
         instance_path.write_text(json.dumps(payload))
         with pytest.raises(Exception, match="reference_lla"):
             load_benchmark_instance(instance_path)
+
+
+def test_save_replaces_a_hardlinked_sidecar_without_touching_the_other_link(tmp_path) -> None:
+    import os
+
+    from mamut_routing_lib.td import atf_file_sha256, compute_atf_sha256, save_instance_atfs
+    from td_utils import make_toy_atfs
+
+    atfs = make_toy_atfs()
+    seed = tmp_path / "seed" / "TOY1.atf.json.gz"
+    seed.parent.mkdir()
+    seed.write_bytes(b"previous release bytes")
+    staged = tmp_path / "staging" / "TOY1.atf.json.gz"
+    staged.parent.mkdir()
+    os.link(seed, staged)
+
+    save_instance_atfs(atfs, staged)
+
+    assert seed.read_bytes() == b"previous release bytes"
+    assert not os.path.samefile(seed, staged)
+    assert atf_file_sha256(staged) == compute_atf_sha256(atfs)
+    assert not list(staged.parent.glob("*.partial"))
+
+
+def test_failed_save_keeps_the_old_file(tmp_path, monkeypatch) -> None:
+    from mamut_routing_lib.td import artifacts, save_instance_atfs
+    from td_utils import make_toy_atfs
+
+    target = tmp_path / "TOY1.atf.json.gz"
+    target.write_bytes(b"old")
+
+    def _fail(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(artifacts.os, "replace", _fail)
+    with pytest.raises(OSError, match="disk full"):
+        save_instance_atfs(make_toy_atfs(), target)
+    assert target.read_bytes() == b"old"
+    assert not list(tmp_path.glob("*.partial"))
+
+
+def test_load_checks_an_expected_sha256_and_reports_corrupt_gzip(tmp_path) -> None:
+    from mamut_routing_lib.td import (
+        ATFChecksumError,
+        ATFFormatError,
+        compute_atf_sha256,
+        load_instance_atfs,
+        save_instance_atfs,
+    )
+    from td_utils import make_toy_atfs
+
+    atfs = make_toy_atfs()
+    path = tmp_path / "TOY1.atf.json.gz"
+    save_instance_atfs(atfs, path)
+    assert load_instance_atfs(path, expected_sha256=compute_atf_sha256(atfs)).arcs == atfs.arcs
+    with pytest.raises(ATFChecksumError):
+        load_instance_atfs(path, expected_sha256="0" * 64)
+    path.write_bytes(path.read_bytes()[:-8])
+    with pytest.raises(ATFFormatError, match="corrupt or truncated"):
+        load_instance_atfs(path)
