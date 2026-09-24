@@ -1222,8 +1222,9 @@ def export_vrp(
         typer.Option(
             "--edge-weight-type",
             help="'EXPLICIT' writes the full cost matrix (faithful to the published costs). 'EUC_2D' writes "
-            "coordinates only for euclidean-metric instances; classic readers then use TSPLIB nint "
-            "distances, which differ from the published 3-decimal costs.",
+            "coordinates only, for instances whose costs are a rounding of the Euclidean distance of their "
+            "coordinates (not Dimacs2021, whose costs are floor(10 * d)); classic readers then use TSPLIB nint "
+            "distances, which can differ from the published costs by that rounding.",
         ),
     ] = "EXPLICIT",
     comment: Annotated[

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import math
 import re
 from pathlib import Path
 
 import pytest
 
 from mamut_routing_lib.cvrplib import (
+    coordinates_define_arc_costs,
     ExportResult,
     UnsupportedInstanceError,
     VrpExportOptions,
@@ -236,7 +238,7 @@ def test_poryos_comment_has_no_fleet_clause_and_names_the_tw_set(tmp_path: Path)
         "ENU ref in poryos-testville-n2-poi-tw-spread.vrp.json; time windows set spread"
     )
     assert format_vrp_comment(instance, edge_weight_type="EUC_2D").endswith(
-        "; EUC_2D: costs are TSPLIB nint distances, not the published 3-decimal costs"
+        "; EUC_2D: costs are TSPLIB nint distances, not the published costs"
     )
 
 
@@ -285,7 +287,7 @@ def test_solomon_golden_and_rejections(toy_cvrp_instance) -> None:
         service_times=[0, 90, 90],
         time_windows=[(0, 1236), (912, 967), (825, 870)],
         depot=0,
-        arc_costs=[[0, 1, 2], [1, 0, 3], [2, 3, 0]],
+        arc_costs=_hypot_matrix([(40, 50), (45, 68), (45, 70)]),
         metadata={"metric_variant": "euclidean", "authors": "Marius M. Solomon"},
     )
     text = instance_to_vrp_text(instance, options=VrpExportOptions(format="solomon"))
@@ -351,3 +353,70 @@ def test_export_options_reject_unknown_values() -> None:
         VrpExportOptions(edge_weight_type="EUC_3D")  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="format"):
         VrpExportOptions(format="tsplib")  # type: ignore[arg-type]
+
+
+def _hypot_matrix(coordinates, transform=lambda d: d):
+    return [[transform(math.hypot(xi - xj, yi - yj)) for xj, yj in coordinates] for xi, yi in coordinates]
+
+
+def _solomon_vrptw(*, benchmark_name: str, arc_costs, times_scale: int = 1) -> BenchmarkInstance:
+    coordinates = [(40, 50), (45, 68), (45, 70)]
+    return BenchmarkInstance(
+        instance_name="C101",
+        instance_origin="Solomon1987",
+        benchmark_name=benchmark_name,
+        num_customers=2,
+        num_vehicles=25,
+        vehicle_capacity=200,
+        coordinates=coordinates,
+        demands=[0, 10, 30],
+        service_times=[0, 90 * times_scale, 90 * times_scale],
+        time_windows=[(0, 1236 * times_scale), (912 * times_scale, 967 * times_scale), (825 * times_scale, 870 * times_scale)],
+        depot=0,
+        arc_costs=arc_costs,
+        metadata={"metric_variant": "euclidean"},
+    )
+
+
+COORDS = [(40, 50), (45, 68), (45, 70)]
+
+
+@pytest.mark.parametrize("benchmark_name", ["Dimacs2021", "Sintef2008"])
+def test_coordinate_only_exports_refuse_costs_on_another_scale(benchmark_name: str) -> None:
+    # Dimacs2021 keeps the Solomon coordinates but publishes floor(10 * d) with x10 times;
+    # the rule looks at the data, not at the family name.
+    instance = _solomon_vrptw(
+        benchmark_name=benchmark_name,
+        arc_costs=_hypot_matrix(COORDS, lambda d: math.floor(10 * d)),
+        times_scale=10,
+    )
+    assert not coordinates_define_arc_costs(instance)
+    for options in (VrpExportOptions(edge_weight_type="EUC_2D"), VrpExportOptions(format="solomon")):
+        with pytest.raises(UnsupportedInstanceError, match="would not reproduce"):
+            instance_to_vrp_text(instance, options=options)
+    assert "EDGE_WEIGHT_SECTION" in instance_to_vrp_text(instance)
+
+
+@pytest.mark.parametrize(
+    "transform",
+    [
+        pytest.param(lambda d: d, id="full-precision"),
+        pytest.param(lambda d: d + math.ulp(d), id="one-ulp-off"),
+        pytest.param(math.ceil, id="ceil"),
+        pytest.param(lambda d: round(d, 3), id="three-decimals"),
+    ],
+)
+def test_coordinate_only_exports_accept_roundings_of_the_distance(transform) -> None:
+    instance = _solomon_vrptw(benchmark_name="Sintef2008", arc_costs=_hypot_matrix(COORDS, transform))
+    assert coordinates_define_arc_costs(instance)
+    assert "EDGE_WEIGHT_TYPE : EUC_2D" in instance_to_vrp_text(instance, options=VrpExportOptions(edge_weight_type="EUC_2D"))
+
+
+def test_coordinate_rule_bracket_is_tight() -> None:
+    instance = _solomon_vrptw(benchmark_name="Sintef2008", arc_costs=_hypot_matrix(COORDS, lambda d: math.ceil(d) + 1e-3))
+    assert not coordinates_define_arc_costs(instance)
+
+
+def test_collection_euclidean_source_defines_its_costs(tmp_path: Path) -> None:
+    euclid_path = _write_collection(tmp_path, _collection_payload(metric="euclidean"))
+    assert coordinates_define_arc_costs(load_benchmark_instance(euclid_path))
