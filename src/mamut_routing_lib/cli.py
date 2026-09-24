@@ -22,6 +22,7 @@ from mamut_routing_lib.artifacts import (
     DEFAULT_MAMUT_ROUTING_ROOT_ENV,
     build_instance_id,
     instance_problem_type,
+    is_collection_instance,
     load_benchmark_instance,
 )
 from mamut_routing_lib.cvrplib import (
@@ -33,7 +34,8 @@ from mamut_routing_lib.cvrplib import (
     export_instance_file,
 )
 from mamut_routing_lib.enums import BenchmarkName, MetricVariant, ObjectiveFunction, ProblemType
-from mamut_routing_lib.models import BenchmarkInstanceCVRP
+from mamut_routing_lib.models import ArcCostsDistancesRef
+from mamut_routing_lib.sidecars import require_collection_root
 from mamut_routing_lib.remote import (
     DEFAULT_GITHUB_TOKEN_ENV,
     DEFAULT_RELEASE_REPO_ENV,
@@ -131,6 +133,7 @@ class SolveSummaryRow:
     route_count: int
     wall_time: float
     bks_label: str
+    detail: str = ""
 
 
 T = TypeVar("T")
@@ -591,6 +594,19 @@ def _filter_loaded_instances(
     return selected
 
 
+def _missing_arc_cost_sidecar(record: LocalInstanceRecord) -> Path | None:
+    """The distances sidecar a collection instance needs but the tree lacks (sha256 pins only), else None."""
+    instance = record.instance
+    if not is_collection_instance(instance) or not isinstance(instance.arc_costs_source, ArcCostsDistancesRef):
+        return None
+    try:
+        root = require_collection_root(record.path)
+    except ValueError:
+        return None  # let the solve itself report the unresolvable root
+    target = root / instance.arc_costs_source.distances.path
+    return None if target.is_file() else target
+
+
 def _base_objective_for_record(record: LocalInstanceRecord) -> ObjectiveFunction | None:
     if record.problem_type != ProblemType.VRPTW:
         return None
@@ -909,8 +925,57 @@ def solve_instances(
         )
         raise typer.Exit(code=2)
 
+    explicit_paths = bool(instance_paths)
+    time_dependent = [r for r in selected if r.problem_type in (ProblemType.TDVRP, ProblemType.TDVRPTW)]
+    if time_dependent:
+        if explicit_paths:
+            typer.echo(
+                f"Error: {len(time_dependent)} time-dependent instance(s) selected (e.g. "
+                f"{time_dependent[0].instance_id}); `solve` covers CVRP and VRPTW only "
+                "(time-dependent instances are checked with mamut_routing_lib.td).",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+        typer.secho(
+            f"Warning: skipping {len(time_dependent)} time-dependent instance(s); "
+            "`solve` covers CVRP and VRPTW only.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+        selected = [r for r in selected if r.problem_type not in (ProblemType.TDVRP, ProblemType.TDVRPTW)]
+
+    unmaterialized = {id(r): path for r in selected if (path := _missing_arc_cost_sidecar(r)) is not None}
+    sidecar_error_rows: list[SolveSummaryRow] = []
+    if unmaterialized:
+        missing_records = [r for r in selected if id(r) in unmaterialized]
+        selected = [r for r in selected if id(r) not in unmaterialized]
+        if explicit_paths:
+            sidecar_error_rows = [
+                SolveSummaryRow(
+                    instance_id=r.instance_id,
+                    instance_name=r.instance_name,
+                    status="error",
+                    cost=None,
+                    route_count=0,
+                    wall_time=0.0,
+                    bks_label="-",
+                    detail=f"distances sidecar not in the tree (sha256-pinned; materialize it first): {unmaterialized[id(r)]}",
+                )
+                for r in missing_records
+            ]
+        else:
+            typer.secho(
+                f"Warning: skipping {len(missing_records)} instance(s) whose distances sidecar is sha256-pinned "
+                f"but not in the tree (e.g. {missing_records[0].instance_id}); materialize it first.",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
+    if not selected and not sidecar_error_rows:
+        typer.echo("No solvable instances left after skipping.", err=True)
+        raise typer.Exit(code=2)
+
     if objective != ObjectiveFunction.MONO_COST:
-        cvrp_in_batch = [r for r in selected if isinstance(r.instance, BenchmarkInstanceCVRP)]
+        cvrp_in_batch = [r for r in selected if r.problem_type is ProblemType.CVRP]
         if cvrp_in_batch:
             raise typer.BadParameter(
                 f"--objective {objective.value} is VRPTW-only but the selection includes "
@@ -1002,11 +1067,28 @@ def solve_instances(
             bks_label=bks_label,
         )
 
+    def _solve_record_safe(record: LocalInstanceRecord) -> SolveSummaryRow:
+        # One bad instance must not take the whole batch (and its summary) down.
+        started = time.perf_counter()
+        try:
+            return _solve_record(record)
+        except Exception as exc:  # noqa: BLE001 - reported as an error row
+            return SolveSummaryRow(
+                instance_id=record.instance_id,
+                instance_name=record.instance_name,
+                status="error",
+                cost=None,
+                route_count=0,
+                wall_time=time.perf_counter() - started,
+                bks_label="-",
+                detail=f"{type(exc).__name__}: {exc}",
+            )
+
     if multi_instance:
         future_indices = {}
         with ThreadPoolExecutor(max_workers=effective_jobs) as executor:
             for index, record in enumerate(selected):
-                future_indices[executor.submit(_solve_record, record)] = index
+                future_indices[executor.submit(_solve_record_safe, record)] = index
             with tqdm(
                 total=len(selected),
                 desc=f"Solving ({effective_jobs} jobs)",
@@ -1019,10 +1101,10 @@ def solve_instances(
                     index = future_indices[future]
                     rows[index] = future.result()
                     bar.update(1)
-    else:
-        rows[0] = _solve_record(selected[0])
+    elif selected:
+        rows[0] = _solve_record_safe(selected[0])
 
-    solved_rows = [row for row in rows if row is not None]
+    solved_rows = [row for row in rows if row is not None] + sidecar_error_rows
     any_failure = any(row.status != "feasible" for row in solved_rows)
 
     header = (
@@ -1038,6 +1120,17 @@ def solve_instances(
             f"{row.instance_id:<64}  {row.instance_name:<24}  {row.status:<10}  {cost_str}  {row.route_count:>6}  "
             f"{row.wall_time:>7.2f}  {row.bks_label:<14}"
         )
+
+    for row in solved_rows:
+        if row.status == "error":
+            typer.echo(f"error: {row.instance_id}: {row.detail}", err=True)
+    counts = {status: sum(1 for row in solved_rows if row.status == status) for status in ("feasible", "infeasible", "error")}
+    skipped_td = len(time_dependent) if not explicit_paths else 0
+    skipped_sidecar = len(unmaterialized) if not explicit_paths else 0
+    typer.echo(
+        f"Summary: feasible {counts['feasible']} · infeasible {counts['infeasible']} · errors {counts['error']} · "
+        f"skipped (TD) {skipped_td} · skipped (sidecar) {skipped_sidecar}"
+    )
 
     if any_failure:
         raise typer.Exit(code=1)
