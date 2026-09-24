@@ -12,9 +12,11 @@ Two twin conventions exist in the benchmark tree:
   arc-cost source, demands, capacity and fleet: every VRPTW solution is a CVRP
   solution of the same cost.
 
-A published BKS of the relaxation must therefore never cost more than the BKS
-of its restriction. ``check_relaxation_pair`` screens a pair on stored costs
-and, on request, prices the restriction's routes on the relaxation.
+A published BKS of the relaxation must therefore never be worse than the BKS
+of its restriction under the same objective (cost, or ``(routes, cost)`` for
+the hierarchical objective). ``check_relaxation_pair`` screens a pair on
+stored values and, on request, prices the restriction's routes on the
+relaxation.
 """
 
 from __future__ import annotations
@@ -24,7 +26,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from mamut_routing_lib.checker import exact_cost_value
+from mamut_routing_lib.checker import exact_cost_value, get_objective_tuple
+from mamut_routing_lib.enums import ObjectiveFunction
 
 _TD_STRICT = "TDVRPTW"
 _TD_RELAXED = "TDVRP"
@@ -81,12 +84,17 @@ def structural_relaxation_issues(strict_path: str | Path, relaxed_path: str | Pa
         fields = _TD_SHARED_FIELDS
         if "time_windows" in relaxed:
             issues.append("relaxed twin has time windows")
+        # The TDVRP twin departs and returns within the horizon, so the
+        # restriction's depot window must lie inside it. Customer windows may
+        # reach past the horizon (Vu2020 has some): the return-by-horizon cut
+        # binds on both sides, so they do not break the relaxation.
         horizon = strict.get("horizon")
         windows = strict.get("time_windows") or []
-        for earliest, latest in windows:
-            if horizon and (earliest < horizon[0] or latest > horizon[1]):
-                issues.append("a time window leaves the horizon")
-                break
+        depot = strict.get("depot", 0)
+        if horizon and len(windows) > depot:
+            earliest, latest = windows[depot]
+            if earliest < horizon[0] or latest > horizon[1]:
+                issues.append("the depot window leaves the horizon")
     else:
         fields = _STATIC_SHARED_FIELDS
         if "time_windows" in relaxed:
@@ -122,9 +130,10 @@ def _bks_for(instance_path: Path, objective: str) -> Path:
 def check_relaxation_pair(strict_bks_path: str | Path, *, priced: bool = False) -> RelaxationCheck | None:
     """Screen the twin pair of a restriction's BKS; ``None`` when it has no twin BKS.
 
-    ``inverted`` is set when the relaxation's stored BKS costs strictly more
-    than the restriction's (exact decimal comparison) or, with ``priced``, more
-    than the restriction's routes priced on the relaxation.
+    ``inverted`` is set when the relaxation's stored BKS is strictly worse
+    than the restriction's (exact decimal costs, compared through
+    ``get_objective_tuple``) or, with ``priced``, worse than the restriction's
+    routes priced on the relaxation.
     """
     strict_bks = Path(strict_bks_path)
     base, _, rest = strict_bks.name.partition(".bks.")
@@ -148,17 +157,23 @@ def check_relaxation_pair(strict_bks_path: str | Path, *, priced: bool = False) 
     )
     if result.issues or result.strict_cost is None or result.relaxed_cost is None:
         return result
-    if exact_cost_value(result.relaxed_cost) > exact_cost_value(result.strict_cost):
+    objective_function = ObjectiveFunction(objective)
+    strict_routes = strict_payload["routes"]
+    relaxed_key = get_objective_tuple(
+        relaxed_payload["routes"], exact_cost_value(result.relaxed_cost), objective_function
+    )
+    if relaxed_key > get_objective_tuple(strict_routes, exact_cost_value(result.strict_cost), objective_function):
         result.inverted = True
     if priced:
-        result.priced_cost = _price_on_relaxation(relaxed_instance, strict_payload["routes"], objective)
-        if result.priced_cost is not None and exact_cost_value(result.priced_cost) < exact_cost_value(result.relaxed_cost):
+        result.priced_cost = _price_on_relaxation(relaxed_instance, strict_routes, objective)
+        if result.priced_cost is not None and relaxed_key > get_objective_tuple(
+            strict_routes, exact_cost_value(result.priced_cost), objective_function
+        ):
             result.inverted = True
     return result
 
 
 def _price_on_relaxation(relaxed_instance: Path, routes: list[list[int]], objective: str) -> float | int | None:
-    from mamut_routing_lib.enums import ObjectiveFunction
     from mamut_routing_lib.models import BenchmarkSolution
 
     solution = BenchmarkSolution(instance_name="relaxation-twin", routes=routes)

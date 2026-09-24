@@ -193,6 +193,18 @@ def test_relaxation_screen_and_pricing(tmp_path: Path) -> None:
     assert inverted is not None and inverted.inverted
 
 
+def test_hierarchical_objective_compares_routes_first(tmp_path: Path) -> None:
+    strict_bks = _write_td_twins(tmp_path, 30.0, 30.0)
+    relaxed_bks = relaxation_twin(strict_bks)
+    for path, routes, cost in ((strict_bks, [[1], [2]], 20.0), (relaxed_bks, [[1, 2]], 25.0)):
+        payload = json.loads(path.read_text())
+        payload.update(routes=routes, cost=cost, objective_function="HierarchicalVehicleCost")
+        save_json_to_file(payload, path.with_name("TOY1.bks.HierarchicalVehicleCost.json"))
+    # One route at a higher cost beats two routes: not an inversion.
+    check = check_relaxation_pair(strict_bks.with_name("TOY1.bks.HierarchicalVehicleCost.json"))
+    assert check is not None and not check.inverted
+
+
 def test_structural_differences_are_reported(tmp_path: Path) -> None:
     strict_bks = _write_td_twins(tmp_path, 30.0, 30.0)
     relaxed_instance = relaxation_twin(strict_bks.with_name("TOY1.vrp.json"))
@@ -200,3 +212,17 @@ def test_structural_differences_are_reported(tmp_path: Path) -> None:
     payload["demands"] = [0, 5, 4]
     save_json_to_file(payload, relaxed_instance)
     assert structural_relaxation_issues(strict_bks.with_name("TOY1.vrp.json"), relaxed_instance) == ["demands differs"]
+
+
+def test_only_the_depot_window_must_fit_the_horizon(tmp_path: Path) -> None:
+    strict_bks = _write_td_twins(tmp_path, 30.0, 30.0)
+    strict_instance = strict_bks.with_name("TOY1.vrp.json")
+    relaxed_instance = relaxation_twin(strict_instance)
+    payload = json.loads(strict_instance.read_text())
+    horizon_end = payload["horizon"][1]
+    payload["time_windows"][1] = [payload["time_windows"][1][0], horizon_end + 2]
+    save_json_to_file(payload, strict_instance)
+    assert structural_relaxation_issues(strict_instance, relaxed_instance) == []
+    payload["time_windows"][0] = [payload["time_windows"][0][0], horizon_end + 2]
+    save_json_to_file(payload, strict_instance)
+    assert structural_relaxation_issues(strict_instance, relaxed_instance) == ["the depot window leaves the horizon"]
