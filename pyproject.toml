@@ -8,8 +8,13 @@ version = "0.12.0"
 description = "Modern Python library for CVRP and VRPTW benchmark models, validation, BKS management, and snapshot retrieval."
 readme = "README.md"
 authors = [
-    { name = "Florian Rascoussier", email = "onyr.maintainer@gmail.com" },
     { name = "Adrien Pichon" },
+    { name = "Florian Rascoussier", email = "onyr.maintainer@gmail.com" },
+    { name = "Romain Billot" },
+    { name = "Lina Fahed" },
+    { name = "Alexandru-Liviu Olteanu" },
+    { name = "Marc Sevaux" },
+    { name = "Christine Solnon" },
 ]
 maintainers = [
     { name = "Florian Rascoussier", email = "onyr.maintainer@gmail.com" },
