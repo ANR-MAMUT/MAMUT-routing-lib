@@ -126,7 +126,15 @@ from mamut_routing_lib.remote import (
     load_release_manifest,
     verify_sha256,
 )
-from mamut_routing_lib.solutions import check_routes
+from mamut_routing_lib.solutions import (
+    SolutionFormatError,
+    check_routes,
+    parse_solution_text,
+    preview_bks_update,
+    read_solution_file,
+    submit_bks,
+    write_cvrplib_solution,
+)
 from mamut_routing_lib.solvers import (
     CheckedSolve,
     get_solver,
@@ -137,8 +145,14 @@ from mamut_routing_lib.solvers import (
 
 __all__ = [
     "CheckedSolve",
+    "SolutionFormatError",
     "base_objective",
     "check_routes",
+    "parse_solution_text",
+    "preview_bks_update",
+    "read_solution_file",
+    "submit_bks",
+    "write_cvrplib_solution",
     "default_objective",
     "get_solver",
     "list_solvers",
