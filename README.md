@@ -214,7 +214,12 @@ argv = ["{executable}", "{problem}", "{solution}", "{time_limit_s}", "{seed}"]
 input_format = "cvrplib-explicit"       # cvrplib-x | cvrplib-explicit | lkh
 output_format = "cvrplib-sol"           # cvrplib-sol | lkh-mtsp
 problem_types = ["CVRP"]
+# symmetric_only = false                # only if it really reads asymmetric FULL_MATRIX files
 ```
+
+A solver declared in the config is `symmetric_only = true` unless it says otherwise, so the asymmetric
+road-network variants (`fastest`, `shortest`) are refused for it rather than handed over as a `TYPE : CVRP` file a
+symmetric solver would misread; `extends = "lkh3"` inherits LKH-3's asymmetric support.
 
 Each run writes the solver's input into a scratch directory
 (`--keep-artifacts DIR` keeps it), scaled to the integers the solver needs:

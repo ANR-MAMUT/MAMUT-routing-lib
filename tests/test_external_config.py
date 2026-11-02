@@ -117,3 +117,47 @@ def test_explicit_config_argument(tmp_path: Path) -> None:
     path = _config(tmp_path, FAKE_SOLVER)
     assert "fake" in solver_names(config=path)
     assert "fake" not in solver_names()
+
+
+_EXPLICIT = """
+[solvers.mine]
+runtime = "python"
+input_format = "cvrplib-explicit"
+output_format = "cvrplib-sol"
+problem_types = ["CVRP"]
+argv = ["{python}", "-m", "mamut_routing_lib.solvers.external._fake_solver", "--problem", "{problem}", "--solution", "{solution}"]
+"""
+
+
+def _asymmetric(toy_cvrp_instance, tmp_path: Path) -> Path:
+    asym = toy_cvrp_instance.model_copy(update={"arc_costs": [[0, 5, 6], [7, 0, 3], [6, 4, 0]]})
+    path = tmp_path / "asym.vrp.json"
+    path.write_text(json.dumps(asym.model_dump(mode="json")))
+    return path
+
+
+def test_a_configured_solver_is_symmetric_only_by_default(tmp_path: Path, toy_cvrp_instance) -> None:
+    from mamut_routing_lib.solvers import InstanceNotSupportedError
+
+    path = _config(tmp_path, _EXPLICIT)
+    assert configured_descriptors(path)["mine"].capabilities.symmetric_only is True
+    with pytest.raises(InstanceNotSupportedError, match="symmetric"):
+        run_solver("mine", _asymmetric(toy_cvrp_instance, tmp_path), time_limit_s=5, config=path)
+
+
+def test_symmetric_only_false_opts_in_to_asymmetric_matrices(tmp_path: Path, toy_cvrp_instance) -> None:
+    path = _config(tmp_path, _EXPLICIT + "symmetric_only = false\n")
+    assert configured_descriptors(path)["mine"].capabilities.symmetric_only is False
+    solved = run_solver("mine", _asymmetric(toy_cvrp_instance, tmp_path), time_limit_s=5, config=path)
+    assert solved.valid
+
+
+def test_extends_inherits_the_builtin_symmetry_requirement(tmp_path: Path) -> None:
+    path = _config(
+        tmp_path,
+        '[solvers.lkh-fork]\nextends = "lkh3"\nexecutable = "/opt/lkh"\n'
+        '[solvers.hgs-fork]\nextends = "hgs-cvrp"\nexecutable = "/opt/hgs"\n',
+    )
+    descriptors = configured_descriptors(path)
+    assert descriptors["lkh-fork"].capabilities.symmetric_only is False
+    assert descriptors["hgs-fork"].capabilities.symmetric_only is True

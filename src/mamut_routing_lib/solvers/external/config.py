@@ -35,8 +35,14 @@ directory or a benchmark tree: the file names executables that will be run.
     output_format = "cvrplib-sol"         # cvrplib-sol | lkh-mtsp
     problem_types = ["CVRP", "VRPTW"]
     objectives = ["MonoCost"]
+    symmetric_only = false                # it reads asymmetric FULL_MATRIX files (default: true)
 
-Unknown keys are errors, so a typo never silently runs a different command.
+Unknown keys are errors, so a typo never silently runs a different command. A new
+solver is ``symmetric_only = true`` unless it declares otherwise: road-network
+variants (``fastest``, ``shortest``) are asymmetric and are refused for it, and
+the generic explicit file says ``TYPE : CVRP`` whatever the matrix. A solver
+that ``extends`` a built-in inherits the built-in's value (LKH-3 takes
+asymmetric matrices; FILO2, HGS-CVRP and AILS-II do not).
 """
 
 from __future__ import annotations
@@ -240,7 +246,9 @@ def _descriptor(name: str, table: dict[str, Any], *, source: str, known: dict[st
         values["capabilities"] = SolverCapabilities(
             objectives=objective_map,
             input="coordinates" if input_format == "cvrplib-x" else "explicit",
-            symmetric_only=bool(capability_values.get("symmetric_only", base_caps.symmetric_only if base_caps else input_format == "cvrplib-x")),
+            # A solver declared here is assumed to need symmetric costs until it says otherwise: one that
+            # silently symmetrises an asymmetric FULL_MATRIX would optimise a different instance without error.
+            symmetric_only=bool(capability_values.get("symmetric_only", base_caps.symmetric_only if base_caps else True)),
             integer_costs=True if input_format != "cvrplib-x" else (base_caps.integer_costs if base_caps else False),
             fleet_limit=bool(capability_values.get("fleet_limit", base_caps.fleet_limit if base_caps else False)),
             warm_start=False,
