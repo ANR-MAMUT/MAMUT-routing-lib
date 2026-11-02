@@ -47,9 +47,11 @@ from mamut_routing_lib.solvers.external.process import run_process
 from mamut_routing_lib.solvers.external.scaling import (
     ScaleError,
     ScalePlan,
+    format_float_matrix,
     max_decimals,
     plan_coordinate_scale,
     plan_explicit_scale,
+    plan_float_matrix_scale,
     scale_coordinates,
     scale_explicit_data,
     unscale_cost,
@@ -145,7 +147,10 @@ class ExternalSolver:
     def availability(self) -> Availability:
         executable, reason = self.resolve_executable()
         if executable is None:
-            return Availability(False, reason=reason, hint=self._config_hint())
+            hint = self._config_hint()
+            if self.descriptor.requires_note:
+                hint = f"{hint}; {self.descriptor.requires_note}"
+            return Availability(False, reason=reason, hint=hint)
         if self.descriptor.runtime == "java":
             java, java_reason = self._java()
             if java is None:
@@ -177,6 +182,7 @@ class ExternalSolver:
             render_explicit_cvrplib,
             render_lkh_params,
             render_lkh_problem,
+            render_matrix_format,
             render_x_format,
             write_text,
         )
@@ -221,6 +227,27 @@ class ExternalSolver:
                         capacity=int(checkable.vehicle_capacity),
                         coordinate_decimals=int(plan.coordinate_decimals or 0),
                         comment=f"MAMUT-routing-{plan.unit or plan.factor}",
+                    ),
+                )
+                vehicles = fixed_fleet
+            elif descriptor.input_format == "cvrplib-matrix":
+                if vrptw:
+                    raise InstanceNotSupportedError(f"{self.label} reads CVRP files; time windows would be dropped")
+                plan = plan_float_matrix_scale(
+                    matrix,
+                    candidates=descriptor.matrix_scales,
+                    limits=limits,
+                    decimals_hint=decimals_hint,
+                )
+                write_text(
+                    problem,
+                    render_matrix_format(
+                        matrix_rows=format_float_matrix(matrix, plan),
+                        dimension=len(matrix),
+                        coordinates=checkable.coordinates,
+                        demands=demands,
+                        capacity=int(checkable.vehicle_capacity),
+                        comment=f"MAMUT-routing-x{plan.factor:g}",
                     ),
                 )
                 vehicles = fixed_fleet
@@ -449,7 +476,9 @@ class ExternalSolver:
         except SolutionFormatError as error:
             return SolveResult(**common, status="failed", error=f"unreadable solution file: {error}")
         solver_cost, exact_cost = unscale_cost(raw_cost, plan)
-        if exact_cost is not None:
+        # Only integer-cost solvers report a cost that can match the checker's exact decimal cost;
+        # HGS-CVRP prints six significant digits, so its integral-looking costs are rounded.
+        if exact_cost is not None and self.capabilities.integer_costs:
             try:
                 from mamut_routing_lib.checker import compute_exact_solution_cost
 

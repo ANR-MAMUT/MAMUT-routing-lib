@@ -156,8 +156,10 @@ def test_extends_inherits_the_builtin_symmetry_requirement(tmp_path: Path) -> No
     path = _config(
         tmp_path,
         '[solvers.lkh-fork]\nextends = "lkh3"\nexecutable = "/opt/lkh"\n'
-        '[solvers.hgs-fork]\nextends = "hgs-cvrp"\nexecutable = "/opt/hgs"\n',
+        '[solvers.hgs-fork]\nextends = "hgs-cvrp"\nexecutable = "/opt/hgs"\n'
+        '[solvers.filo-fork]\nextends = "filo2"\nexecutable = "/opt/filo2"\n',
     )
     descriptors = configured_descriptors(path)
     assert descriptors["lkh-fork"].capabilities.symmetric_only is False
-    assert descriptors["hgs-fork"].capabilities.symmetric_only is True
+    assert descriptors["hgs-fork"].capabilities.symmetric_only is False  # full-matrix reader patch
+    assert descriptors["filo-fork"].capabilities.symmetric_only is True

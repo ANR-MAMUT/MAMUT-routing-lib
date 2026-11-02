@@ -36,7 +36,7 @@ from __future__ import annotations
 import math
 from dataclasses import asdict, dataclass
 from fractions import Fraction
-from typing import Any, Literal, Sequence
+from typing import Any, Iterable, Literal, Sequence
 
 __all__ = [
     "Limits",
@@ -44,8 +44,10 @@ __all__ = [
     "ScalePlan",
     "decimal_places",
     "max_decimals",
+    "format_float_matrix",
     "plan_coordinate_scale",
     "plan_explicit_scale",
+    "plan_float_matrix_scale",
     "scale_coordinates",
     "scale_explicit_data",
     "star_bound",
@@ -88,7 +90,7 @@ class ScalePlan:
     mode: Literal["explicit", "coordinates"]
     factor: float
     exact: bool
-    rounding: Literal["exact", "nearest", "conservative", "solver"]
+    rounding: Literal["exact", "nearest", "conservative", "solver", "float"]
     max_scaled_arc: float
     star_bound_scaled: float
     #: Worst rounding error per arc, in instance units (``0`` when exact).
@@ -311,6 +313,73 @@ def unscale_cost(raw: int | float | None, plan: ScalePlan) -> tuple[float | None
     if plan.exact and float(raw).is_integer():
         exact = Fraction(int(round(float(raw)))) / Fraction(plan.factor).limit_denominator(10**12)
     return float(raw) / plan.factor, exact
+
+
+# --------------------------------------------------------------------------- #
+# Explicit matrices for solvers that compute in floating point (HGS-CVRP)
+# --------------------------------------------------------------------------- #
+
+
+def plan_float_matrix_scale(
+    arc_costs: Sequence[Sequence[float]],
+    *,
+    depot: int = 0,
+    candidates: Sequence[float] = (1.0, 0.1, 0.01, 0.001),
+    limits: Limits = Limits(),
+    decimals_hint: int | None = None,
+) -> ScalePlan:
+    """The first factor of ``candidates`` whose largest arc and star bound fit the limits.
+
+    The matrix is written in decimal (``format_float_matrix``), so no integer rounding happens:
+    at factor 1 the solver reads exactly the published doubles; at ``10**-k`` the scaled values
+    are exact decimals when the data have finitely many decimals (``decimals_hint`` or
+    ``max_decimals``), so the scaled problem is the published one up to a constant factor.
+    """
+    largest_arc = _max_arc(arc_costs)
+    star = star_bound(arc_costs, depot)
+    decimals = decimals_hint if decimals_hint is not None else max_decimals(arc_costs)
+    for factor in candidates:
+        factor = float(factor)
+        if not _fits(limits, arc=largest_arc * factor, total=star * factor, time=None):
+            continue
+        exact = factor == 1.0 or decimals is not None
+        return ScalePlan(
+            mode="explicit",
+            factor=factor,
+            exact=exact,
+            rounding="float",
+            max_scaled_arc=largest_arc * factor,
+            star_bound_scaled=star * factor,
+            max_arc_error=0.0 if exact else 1e-15 * largest_arc,
+        )
+    raise ScaleError(
+        f"no matrix scale among {list(candidates)} fits the solver's limits "
+        f"(largest arc {largest_arc:g}, star bound {star:g})"
+    )
+
+
+def _plain_number(value: float) -> str:
+    value = float(value)
+    return str(int(value)) if value.is_integer() and abs(value) < 2**53 else repr(value)
+
+
+def format_float_matrix(arc_costs: Sequence[Sequence[float]], plan: ScalePlan) -> Iterable[str]:
+    """Matrix rows as decimal text for ``plan``: the published values at factor 1, exact decimal
+    multiples at ``10**-k`` (``Decimal`` arithmetic on each value's shortest text)."""
+    from decimal import Decimal
+
+    factor = float(plan.factor)
+    if factor == 1.0:
+        for row in arc_costs:
+            yield " ".join(_plain_number(value) for value in row)
+        return
+    shift = round(math.log10(factor))
+    if not math.isclose(10.0**shift, factor):
+        for row in arc_costs:
+            yield " ".join(repr(float(value) * factor) for value in row)
+        return
+    for row in arc_costs:
+        yield " ".join(format(Decimal(_plain_number(value)).scaleb(shift), "f") for value in row)
 
 
 # --------------------------------------------------------------------------- #

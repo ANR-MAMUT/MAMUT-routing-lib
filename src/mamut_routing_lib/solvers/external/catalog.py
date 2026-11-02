@@ -11,10 +11,16 @@ campaign 3 (2026-09), which ran FILO2, AILS-II and HGS-CVRP by hand:
   distances equal the published 3-decimal costs times 1000. Its time limit is
   an integer (``std::stoi``); build with ``-DENABLE_TIMELIMIT=ON``. It names its
   output ``<instance file>_seed-<seed>.vrp.sol``.
-- **HGS-CVRP** (Vidal): coordinates only, float distances (``-round 0``); it
-  refuses a largest distance above 1e5 or below 0.1 and demands above 1e5 (so
-  very large cities get decametres); ``-veh`` fixes the fleet. Prints its cost
-  with six significant digits.
+- **HGS-CVRP** (Vidal): its search handles asymmetric distances (README; the
+  2-opt moves keep reversal costs) and takes a full matrix; only its CVRPLIB
+  reader is coordinate-only. With the MAMUT-routing reader patch
+  (``patches/hgs-cvrp-explicit-matrix.patch``) it reads the published matrix
+  (``cvrplib-matrix``: decimal ``FULL_MATRIX`` plus coordinates for SWAP*'s polar
+  sectors), so it solves every metric, ``fastest`` and ``shortest`` included.
+  Float distances (``-round 0``); it refuses a largest distance above 1e5 or
+  below 0.1 and demands above 1e5, so the matrix is divided by 10 when needed
+  (exactly, in decimal); ``-veh`` fixes the fleet. Prints its cost with six
+  significant digits.
 - **AILS-II** (Maximo, Cordeau & Nascimento): a jar; ``-rounded false`` (the
   rounded mode overflows a ``short`` above 32 767), totals below 2^31 (its
   acceptance threshold is an ``int``). Upstream writes no routes and draws its
@@ -35,7 +41,7 @@ from mamut_routing_lib.solvers.base import SolverCapabilities
 from mamut_routing_lib.solvers.external.descriptor import ExternalSolverDescriptor
 from mamut_routing_lib.solvers.external.scaling import Limits
 
-__all__ = ["BUILTIN_DESCRIPTORS", "builtin_external_factories", "builtin_descriptor"]
+__all__ = ["BUILTIN_DESCRIPTORS", "builtin_external_factories", "builtin_descriptor", "patch_path"]
 
 _CVRP_MONO = {ProblemType.CVRP: frozenset({ObjectiveFunction.MONO_COST})}
 _THREADS_ONE = {"OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"}
@@ -64,28 +70,39 @@ FILO2 = ExternalSolverDescriptor(
     homepage="https://github.com/acco93/filo2 (17b8f84; campaign 3 ran 43653e2)",
 )
 
+def patch_path(name: str) -> str:
+    """Installed path of a solver patch shipped with the lib (``solvers/external/patches``)."""
+    from importlib import resources
+
+    return str(resources.files("mamut_routing_lib.solvers.external") / "patches" / name)
+
+
 HGS_CVRP = ExternalSolverDescriptor(
     name="hgs-cvrp",
     label="HGS-CVRP",
     method="hgs-cvrp",
     argv=("{executable}", "{problem}", "{solution}", "-t", "{time_limit_s}", "-seed", "{seed}", "-round", "0", "-it", "1000000000"),
-    input_format="cvrplib-x",
+    input_format="cvrplib-matrix",
     output_format="cvrplib-sol",
     capabilities=SolverCapabilities(
         objectives=_CVRP_MONO,
-        input="coordinates",
-        symmetric_only=True,
+        input="explicit",
+        symmetric_only=False,
         fleet_limit=True,
         live_progress="incumbent",
     ),
     executable_names=("hgs", "hgs-cvrp"),
     distance_model="float",
-    coordinate_scales=(1.0, 0.1, 0.01),
+    matrix_scales=(1.0, 0.1, 0.01, 0.001),
     limits=Limits(max_arc_cost=1.0e5, min_arc_cost=0.1, max_demand=1.0e5),
     fleet_args=("-veh", "{vehicles}"),
     progress_pattern=r"^It\s+(?P<iterations>\d+)\s+\d+\s+\|\s+T\(s\)\s+[\d.]+\s+\|\s+Feas\s+\d+\s+(?P<cost>[\d.]+)",
     env=_THREADS_ONE,
-    homepage="https://github.com/vidalt/HGS-CVRP (1a92795)",
+    requires_note=(
+        "HGS-CVRP needs the MAMUT-routing full-matrix reader patch (upstream builds reject EDGE_WEIGHT_SECTION): "
+        "git apply " + patch_path("hgs-cvrp-explicit-matrix.patch") + " in vidalt/HGS-CVRP 1a92795, then rebuild"
+    ),
+    homepage="https://github.com/vidalt/HGS-CVRP (1a92795) + patches/hgs-cvrp-explicit-matrix.patch",
 )
 
 AILS2 = ExternalSolverDescriptor(

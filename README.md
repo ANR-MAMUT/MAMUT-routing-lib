@@ -126,7 +126,8 @@ stored, whatever the solver claims.
 |---|---|---|
 | `pyvrp` (default) | CVRP (MonoCost), VRPTW (MonoCost, HierarchicalVehicleCost) | the `[pyvrp]` extra |
 | `kayros` | TDVRP, TDVRPTW (Duration) | `pip install kayros` |
-| `filo2`, `hgs-cvrp`, `ails2` | CVRP (MonoCost), euclidean-metric variants (they compute distances from coordinates) | the executable (AILS-II: a jar with the `-seed`/`-out` patch) |
+| `hgs-cvrp` | CVRP (MonoCost), any metric (the published matrix, asymmetric included) | a build with the lib's full-matrix reader patch (`mamut-routing solvers list` prints its path) |
+| `filo2`, `ails2` | CVRP (MonoCost), euclidean-metric variants (they compute distances from coordinates) | the executable (AILS-II: a jar with the `-seed`/`-out` patch) |
 | `lkh3` | CVRP and VRPTW (MonoCost), any metric (explicit integer matrices, asymmetric included) | the `LKH` executable |
 
 ```bash
@@ -199,7 +200,7 @@ executable = "/opt/filo2/build/filo2"   # built with -DENABLE_TIMELIMIT=ON
 version = "43653e2"
 
 [solvers.hgs-cvrp]
-executable = "/opt/HGS-CVRP/build/hgs"
+executable = "/opt/HGS-CVRP/build/hgs"   # with patches/hgs-cvrp-explicit-matrix.patch applied
 
 [solvers.ails2]
 jar = "/opt/ails2/AILSII.jar"           # the -seed/-out patched build
@@ -226,8 +227,10 @@ Each run writes the solver's input into a scratch directory
 exactly (x1000 for 3-decimal matrices; the solver's cost then unscales exactly
 and is cross-checked) when the solver's limits allow, otherwise approximately --
 conservatively for time windows, so a schedule the solver finds feasible is
-feasible on the published data. Coordinate solvers get coordinates in a unit
-that fits their limits (FILO2 millimetres, HGS-CVRP metres or decametres). The
+feasible on the published data. HGS-CVRP computes in doubles, so it reads the
+published matrix as is (divided by 10, exactly, where a distance exceeds its 1e5
+limit), with the coordinates only for SWAP*'s polar sectors. Coordinate solvers
+get coordinates in a unit that fits their limits (FILO2 millimetres). The
 solver runs in its own process group with a hard timeout (budget + grace) and is
 killed with its children on cancellation. Provenance (command, executable and
 input sha256, scale, version, machine) goes into the run result and into a BKS

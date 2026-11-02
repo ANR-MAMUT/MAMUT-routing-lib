@@ -25,7 +25,7 @@ from mamut_routing_lib.solvers.external.scaling import Limits
 
 __all__ = ["ExternalSolverDescriptor", "InputFormat", "OutputFormat"]
 
-InputFormat = Literal["cvrplib-x", "cvrplib-explicit", "lkh"]
+InputFormat = Literal["cvrplib-x", "cvrplib-matrix", "cvrplib-explicit", "lkh"]
 OutputFormat = Literal["cvrplib-sol", "lkh-mtsp"]
 
 
@@ -49,6 +49,8 @@ class ExternalSolverDescriptor:
     #: How the solver measures distances on coordinates: ``nint`` rounds to integers.
     distance_model: Literal["float", "nint", "integer"] = "float"
     coordinate_scales: tuple[float, ...] = (1.0,)
+    #: Scale factors tried, in order, for decimal full-matrix input (``cvrplib-matrix``).
+    matrix_scales: tuple[float, ...] = (1.0, 0.1, 0.01, 0.001)
     limits: Limits = field(default_factory=Limits)
     require_exact_scale: bool = False
     fleet_args: tuple[str, ...] = ()

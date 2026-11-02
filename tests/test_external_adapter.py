@@ -266,3 +266,44 @@ def test_builtin_argv_templates(collection: Path, tmp_path: Path, toy_cvrp_insta
     prepared = hgs.prepare(fleet_request, tmp_path / "w3")
     assert hgs.build_argv(prepared, fleet_request)[-2:] == ["-veh", "2"]
     assert meta["num_vehicles"] == 2
+
+
+FAKE_MATRIX = FAKE_X.with_overrides(
+    name="fake-matrix",
+    label="FakeMatrix",
+    method="fake-matrix",
+    input_format="cvrplib-matrix",
+    capabilities=SolverCapabilities(objectives=CVRP_MONO, input="explicit", symmetric_only=False),
+    matrix_scales=(1.0, 0.1),
+)
+
+
+def test_full_matrix_solver_takes_asymmetric_road_metrics(collection: Path, toy_cvrp_instance, tmp_path: Path) -> None:
+    asym = toy_cvrp_instance.model_copy(update={"arc_costs": [[0, 5, 6], [7, 0, 3], [6, 4, 0]]})
+    for path in (_variant(collection, "CVRP", "fastest"), _write(asym, tmp_path)):
+        solved = run_solver(ExternalSolver(FAKE_MATRIX), path, time_limit_s=5)
+        assert solved.valid, solved.result.error
+        assert solved.result.cost_exact is True and solved.result.provenance["scale"]["rounding"] == "float"
+        assert solved.result.solver_cost == pytest.approx(solved.cost)
+        assert "reported_cost_matches_checker" not in solved.result.provenance  # float solver: no exact cross-check
+
+
+def test_builtin_hgs_reads_the_full_matrix(collection: Path, tmp_path: Path, monkeypatch) -> None:
+    from mamut_routing_lib.artifacts import load_benchmark_instance
+    from mamut_routing_lib.solvers.base import SolveRequest, profile_instance
+
+    hgs = ExternalSolver(BUILTIN_DESCRIPTORS["hgs-cvrp"].with_overrides(executable=str(_executable(tmp_path, "hgs"))))
+    path = _variant(collection, "CVRP", "fastest")
+    instance = load_benchmark_instance(path)
+    assert hgs.supports(profile_instance(instance, path), ObjectiveFunction.MONO_COST).supported
+    request = SolveRequest(instance=instance, instance_path=path, objective=ObjectiveFunction.MONO_COST, time_limit_s=5)
+    (tmp_path / "w").mkdir()
+    prepared = hgs.prepare(request, tmp_path / "w")
+    lines = prepared.problem.read_text().splitlines()
+    assert "EDGE_WEIGHT_FORMAT : FULL_MATRIX" in lines and lines[lines.index("EDGE_WEIGHT_SECTION") + 1] == "0 120.5 240.25"
+    assert prepared.plan.factor == 1.0 and prepared.plan.exact
+    argv = hgs.build_argv(prepared, request)
+    assert argv[1:3] == [str(prepared.problem), str(prepared.solution)] and "-round" in argv
+    monkeypatch.setenv("PATH", "/nonexistent")
+    missing = ExternalSolver(BUILTIN_DESCRIPTORS["hgs-cvrp"]).availability()
+    assert not missing.available and "hgs-cvrp-explicit-matrix.patch" in missing.hint

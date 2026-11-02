@@ -31,7 +31,7 @@ directory or a benchmark tree: the file names executables that will be run.
     label = "My solver"
     executable = "/opt/mine/solve"
     argv = ["{executable}", "{problem}", "{solution}", "{time_limit_s}", "{seed}"]
-    input_format = "cvrplib-explicit"     # cvrplib-x | cvrplib-explicit | lkh
+    input_format = "cvrplib-explicit"     # cvrplib-x | cvrplib-matrix | cvrplib-explicit | lkh
     output_format = "cvrplib-sol"         # cvrplib-sol | lkh-mtsp
     problem_types = ["CVRP", "VRPTW"]
     objectives = ["MonoCost"]
@@ -97,7 +97,7 @@ _SCALAR_FIELDS = {
 }
 _LIST_FIELDS = {"argv", "executable_names", "java_options", "fleet_args", "extra_args"}
 _CAPABILITY_KEYS = {"problem_types", "objectives", "symmetric_only", "fleet_limit", "live_progress", "warm_start"}
-_OTHER_KEYS = {"extends", "env", "limits", "coordinate_scales"}
+_OTHER_KEYS = {"extends", "env", "limits", "coordinate_scales", "matrix_scales"}
 _ALLOWED = set(_SCALAR_FIELDS) | _LIST_FIELDS | _CAPABILITY_KEYS | _OTHER_KEYS
 _LIMIT_KEYS = {"max_arc_cost", "max_total_cost", "max_time_value", "max_demand", "min_arc_cost"}
 
@@ -198,8 +198,9 @@ def _descriptor(name: str, table: dict[str, Any], *, source: str, known: dict[st
         if not isinstance(env, dict) or not all(isinstance(v, str) for v in env.values()):
             raise SolverConfigError(f"solvers.{name}.env must be a table of strings")
         values["env"] = {**(dict(parent.env) if parent else {}), **env}
-    if "coordinate_scales" in table:
-        values["coordinate_scales"] = tuple(float(value) for value in table["coordinate_scales"])
+    for key in ("coordinate_scales", "matrix_scales"):
+        if key in table:
+            values[key] = tuple(float(value) for value in table[key])
     if "limits" in table:
         limits = table["limits"]
         if not isinstance(limits, dict) or set(limits) - _LIMIT_KEYS:
@@ -217,8 +218,8 @@ def _descriptor(name: str, table: dict[str, Any], *, source: str, known: dict[st
         if missing:
             raise SolverConfigError(f"solvers.{name}: a new solver needs {', '.join(missing)}")
     input_format = values.get("input_format", parent.input_format if parent else None)
-    if input_format not in ("cvrplib-x", "cvrplib-explicit", "lkh"):
-        raise SolverConfigError(f"solvers.{name}.input_format must be cvrplib-x, cvrplib-explicit or lkh")
+    if input_format not in ("cvrplib-x", "cvrplib-matrix", "cvrplib-explicit", "lkh"):
+        raise SolverConfigError(f"solvers.{name}.input_format must be cvrplib-x, cvrplib-matrix, cvrplib-explicit or lkh")
     if values.get("output_format", parent.output_format if parent else None) not in ("cvrplib-sol", "lkh-mtsp"):
         raise SolverConfigError(f"solvers.{name}.output_format must be cvrplib-sol or lkh-mtsp")
     if capability_values or parent is None or "input_format" in values:
@@ -241,15 +242,15 @@ def _descriptor(name: str, table: dict[str, Any], *, source: str, known: dict[st
             objective_map = {}
         if any(problem in (ProblemType.TDVRP, ProblemType.TDVRPTW) for problem in objective_map):
             raise SolverConfigError(f"solvers.{name}: external solvers take static CVRP/VRPTW instances only")
-        if ProblemType.VRPTW in objective_map and input_format == "cvrplib-x":
-            raise SolverConfigError(f"solvers.{name}: the cvrplib-x input format has no time windows")
+        if ProblemType.VRPTW in objective_map and input_format in ("cvrplib-x", "cvrplib-matrix"):
+            raise SolverConfigError(f"solvers.{name}: the {input_format} input format has no time windows")
         values["capabilities"] = SolverCapabilities(
             objectives=objective_map,
             input="coordinates" if input_format == "cvrplib-x" else "explicit",
             # A solver declared here is assumed to need symmetric costs until it says otherwise: one that
             # silently symmetrises an asymmetric FULL_MATRIX would optimise a different instance without error.
             symmetric_only=bool(capability_values.get("symmetric_only", base_caps.symmetric_only if base_caps else True)),
-            integer_costs=True if input_format != "cvrplib-x" else (base_caps.integer_costs if base_caps else False),
+            integer_costs=input_format in ("cvrplib-explicit", "lkh") or bool(base_caps and base_caps.integer_costs and input_format == "cvrplib-x"),
             fleet_limit=bool(capability_values.get("fleet_limit", base_caps.fleet_limit if base_caps else False)),
             warm_start=False,
             live_progress=str(capability_values.get("live_progress", base_caps.live_progress if base_caps else "elapsed")),  # type: ignore[arg-type]

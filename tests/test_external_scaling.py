@@ -7,14 +7,21 @@ from fractions import Fraction
 
 import pytest
 
-from mamut_routing_lib.solvers.external.problem import render_lkh_params, render_lkh_problem, render_x_format
+from mamut_routing_lib.solvers.external.problem import (
+    render_lkh_params,
+    render_lkh_problem,
+    render_matrix_format,
+    render_x_format,
+)
 from mamut_routing_lib.solvers.external.scaling import (
     Limits,
     ScaleError,
     decimal_places,
+    format_float_matrix,
     max_decimals,
     plan_coordinate_scale,
     plan_explicit_scale,
+    plan_float_matrix_scale,
     scale_explicit_data,
     star_bound,
     unscale_cost,
@@ -106,7 +113,7 @@ def test_conservative_rounding_never_admits_an_infeasible_schedule() -> None:
             assert _feasible(order, matrix, windows, services)
 
 
-def test_coordinate_scale_reproduces_the_hgs_decametre_switch() -> None:
+def test_coordinate_scale_picks_the_first_unit_that_fits() -> None:
     hgs = Limits(max_arc_cost=1e5, min_arc_cost=0.1)
     city = [(0.0, 0.0), (60_000.0, 0.0), (0.0, 40_000.0)]  # 72 km diagonal: metres fit
     big = [(0.0, 0.0), (100_000.0, 0.0), (0.0, 60_000.0)]  # 117 km: decametres
@@ -155,3 +162,58 @@ def test_lkh_problem_has_no_coordinates_and_vrptw_sections() -> None:
         list(render_lkh_problem(problem_type="CVRP", matrix=[[0]], demands=[0], capacity=1, vehicles=1, time_windows=[(0, 1)]))
     params = list(render_lkh_params(problem="/w/problem.vrp", solution="/w/solution.sol", seed=3, time_limit_s=5))
     assert params[0] == "SPECIAL" and "MTSP_MIN_SIZE = 0" in params and "TIME_LIMIT = 5.0" in params
+
+
+HGS_LIMITS = Limits(max_arc_cost=1e5, min_arc_cost=0.1, max_demand=1e5)
+
+
+def test_float_matrix_goes_in_unchanged_when_it_fits() -> None:
+    matrix = [[0, 120.5, 240.25], [121.5, 0, 130.75], [240.25, 130.0, 0]]  # asymmetric seconds
+    plan = plan_float_matrix_scale(matrix, limits=HGS_LIMITS)
+    assert plan.factor == 1.0 and plan.exact and plan.rounding == "float"
+    assert list(format_float_matrix(matrix, plan)) == ["0 120.5 240.25", "121.5 0 130.75", "240.25 130 0"]
+
+
+def test_float_matrix_is_divided_exactly_when_too_wide() -> None:
+    matrix = [[0, 150_000.125], [200_000.0, 0]]  # metres across a 200 km city
+    plan = plan_float_matrix_scale(matrix, limits=HGS_LIMITS)
+    assert plan.factor == 0.1 and plan.exact
+    assert list(format_float_matrix(matrix, plan)) == ["0.0 15000.0125", "20000.0 0.0"]
+    with pytest.raises(ScaleError):
+        plan_float_matrix_scale(matrix, limits=HGS_LIMITS, candidates=(1.0,))
+
+
+def test_full_precision_doubles_are_exact_only_unscaled() -> None:
+    sintef = [[0, 265.88719412562915], [265.88719412562915, 0]]
+    assert plan_float_matrix_scale(sintef, limits=HGS_LIMITS).exact
+    assert list(format_float_matrix(sintef, plan_float_matrix_scale(sintef)))[0] == "0 265.88719412562915"
+    assert not plan_float_matrix_scale(sintef, limits=Limits(max_arc_cost=100)).exact
+
+
+def test_matrix_format_is_what_the_patched_hgs_reader_expects() -> None:
+    lines = list(
+        render_matrix_format(
+            matrix_rows=["0 5.5", "6 0"], dimension=2, coordinates=[(0, 0), (1.5, 2)], demands=[0, 3], capacity=10
+        )
+    )
+    assert lines[:3] == ["NAME : problem", "COMMENT : MAMUT-routing", "TYPE : CVRP"]  # skipped by the reader
+    assert lines[3:8] == [
+        "DIMENSION : 2",  # before the matrix: the reader sizes it from DIMENSION
+        "EDGE_WEIGHT_TYPE : EXPLICIT",
+        "EDGE_WEIGHT_FORMAT : FULL_MATRIX",
+        "CAPACITY : 10",
+        "EDGE_WEIGHT_SECTION",
+    ]
+    assert lines[8:11] == ["0 5.5", "6 0", "NODE_COORD_SECTION"]
+    assert not any(line.startswith("VEHICLES") for line in lines)
+    assert lines[-4:] == ["DEPOT_SECTION", "1", "-1", "EOF"]
+
+
+def test_the_hgs_reader_patch_ships_with_the_lib() -> None:
+    from pathlib import Path
+
+    from mamut_routing_lib.solvers.external.catalog import patch_path
+
+    text = Path(patch_path("hgs-cvrp-explicit-matrix.patch")).read_text()
+    assert "--- a/Program/InstanceCVRPLIB.cpp" in text and "+++ b/Program/InstanceCVRPLIB.cpp" in text
+    assert "EDGE_WEIGHT_SECTION" in text and "1a92795" in text

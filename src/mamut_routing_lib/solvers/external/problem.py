@@ -15,6 +15,11 @@ writers:
 - ``lkh``: LKH-3 refuses ``NODE_COORD_SECTION`` next to explicit weights (it
   needs a coordinate type), reads ``VEHICLES`` and the VRPTW sections, and
   treats ``ACVRP`` and ``CVRPTW`` as asymmetric (``CVRP`` as symmetric).
+- ``cvrplib-matrix``, for HGS-CVRP with the MAMUT-routing reader patch
+  (``patches/hgs-cvrp-explicit-matrix.patch``): the X-format header plus
+  ``EDGE_WEIGHT_FORMAT : FULL_MATRIX`` and an ``EDGE_WEIGHT_SECTION`` of decimal
+  (possibly asymmetric) costs before ``NODE_COORD_SECTION``, whose coordinates
+  only serve SWAP*'s polar sectors. No ``VEHICLES`` line: the fleet is ``-veh``.
 - ``cvrplib-explicit``: a generic CVRPLIB file with an integer ``FULL_MATRIX``
   (for user-configured solvers), rendered by ``cvrplib.render_cvrplib``.
 
@@ -28,6 +33,7 @@ from typing import Iterable, Sequence
 
 __all__ = [
     "render_explicit_cvrplib",
+    "render_matrix_format",
     "render_lkh_params",
     "render_lkh_problem",
     "render_x_format",
@@ -69,6 +75,45 @@ def render_x_format(
     yield "NODE_COORD_SECTION"
     for index, (x, y) in enumerate(coordinates):
         yield f"{index + 1} {_fmt(x, coordinate_decimals)} {_fmt(y, coordinate_decimals)}"
+    yield "DEMAND_SECTION"
+    for index, demand in enumerate(demands):
+        yield f"{index + 1} {int(demand)}"
+    yield "DEPOT_SECTION"
+    yield "1"
+    yield "-1"
+    yield "EOF"
+
+
+def render_matrix_format(
+    *,
+    matrix_rows: Iterable[str],
+    dimension: int,
+    coordinates: Sequence[Sequence[float]],
+    demands: Sequence[int],
+    capacity: int,
+    comment: str = "MAMUT-routing",
+    name: str = "problem",
+) -> Iterable[str]:
+    """Lines of a full-matrix CVRP for the patched HGS-CVRP reader (depot = node 1).
+
+    The first three lines are skipped by the reader; the header keys it accepts are
+    ``DIMENSION``, ``EDGE_WEIGHT_TYPE``, ``EDGE_WEIGHT_FORMAT``, ``CAPACITY`` and the
+    ``EDGE_WEIGHT_SECTION``, which must come after ``DIMENSION``.
+    """
+    if " " in name:
+        raise ValueError("the problem name must be a single token")
+    yield f"NAME : {name}"
+    yield f"COMMENT : {comment.replace(chr(10), ' ')}"
+    yield "TYPE : CVRP"
+    yield f"DIMENSION : {int(dimension)}"
+    yield "EDGE_WEIGHT_TYPE : EXPLICIT"
+    yield "EDGE_WEIGHT_FORMAT : FULL_MATRIX"
+    yield f"CAPACITY : {int(capacity)}"
+    yield "EDGE_WEIGHT_SECTION"
+    yield from matrix_rows
+    yield "NODE_COORD_SECTION"
+    for index, (x, y) in enumerate(coordinates):
+        yield f"{index + 1} {_fmt(x, 6)} {_fmt(y, 6)}"
     yield "DEMAND_SECTION"
     for index, demand in enumerate(demands):
         yield f"{index + 1} {int(demand)}"
