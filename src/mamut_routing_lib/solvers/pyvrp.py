@@ -40,7 +40,6 @@ from mamut_routing_lib.artifacts import (
 )
 from mamut_routing_lib.bks import (
     BKSUpdateResult,
-    DEFAULT_BKS_AUTHORS,
     create_bks_from_solution,
     save_bks_if_improved,
 )
@@ -492,10 +491,12 @@ def solve_and_update_bks(
     time_limit_s: int,
     seed: int = 42,
     objective_function: ObjectiveFunction | None = None,
-    authors: str = DEFAULT_BKS_AUTHORS,
+    authors: str,
     display: bool = False,
 ) -> tuple[MethodResult, BKSUpdateResult | None]:
     """Solve an instance and, if the solution is feasible, write a BKS file in place.
+
+    ``authors`` (who to credit in the BKS) is required: a stored BKS is published.
 
     Returns the `MethodResult` and a `BKSUpdateResult` (or None if the solver did not
     return a feasible solution). The BKS file path is derived from `instance_path`

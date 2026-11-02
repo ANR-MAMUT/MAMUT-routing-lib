@@ -12,6 +12,8 @@ from mamut_routing_lib.json_utils import save_json_to_file
 from mamut_routing_lib.solvers.pyvrp import solve_and_update_bks
 
 
+AUTHORS = "Test Author"
+
 def _write_instance(tmp_path: Path, instance) -> Path:
     instance_path = tmp_path / f"{instance.instance_name}.vrp.json"
     save_json_to_file(instance.model_dump(mode="json"), instance_path)
@@ -26,6 +28,7 @@ def test_solve_and_update_bks_creates_bks_when_none_exists(tmp_path: Path, toy_c
         instance_path=instance_path,
         time_limit_s=2,
         seed=1,
+        authors=AUTHORS,
     )
 
     assert method_result.solver_is_feasible
@@ -39,10 +42,10 @@ def test_solve_and_update_bks_repeated_run_keeps_or_replaces(tmp_path: Path, toy
     instance_path = _write_instance(tmp_path, toy_cvrp_instance)
 
     _, first_update = solve_and_update_bks(
-        toy_cvrp_instance, instance_path=instance_path, time_limit_s=2, seed=1
+        toy_cvrp_instance, instance_path=instance_path, time_limit_s=2, seed=1, authors=AUTHORS
     )
     _, second_update = solve_and_update_bks(
-        toy_cvrp_instance, instance_path=instance_path, time_limit_s=2, seed=1
+        toy_cvrp_instance, instance_path=instance_path, time_limit_s=2, seed=1, authors=AUTHORS
     )
 
     assert first_update is not None and first_update.action == "created"
@@ -59,6 +62,7 @@ def test_solve_and_update_bks_handles_vrptw_hierarchical(tmp_path: Path, toy_vrp
         time_limit_s=2,
         seed=1,
         objective_function=ObjectiveFunction.HIERARCHICAL_VEHICLE_COST,
+        authors=AUTHORS,
     )
     assert method_result.solver_is_feasible
     assert update_result is not None
@@ -67,3 +71,9 @@ def test_solve_and_update_bks_handles_vrptw_hierarchical(tmp_path: Path, toy_vrp
         instance_path, ObjectiveFunction.HIERARCHICAL_VEHICLE_COST
     )
     assert expected_path.exists()
+
+
+def test_solve_and_update_bks_requires_authors(tmp_path: Path, toy_cvrp_instance) -> None:
+    """A stored BKS is published: nobody is credited by default."""
+    with pytest.raises(TypeError, match="authors"):
+        solve_and_update_bks(toy_cvrp_instance, instance_path=tmp_path / "x.vrp.json", time_limit_s=1)

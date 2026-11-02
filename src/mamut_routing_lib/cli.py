@@ -882,6 +882,13 @@ def list_instances(
         typer.echo(f"  Customer sizes : {size_fmt}")
 
 
+SOLVER_HELP = (
+    "Solver to run: pyvrp (default; CVRP/VRPTW), kayros (TDVRP/TDVRPTW Duration), or an external "
+    "executable -- filo2, hgs-cvrp, ails2 (CVRP, euclidean variants), lkh3 (CVRP/VRPTW) -- configured "
+    "in the solvers config. `mamut-routing solvers list` shows what is available here."
+)
+
+
 @app.command("solve")
 def solve_instances(
     ctx: typer.Context,
@@ -894,7 +901,7 @@ def solve_instances(
     ] = None,
     problem_type: Annotated[
         Optional[ProblemType],
-        typer.Option("--problem-type", case_sensitive=False, help="Filter by CVRP or VRPTW."),
+        typer.Option("--problem-type", case_sensitive=False, help="Filter by problem type."),
     ] = None,
     benchmark_name: Annotated[
         Optional[BenchmarkName],
@@ -912,14 +919,15 @@ def solve_instances(
         Optional[str],
         typer.Option("--instance-name", help="Filter by exact stored instance name."),
     ] = None,
+    solver: Annotated[str, typer.Option("--solver", help=SOLVER_HELP)] = "pyvrp",
     objective: Annotated[
-        ObjectiveFunction,
+        Optional[ObjectiveFunction],
         typer.Option(
             "--objective",
             case_sensitive=False,
-            help="VRPTW objective. CVRP forces MonoCost regardless.",
+            help="Objective. Default: MonoCost for CVRP/VRPTW (CVRP is always MonoCost), Duration for TD instances.",
         ),
-    ] = ObjectiveFunction.MONO_COST,
+    ] = None,
     time_limit_s: Annotated[
         int,
         typer.Option("--time-limit-s", min=1, help="Wall-clock budget per instance, in seconds."),
@@ -927,8 +935,19 @@ def solve_instances(
     seed: Annotated[int, typer.Option("--seed", help="Solver random seed.")] = 42,
     save_bks: Annotated[
         bool,
-        typer.Option("--save-bks/--no-save-bks", help="Write a BKS file next to the instance if improved."),
-    ] = True,
+        typer.Option(
+            "--save-bks/--no-save-bks",
+            help="Store the solution as the instance's BKS when it strictly improves it (needs --authors). Off by default.",
+        ),
+    ] = False,
+    authors: Annotated[
+        Optional[str],
+        typer.Option(
+            "--authors",
+            envvar="MAMUT_ROUTING_BKS_AUTHORS",
+            help="Who to credit in a stored BKS (required with --save-bks; or set $MAMUT_ROUTING_BKS_AUTHORS).",
+        ),
+    ] = None,
     display: Annotated[
         bool,
         typer.Option("--display/--no-display", help="Forward PyVRP's per-iteration display to stdout."),
@@ -945,18 +964,42 @@ def solve_instances(
         ),
     ] = None,
 ) -> None:
-    """Solve one or more benchmark instances with custom PyVRP's HGS-based solver variants.
+    """Solve benchmark instances with a registered solver and check every result.
 
-    Requires the 'pyvrp' optional dependency:
-    pip install "mamut-routing-lib[pyvrp]"
+    Every solution is priced by the reference checker; COST is the checker's
+    cost. With --save-bks --authors NAME, a solution that strictly beats the
+    stored BKS (exact decimal costs; ties keep the incumbent) is written next
+    to the instance. PyVRP needs the 'pyvrp' extra:
+    pip install "mamut-routing-lib[pyvrp]".
     """
-    try:
-        from mamut_routing_lib.solvers.pyvrp import solve_and_update_bks, solve_instance
-    except ImportError as exc:
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(code=2)
+    from mamut_routing_lib.objectives import default_objective
+    from mamut_routing_lib.solutions import submit_bks
+    from mamut_routing_lib.solvers import (
+        InstanceNotSupportedError,
+        SolverUnavailableError,
+        UnknownSolverError,
+        get_solver,
+        profile_instance,
+        run_solver,
+    )
 
     state: CLIState = ctx.obj
+
+    try:
+        solver_obj = get_solver(solver)
+    except UnknownSolverError as error:
+        raise typer.BadParameter(str(error), param_hint="--solver") from error
+    availability = solver_obj.availability()
+    if not availability.available:
+        hint = f" ({availability.hint})" if availability.hint else ""
+        typer.echo(f"Error: solver {solver_obj.name} is not available: {availability.reason}{hint}", err=True)
+        raise typer.Exit(code=2)
+    if save_bks and not (authors and authors.strip()):
+        typer.echo(
+            "Error: --save-bks needs --authors (who to credit in the BKS), or $MAMUT_ROUTING_BKS_AUTHORS.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
 
     candidate_paths = list(_iter_candidate_paths(state, list(instance_paths) if instance_paths else None))
 
@@ -978,31 +1021,35 @@ def solve_instances(
         raise typer.Exit(code=2)
 
     explicit_paths = bool(instance_paths)
-    time_dependent = [r for r in selected if r.problem_type in (ProblemType.TDVRP, ProblemType.TDVRPTW)]
+    td_types = (ProblemType.TDVRP, ProblemType.TDVRPTW)
+    time_dependent: list[LocalInstanceRecord] = []
+    if not solver_obj.capabilities.time_dependent:
+        time_dependent = [r for r in selected if r.problem_type in td_types]
     if time_dependent:
         if explicit_paths:
             typer.echo(
                 f"Error: {len(time_dependent)} time-dependent instance(s) selected (e.g. "
-                f"{time_dependent[0].instance_id}); `solve` covers CVRP and VRPTW only "
-                "(time-dependent instances are checked with mamut_routing_lib.td).",
+                f"{time_dependent[0].instance_id}); {solver_obj.name} covers "
+                f"{', '.join(sorted(p.value for p in solver_obj.capabilities.problem_types))} only "
+                "(time-dependent instances: --solver kayros, or check them with mamut_routing_lib.td).",
                 err=True,
             )
             raise typer.Exit(code=2)
         typer.secho(
             f"Warning: skipping {len(time_dependent)} time-dependent instance(s); "
-            "`solve` covers CVRP and VRPTW only.",
+            f"{solver_obj.name} covers static CVRP and VRPTW only.",
             fg=typer.colors.YELLOW,
             err=True,
         )
-        selected = [r for r in selected if r.problem_type not in (ProblemType.TDVRP, ProblemType.TDVRPTW)]
+        selected = [r for r in selected if r.problem_type not in td_types]
 
     unmaterialized = {id(r): path for r in selected if (path := _missing_arc_cost_sidecar(r)) is not None}
-    sidecar_error_rows: list[SolveSummaryRow] = []
+    error_rows: list[SolveSummaryRow] = []
     if unmaterialized:
         missing_records = [r for r in selected if id(r) in unmaterialized]
         selected = [r for r in selected if id(r) not in unmaterialized]
         if explicit_paths:
-            sidecar_error_rows = [
+            error_rows.extend(
                 SolveSummaryRow(
                     instance_id=r.instance_id,
                     instance_name=r.instance_name,
@@ -1014,7 +1061,7 @@ def solve_instances(
                     detail=f"distances sidecar not in the tree (sha256-pinned; materialize it first): {unmaterialized[id(r)]}",
                 )
                 for r in missing_records
-            ]
+            )
         else:
             typer.secho(
                 f"Warning: skipping {len(missing_records)} instance(s) whose distances sidecar is sha256-pinned "
@@ -1022,13 +1069,10 @@ def solve_instances(
                 fg=typer.colors.YELLOW,
                 err=True,
             )
-    if not selected and not sidecar_error_rows:
-        typer.echo("No solvable instances left after skipping.", err=True)
-        raise typer.Exit(code=2)
 
-    if objective != ObjectiveFunction.MONO_COST:
+    if objective is not None and objective != ObjectiveFunction.MONO_COST:
         cvrp_in_batch = [r for r in selected if r.problem_type is ProblemType.CVRP]
-        if cvrp_in_batch:
+        if cvrp_in_batch and objective == ObjectiveFunction.HIERARCHICAL_VEHICLE_COST:
             raise typer.BadParameter(
                 f"--objective {objective.value} is VRPTW-only but the selection includes "
                 f"{len(cvrp_in_batch)} CVRP instance(s) (e.g. {cvrp_in_batch[0].instance_id}). "
@@ -1036,7 +1080,43 @@ def solve_instances(
                 param_hint="--objective",
             )
 
-    _warn_on_non_base_objectives(selected, objective)
+    objectives = {id(r): objective or default_objective(r.instance) for r in selected}
+    for record in selected:
+        _warn_on_non_base_objectives([record], objectives[id(record)])
+
+    unsupported: list[tuple[LocalInstanceRecord, str]] = []
+    for record in selected:
+        support = solver_obj.supports(profile_instance(record.instance, record.path), objectives[id(record)])
+        if not support.supported:
+            unsupported.append((record, "; ".join(support.reasons)))
+    if unsupported:
+        skipped_ids = {id(record) for record, _ in unsupported}
+        selected = [r for r in selected if id(r) not in skipped_ids]
+        if explicit_paths:
+            error_rows.extend(
+                SolveSummaryRow(
+                    instance_id=record.instance_id,
+                    instance_name=record.instance_name,
+                    status="error",
+                    cost=None,
+                    route_count=0,
+                    wall_time=0.0,
+                    bks_label="-",
+                    detail=f"{solver_obj.name} cannot solve it: {reason}",
+                )
+                for record, reason in unsupported
+            )
+        else:
+            typer.secho(
+                f"Warning: skipping {len(unsupported)} instance(s) {solver_obj.name} cannot solve "
+                f"(e.g. {unsupported[0][0].instance_id}: {unsupported[0][1]}).",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
+
+    if not selected and not error_rows:
+        typer.echo("No solvable instances left after skipping.", err=True)
+        raise typer.Exit(code=2)
 
     multi_instance = len(selected) >= 2
     if multi_instance and display:
@@ -1058,65 +1138,80 @@ def solve_instances(
             raise typer.Exit(code=2)
 
     resolved_jobs = jobs if jobs is not None else _default_solve_jobs()
-    effective_jobs = min(resolved_jobs, len(selected))
+    effective_jobs = min(resolved_jobs, len(selected)) if selected else 1
 
-    solve_message = f"Solving {len(selected)} instance(s)  time_limit={time_limit_s}s  seed={seed}  save_bks={save_bks}"
+    solve_message = (
+        f"Solving {len(selected)} instance(s)  solver={solver_obj.name}  time_limit={time_limit_s}s  "
+        f"seed={seed}  save_bks={save_bks}"
+    )
     if multi_instance:
         solve_message = f"{solve_message}  jobs={effective_jobs}"
     typer.echo(solve_message)
     rows: list[SolveSummaryRow | None] = [None] * len(selected)
 
     def _solve_record(record: LocalInstanceRecord) -> SolveSummaryRow:
-        path = record.path
-        instance = record.instance
-        run_objective = objective
+        run_objective = objectives[id(record)]
 
-        def _solve_selected_instance() -> tuple[Any, Any]:
-            if save_bks:
-                return solve_and_update_bks(
-                    instance,
-                    instance_path=path,
-                    time_limit_s=time_limit_s,
-                    seed=seed,
-                    objective_function=run_objective,
-                    display=display,
-                )
-            method_result = solve_instance(
-                instance,
-                instance_path=path,
+        def _solve_selected_instance() -> Any:
+            return run_solver(
+                solver_obj,
+                record.path,
                 time_limit_s=time_limit_s,
                 seed=seed,
                 objective_function=run_objective,
+                instance=record.instance,
                 display=display,
             )
-            return method_result, None
 
         if multi_instance:
-            method_result, bks_update = _solve_selected_instance()
+            solved = _solve_selected_instance()
         else:
-            method_result, bks_update = _run_with_time_progress(
+            solved = _run_with_time_progress(
                 record=record,
                 time_limit_s=time_limit_s,
                 enabled=not display,
                 operation=_solve_selected_instance,
             )
 
-        if method_result.solver_is_feasible:
+        result = solved.result
+        if result.status == "failed":
+            return SolveSummaryRow(
+                instance_id=record.instance_id,
+                instance_name=record.instance_name,
+                status="error",
+                cost=None,
+                route_count=0,
+                wall_time=result.wall_time,
+                bks_label="-",
+                detail=result.error or "the solver failed",
+            )
+        detail = ""
+        if solved.valid:
             status = "feasible"
-            cost = method_result.solver_cost
         else:
             status = "infeasible"
-            cost = None
-
-        bks_label = bks_update.action if bks_update is not None else ("-" if save_bks else "skipped")
+            if solved.check is not None:
+                detail = f"checker: {solved.validation_status}: {solved.check.error_message}"
+        bks_label = "-" if save_bks else "skipped"
+        if save_bks and solved.valid:
+            update = submit_bks(
+                record.path,
+                result.routes,
+                authors=str(authors),
+                objective_function=run_objective,
+                metadata=solved.bks_metadata(),
+                instance=record.instance,
+            )
+            bks_label = f"{update.action} (tie)" if update.tie else update.action
         return SolveSummaryRow(
             instance_id=record.instance_id,
             instance_name=record.instance_name,
             status=status,
-            cost=cost,
-            route_count=method_result.route_count,
-            wall_time=method_result.wall_time,
+            cost=solved.cost,
+            route_count=len(result.routes),
+            wall_time=result.wall_time,
             bks_label=bks_label,
+            detail=detail,
         )
 
     def _solve_record_safe(record: LocalInstanceRecord) -> SolveSummaryRow:
@@ -1124,17 +1219,20 @@ def solve_instances(
         started = time.perf_counter()
         try:
             return _solve_record(record)
+        except (InstanceNotSupportedError, SolverUnavailableError) as exc:
+            detail = str(exc)
         except Exception as exc:  # noqa: BLE001 - reported as an error row
-            return SolveSummaryRow(
-                instance_id=record.instance_id,
-                instance_name=record.instance_name,
-                status="error",
-                cost=None,
-                route_count=0,
-                wall_time=time.perf_counter() - started,
-                bks_label="-",
-                detail=f"{type(exc).__name__}: {exc}",
-            )
+            detail = f"{type(exc).__name__}: {exc}"
+        return SolveSummaryRow(
+            instance_id=record.instance_id,
+            instance_name=record.instance_name,
+            status="error",
+            cost=None,
+            route_count=0,
+            wall_time=time.perf_counter() - started,
+            bks_label="-",
+            detail=detail,
+        )
 
     if multi_instance:
         future_indices = {}
@@ -1156,18 +1254,18 @@ def solve_instances(
     elif selected:
         rows[0] = _solve_record_safe(selected[0])
 
-    solved_rows = [row for row in rows if row is not None] + sidecar_error_rows
+    solved_rows = [row for row in rows if row is not None] + error_rows
     any_failure = any(row.status != "feasible" for row in solved_rows)
 
     header = (
         f"{'INSTANCE_ID':<64}  {'INSTANCE_NAME':<24}  {'STATUS':<10}  "
-        f"{'COST':>10}  {'ROUTES':>6}  {'WALL_S':>7}  {'BKS':<14}"
+        f"{'COST':>12}  {'ROUTES':>6}  {'WALL_S':>7}  {'BKS':<14}"
     )
     typer.echo(header)
     typer.echo("-" * len(header))
 
     for row in solved_rows:
-        cost_str = f"{row.cost:>10}" if row.cost is not None else f"{'-':>10}"
+        cost_str = f"{row.cost:>12g}" if isinstance(row.cost, float) else (f"{row.cost:>12}" if row.cost is not None else f"{'-':>12}")
         typer.echo(
             f"{row.instance_id:<64}  {row.instance_name:<24}  {row.status:<10}  {cost_str}  {row.route_count:>6}  "
             f"{row.wall_time:>7.2f}  {row.bks_label:<14}"
@@ -1176,12 +1274,15 @@ def solve_instances(
     for row in solved_rows:
         if row.status == "error":
             typer.echo(f"error: {row.instance_id}: {row.detail}", err=True)
+        elif row.detail:
+            typer.echo(f"{row.status}: {row.instance_id}: {row.detail}", err=True)
     counts = {status: sum(1 for row in solved_rows if row.status == status) for status in ("feasible", "infeasible", "error")}
     skipped_td = len(time_dependent) if not explicit_paths else 0
     skipped_sidecar = len(unmaterialized) if not explicit_paths else 0
+    skipped_unsupported = len(unsupported) if not explicit_paths else 0
     typer.echo(
         f"Summary: feasible {counts['feasible']} · infeasible {counts['infeasible']} · errors {counts['error']} · "
-        f"skipped (TD) {skipped_td} · skipped (sidecar) {skipped_sidecar}"
+        f"skipped (TD) {skipped_td} · skipped (sidecar) {skipped_sidecar} · skipped (unsupported) {skipped_unsupported}"
     )
 
     if any_failure:
