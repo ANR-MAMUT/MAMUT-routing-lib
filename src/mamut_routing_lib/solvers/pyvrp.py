@@ -21,7 +21,7 @@ from typing import Any, Callable
 
 try:
     import numpy as np
-    from pyvrp import ProblemData, SolveParams
+    from pyvrp import ProblemData, Solution, SolveParams
     from pyvrp.minimise_fleet import minimise_fleet
     from pyvrp.read import ROUND_FUNCS, _InstanceParser, _ProblemDataBuilder, _RoundingFunc
     from pyvrp.solve import solve as pyvrp_solve
@@ -186,6 +186,11 @@ def _extract_routes(pyvrp_solution: Any) -> list[list[int]]:
     return routes
 
 
+def extract_routes(pyvrp_solution: Any) -> list[list[int]]:
+    """Public name of ``_extract_routes``: non-empty routes in library ids."""
+    return _extract_routes(pyvrp_solution)
+
+
 def _get_vehicle_fixed_cost(
     num_customers: int,
     arc_costs: list[list[int]] | list[list[float]],
@@ -228,6 +233,31 @@ def _conversion_plan(
     return arc_costs, "exact", 1000
 
 
+def conversion_plan(
+    instance: AnyBenchmarkInstance,
+    instance_path: str | Path | None,
+) -> tuple[list[list[int]] | list[list[float]], str, int]:
+    """Public name of ``_conversion_plan``: (arc costs, round_func, cost scale)."""
+    return _conversion_plan(instance, instance_path)
+
+
+def scale_is_exact(arc_costs: list[list[int]] | list[list[float]], scale: int) -> bool:
+    """Whether ``scale`` turns every arc cost into an integer without rounding.
+
+    False for full-precision float matrices (e.g. Sintef2008), which PyVRP's
+    ``exact`` rounding approximates to the nearest milli-unit.
+    """
+    weights = np.asarray(arc_costs, dtype=np.float64) * scale
+    return bool(np.all(np.abs(weights - np.round(weights)) <= 1e-9 * np.maximum(1.0, np.abs(weights))))
+
+
+def _warm_start(problem: ProblemData, initial_routes: list[list[int]] | None) -> Any:
+    """A PyVRP ``Solution`` from library routes (depot 0, customers 1..n), or None."""
+    if not initial_routes:
+        return None
+    return Solution(problem, [[int(stop) for stop in route] for route in initial_routes if route])
+
+
 def solve_cvrp(
     instance: BenchmarkInstanceCVRP | BenchmarkInstanceCVRPCollection,
     *,
@@ -236,8 +266,12 @@ def solve_cvrp(
     display: bool = False,
     instance_path: str | Path | None = None,
     monitor: SolveMonitor | None = None,
+    initial_routes: list[list[int]] | None = None,
 ) -> MethodResult:
-    """Solve a CVRP instance with PyVRP's ILS (mono-cost objective only)."""
+    """Solve a CVRP instance with PyVRP's ILS (mono-cost objective only).
+
+    ``initial_routes`` (library ids) warm-start the search.
+    """
     start_time = time.perf_counter()
     arc_costs, round_func, scale = _conversion_plan(instance, instance_path)
     if monitor is not None:
@@ -249,6 +283,7 @@ def solve_cvrp(
         seed=seed,
         collect_stats=False,
         display=display,
+        initial_solution=_warm_start(problem, initial_routes),
     )
     wall_time = time.perf_counter() - start_time
     is_feasible = result.is_feasible()
@@ -271,7 +306,12 @@ def solve_cvrp(
             ObjectiveFunction.MONO_COST,
             seed=seed,
             time_limit_s=time_limit_s,
-            extra={"arc_cost_scale": scale} if scale != 1 else None,
+            extra={
+                **({"arc_cost_scale": scale} if scale != 1 else {}),
+                "cost_exact": scale_is_exact(arc_costs, scale),
+                **({"warm_start": True} if initial_routes else {}),
+                **({"solver_distance": int(result.best.distance())} if is_feasible else {}),
+            },
         ),
     )
 
@@ -285,8 +325,12 @@ def solve_vrptw(
     display: bool = False,
     instance_path: str | Path | None = None,
     monitor: SolveMonitor | None = None,
+    initial_routes: list[list[int]] | None = None,
 ) -> MethodResult:
     """Solve a VRPTW instance with PyVRP's ILS.
+
+    ``initial_routes`` (library ids) warm-start a MonoCost solve; the hierarchical
+    solve builds its own warm start on the minimised fleet and ignores them.
 
     For ObjectiveFunction.MONO_COST, runs a single solve with the full time budget.
     For ObjectiveFunction.HIERARCHICAL_VEHICLE_COST, runs a two-phase solve:
@@ -314,6 +358,7 @@ def solve_vrptw(
             collect_stats=False,
             display=display,
             params=params,
+            initial_solution=_warm_start(problem, initial_routes),
         )
     else:
         fleet_budget = max(1.0, float(time_limit_s) * _FLEET_MIN_TIME_FRACTION)
@@ -378,7 +423,19 @@ def solve_vrptw(
             objective_function,
             seed=seed,
             time_limit_s=time_limit_s,
-            extra={"vehicle_penalty": vehicle_penalty, **({"arc_cost_scale": scale} if scale != 1 else {})},
+            extra={
+                "vehicle_penalty": vehicle_penalty,
+                **({"arc_cost_scale": scale} if scale != 1 else {}),
+                "cost_exact": scale_is_exact(arc_costs, scale),
+                **(
+                    {"warm_start": True}
+                    if initial_routes and objective_function == ObjectiveFunction.MONO_COST
+                    else {}
+                ),
+                # Routing cost of the returned solution in solver units, without the hierarchical
+                # fleet cost (which the phase-1 fallback result does not carry at all).
+                **({"solver_distance": int(result.best.distance())} if is_feasible else {}),
+            },
         ),
     )
 
@@ -392,6 +449,7 @@ def solve_instance(
     display: bool = False,
     instance_path: str | Path | None = None,
     monitor: SolveMonitor | None = None,
+    initial_routes: list[list[int]] | None = None,
 ) -> MethodResult:
     """Dispatch to `solve_cvrp` or `solve_vrptw` based on instance type.
 
@@ -408,6 +466,7 @@ def solve_instance(
             display=display,
             instance_path=instance_path,
             monitor=monitor,
+            initial_routes=initial_routes,
         )
 
     if _is_vrptw_like(instance):
@@ -420,6 +479,7 @@ def solve_instance(
             display=display,
             instance_path=instance_path,
             monitor=monitor,
+            initial_routes=initial_routes,
         )
 
     raise TypeError(f"Unsupported instance type: {type(instance).__name__}")
