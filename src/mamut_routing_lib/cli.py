@@ -76,6 +76,17 @@ bks_app = typer.Typer(
 )
 app.add_typer(bks_app, name="bks")
 
+solvers_app = typer.Typer(
+    help="Registered solvers: PyVRP, KAYROS and external executables (solvers config).",
+    no_args_is_help=True,
+)
+app.add_typer(solvers_app, name="solvers")
+
+SOLVERS_CONFIG_HELP = (
+    "Solvers config TOML (default: $MAMUT_ROUTING_SOLVERS_CONFIG, then "
+    "$XDG_CONFIG_HOME/mamut-routing/solvers.toml). Never read from the working directory."
+)
+
 
 def _get_package_version() -> str:
     package_name = "mamut-routing-lib"
@@ -920,6 +931,14 @@ def solve_instances(
         typer.Option("--instance-name", help="Filter by exact stored instance name."),
     ] = None,
     solver: Annotated[str, typer.Option("--solver", help=SOLVER_HELP)] = "pyvrp",
+    solvers_config: Annotated[Optional[Path], typer.Option("--solvers-config", help=SOLVERS_CONFIG_HELP)] = None,
+    keep_artifacts: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--keep-artifacts",
+            help="Keep each external solver's input, output and log under DIR/<instance-id>/ (debugging, audits).",
+        ),
+    ] = None,
     objective: Annotated[
         Optional[ObjectiveFunction],
         typer.Option(
@@ -976,19 +995,25 @@ def solve_instances(
     from mamut_routing_lib.solutions import submit_bks
     from mamut_routing_lib.solvers import (
         InstanceNotSupportedError,
+        SolveMonitor,
         SolverUnavailableError,
         UnknownSolverError,
         get_solver,
         profile_instance,
         run_solver,
     )
+    from mamut_routing_lib.solvers.external.config import SolverConfigError
+    from mamut_routing_lib.solvers.external.process import terminate_all
 
     state: CLIState = ctx.obj
 
     try:
-        solver_obj = get_solver(solver)
+        solver_obj = get_solver(solver, config=solvers_config)
     except UnknownSolverError as error:
         raise typer.BadParameter(str(error), param_hint="--solver") from error
+    except SolverConfigError as error:
+        typer.echo(f"Error: solvers config: {error}", err=True)
+        raise typer.Exit(code=2) from error
     availability = solver_obj.availability()
     if not availability.available:
         hint = f" ({availability.hint})" if availability.hint else ""
@@ -1149,8 +1174,15 @@ def solve_instances(
     typer.echo(solve_message)
     rows: list[SolveSummaryRow | None] = [None] * len(selected)
 
+    monitors: list[Any] = []
+
     def _solve_record(record: LocalInstanceRecord) -> SolveSummaryRow:
         run_objective = objectives[id(record)]
+        monitor = SolveMonitor(None, interval_s=3600.0)
+        monitors.append(monitor)
+        workdir = None
+        if keep_artifacts is not None:
+            workdir = keep_artifacts.resolve() / record.instance_id / f"{solver_obj.name}-seed{seed}"
 
         def _solve_selected_instance() -> Any:
             return run_solver(
@@ -1161,6 +1193,10 @@ def solve_instances(
                 objective_function=run_objective,
                 instance=record.instance,
                 display=display,
+                monitor=monitor,
+                workdir=workdir,
+                keep_artifacts=workdir is not None,
+                config=solvers_config,
             )
 
         if multi_instance:
@@ -1174,6 +1210,17 @@ def solve_instances(
             )
 
         result = solved.result
+        if result.status == "cancelled":
+            return SolveSummaryRow(
+                instance_id=record.instance_id,
+                instance_name=record.instance_name,
+                status="error",
+                cost=None,
+                route_count=0,
+                wall_time=result.wall_time,
+                bks_label="-",
+                detail="interrupted",
+            )
         if result.status == "failed":
             return SolveSummaryRow(
                 instance_id=record.instance_id,
@@ -1234,25 +1281,38 @@ def solve_instances(
             detail=detail,
         )
 
-    if multi_instance:
-        future_indices = {}
-        with ThreadPoolExecutor(max_workers=effective_jobs) as executor:
-            for index, record in enumerate(selected):
-                future_indices[executor.submit(_solve_record_safe, record)] = index
-            with tqdm(
-                total=len(selected),
-                desc=f"Solving ({effective_jobs} jobs)",
-                unit="run",
-                leave=True,
-                dynamic_ncols=True,
-                file=sys.stderr,
-            ) as bar:
-                for future in as_completed(future_indices):
-                    index = future_indices[future]
-                    rows[index] = future.result()
-                    bar.update(1)
-    elif selected:
-        rows[0] = _solve_record_safe(selected[0])
+    try:
+        if multi_instance:
+            future_indices = {}
+            with ThreadPoolExecutor(max_workers=effective_jobs) as executor:
+                for index, record in enumerate(selected):
+                    future_indices[executor.submit(_solve_record_safe, record)] = index
+                try:
+                    with tqdm(
+                        total=len(selected),
+                        desc=f"Solving ({effective_jobs} jobs)",
+                        unit="run",
+                        leave=True,
+                        dynamic_ncols=True,
+                        file=sys.stderr,
+                    ) as bar:
+                        for future in as_completed(future_indices):
+                            index = future_indices[future]
+                            rows[index] = future.result()
+                            bar.update(1)
+                except KeyboardInterrupt:
+                    for future in future_indices:
+                        future.cancel()
+                    raise
+        elif selected:
+            rows[0] = _solve_record_safe(selected[0])
+    except KeyboardInterrupt:
+        # Solvers in their own process group never see the terminal's Ctrl-C: stop them all.
+        for monitor in monitors:
+            monitor.request_stop()
+        terminate_all()
+        typer.echo("Interrupted: every running solve was stopped; no BKS was written for them.", err=True)
+        raise typer.Exit(code=130)
 
     solved_rows = [row for row in rows if row is not None] + error_rows
     any_failure = any(row.status != "feasible" for row in solved_rows)
@@ -1653,6 +1713,58 @@ def reprice_td(
         report.write_text(json.dumps(results, indent=1) + "\n", encoding="utf-8")
     if failures or (missing and not allow_missing_sidecars):
         raise typer.Exit(code=1)
+
+
+@solvers_app.command("list")
+def solvers_list(
+    solvers_config: Annotated[Optional[Path], typer.Option("--solvers-config", help=SOLVERS_CONFIG_HELP)] = None,
+    as_json: Annotated[bool, typer.Option("--json", help="Print the solvers as JSON.")] = False,
+) -> None:
+    """List every registered solver: availability here, version, what it solves, and how to enable it."""
+    from mamut_routing_lib.solvers import list_solvers
+    from mamut_routing_lib.solvers.external.config import SolverConfigError, resolve_config_path
+
+    try:
+        solvers = list_solvers(config=solvers_config)
+        config_path = resolve_config_path(solvers_config)
+    except SolverConfigError as error:
+        typer.echo(f"Error: solvers config: {error}", err=True)
+        raise typer.Exit(code=2) from error
+    rows = []
+    for solver_obj in solvers:
+        availability = solver_obj.availability()
+        descriptor = getattr(solver_obj, "descriptor", None)
+        rows.append(
+            {
+                "name": solver_obj.name,
+                "label": solver_obj.label,
+                "available": availability.available,
+                "reason": availability.reason,
+                "hint": availability.hint,
+                "version": availability.version,
+                "executable": availability.executable,
+                "source": getattr(descriptor, "source", "builtin"),
+                "capabilities": solver_obj.capabilities.to_json(),
+            }
+        )
+    if as_json:
+        typer.echo(json.dumps({"config": str(config_path) if config_path else None, "solvers": rows}, indent=1))
+        return
+    typer.echo(f"solvers config: {config_path or 'none'}")
+    header = f"{'NAME':<12}  {'AVAILABLE':<9}  {'VERSION':<12}  {'SOLVES':<52}  NOTE"
+    typer.echo(header)
+    typer.echo("-" * len(header))
+    for row in rows:
+        solves = "; ".join(
+            f"{problem} {'/'.join(objectives)}" for problem, objectives in row["capabilities"]["objectives"].items()
+        )
+        note = row["reason"] or ""
+        if row["hint"]:
+            note = f"{note} -- {row['hint']}" if note else row["hint"]
+        typer.echo(
+            f"{row['name']:<12}  {'yes' if row['available'] else 'no':<9}  {str(row['version'] or '-'):<12}  "
+            f"{solves:<52}  {note}"
+        )
 
 
 # --------------------------------------------------------------------------- #
