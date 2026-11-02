@@ -53,6 +53,7 @@ from mamut_routing_lib.models import (
     BenchmarkInstanceVRPTWCollection,
     BenchmarkSolution,
 )
+from mamut_routing_lib.solvers.base import INFEASIBLE_COST, SolveMonitor, SolveTick
 
 
 __all__ = [
@@ -73,81 +74,8 @@ __all__ = [
 _FLEET_MIN_TIME_FRACTION = 0.3
 _WARM_START_MAX_TIME = 5.0
 
-# PyVRP evaluates an infeasible incumbent at INT_MAX (see pyvrp.stop.FirstFeasible), so any
-# cost at or above this is "nothing feasible found yet" rather than an astronomically bad tour.
-_INFEASIBLE_COST = float(np.iinfo(np.int64).max)
-
-
-@dataclass(frozen=True)
-class SolveTick:
-    """One observation of a running solve, as seen from inside the search loop."""
-
-    phase: str
-    iterations: int
-    elapsed_s: float
-    best_cost: float | None
-
-
-class SolveMonitor:
-    """A PyVRP stopping criterion that reports the incumbent and honours cancellation.
-
-    PyVRP calls the stopping criterion once per iteration with the cost of the best solution
-    so far, which is the only point inside a solve where a caller can learn that anything is
-    happening. This criterion never stops on its own -- the `MaxRuntime` it is paired with
-    still owns the time budget. It relays throttled ticks to `on_tick`, and stops the search
-    only when `on_tick` returns True.
-
-    Compose it *before* `MaxRuntime` in a `MultipleCriteria`: that class uses `any()`, which
-    short-circuits, so a monitor placed second would go silent the moment the budget expires.
-    """
-
-    def __init__(
-        self,
-        on_tick: Callable[[SolveTick], bool],
-        *,
-        scale: int = 1,
-        interval_s: float = 1.0,
-    ):
-        self._on_tick = on_tick
-        self._scale = scale if scale > 0 else 1
-        self._interval_s = max(0.0, interval_s)
-        self._phase = "search"
-        self._iterations = 0
-        self._start = time.perf_counter()
-        # -inf, not the start time: the first iteration should report immediately rather than
-        # leave the caller showing nothing for a whole interval.
-        self._last_tick = float("-inf")
-        self.stopped_early = False
-
-    def phase(self, name: str) -> None:
-        """Name the stage the solve has just entered, and tick immediately so the label lands."""
-        self._phase = name
-        self._last_tick = float("-inf")  # tick on the next iteration so the label lands
-
-    def rescale(self, scale: int) -> None:
-        """Adopt the solve's cost scale, which is only known once the instance is converted."""
-        self._scale = scale if scale > 0 else 1
-
-    @property
-    def elapsed_s(self) -> float:
-        return time.perf_counter() - self._start
-
-    def __call__(self, best_cost: float) -> bool:
-        self._iterations += 1
-        now = time.perf_counter()
-        if now - self._last_tick < self._interval_s:
-            return False
-        self._last_tick = now
-        tick = SolveTick(
-            phase=self._phase,
-            iterations=self._iterations,
-            elapsed_s=now - self._start,
-            best_cost=None if best_cost >= _INFEASIBLE_COST else best_cost / self._scale,
-        )
-        if self._on_tick(tick):
-            self.stopped_early = True
-            return True
-        return False
+# Kept for callers of the private name; the constant now lives in solvers.base.
+_INFEASIBLE_COST = INFEASIBLE_COST
 
 
 def _stop_with(monitor: SolveMonitor | None, *criteria: Any) -> Any:
