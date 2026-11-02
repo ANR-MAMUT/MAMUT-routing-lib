@@ -1319,13 +1319,18 @@ def solve_instances(
 
     header = (
         f"{'INSTANCE_ID':<64}  {'INSTANCE_NAME':<24}  {'STATUS':<10}  "
-        f"{'COST':>12}  {'ROUTES':>6}  {'WALL_S':>7}  {'BKS':<14}"
+        f"{'COST':>14}  {'ROUTES':>6}  {'WALL_S':>7}  {'BKS':<14}"
     )
     typer.echo(header)
     typer.echo("-" * len(header))
 
     for row in solved_rows:
-        cost_str = f"{row.cost:>12g}" if isinstance(row.cost, float) else (f"{row.cost:>12}" if row.cost is not None else f"{'-':>12}")
+        if row.cost is None:
+            cost_str = f"{'-':>14}"
+        elif isinstance(row.cost, float) and not row.cost.is_integer():
+            cost_str = f"{row.cost:>14.10g}"
+        else:
+            cost_str = f"{int(row.cost):>14}"
         typer.echo(
             f"{row.instance_id:<64}  {row.instance_name:<24}  {row.status:<10}  {cost_str}  {row.route_count:>6}  "
             f"{row.wall_time:>7.2f}  {row.bks_label:<14}"
@@ -1811,6 +1816,11 @@ def _warn_objective(instance: Any, objective: ObjectiveFunction) -> None:
         )
 
 
+def _number(value: float) -> str:
+    """A cost as written: integers without a decimal point, floats in full (shortest round-trip)."""
+    return str(int(value)) if float(value).is_integer() else repr(float(value))
+
+
 def _meta_pairs(pairs: list[str] | None) -> dict[str, Any]:
     values: dict[str, Any] = {}
     for pair in pairs or []:
@@ -1883,11 +1893,11 @@ def check_external_solution(
         typer.echo(f"objective  {resolved.value}")
         typer.echo(f"verdict    {result.status.value}" + (f": {result.error_message}" if result.error_message else ""))
         if valid:
-            declared = "" if parsed.declared_cost is None else f" (declared {parsed.declared_cost:g})"
+            declared = "" if parsed.declared_cost is None else f" (declared {_number(parsed.declared_cost)})"
             typer.echo(f"cost       {result.routing_cost}{declared}")
     if mismatch:
         typer.secho(
-            f"Warning: the file declares cost {parsed.declared_cost:g} but the checker gives {result.routing_cost} "
+            f"Warning: the file declares cost {_number(parsed.declared_cost)} but the checker gives {result.routing_cost} "
             "(another metric variant, rounding, or a different instance).",
             fg=typer.colors.YELLOW,
             err=True,
