@@ -1554,5 +1554,225 @@ def reprice_td(
         raise typer.Exit(code=1)
 
 
+# --------------------------------------------------------------------------- #
+# External solutions: check and submit
+# --------------------------------------------------------------------------- #
+
+BKS_AUTHORS_ENV = "MAMUT_ROUTING_BKS_AUTHORS"
+
+_IDS_HELP = (
+    "How stop ids are numbered in the solution file: 'auto' (1..n with 0 as a depot marker, "
+    "unless the file covers 0..n-1 exactly), 'one-based' or 'zero-based'."
+)
+
+
+def _load_external_solution(instance_path: Path, solution_path: Path, ids: str) -> tuple[Any, Any]:
+    """(instance, ParsedSolution) or exit 2 with the reason."""
+    from mamut_routing_lib.solutions import SolutionFormatError, read_solution_file
+
+    if ids not in ("auto", "one-based", "zero-based"):
+        raise typer.BadParameter("use auto, one-based or zero-based", param_hint="--ids")
+    try:
+        instance = load_benchmark_instance(instance_path)
+    except Exception as error:  # noqa: BLE001 - reported as a usage error
+        typer.echo(f"Error: cannot load {instance_path}: {error}", err=True)
+        raise typer.Exit(code=2) from error
+    try:
+        parsed = read_solution_file(solution_path, instance, convention=ids)  # type: ignore[arg-type]
+    except (SolutionFormatError, OSError) as error:
+        typer.echo(f"Error: {solution_path}: {error}", err=True)
+        raise typer.Exit(code=2) from error
+    return instance, parsed
+
+
+def _warn_objective(instance: Any, objective: ObjectiveFunction) -> None:
+    from mamut_routing_lib.objectives import base_objective
+
+    published = base_objective(instance)
+    if published != objective:
+        typer.secho(
+            f"Warning: {instance.instance_name} publishes its BKS under {published.value}; "
+            f"using {objective.value}.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+
+
+def _meta_pairs(pairs: list[str] | None) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    for pair in pairs or []:
+        key, sep, raw = pair.partition("=")
+        if not sep or not key.strip():
+            raise typer.BadParameter(f"expected KEY=VALUE, got {pair!r}", param_hint="--meta")
+        try:
+            values[key.strip()] = json.loads(raw)
+        except ValueError:
+            values[key.strip()] = raw
+    return values
+
+
+@app.command("check")
+def check_external_solution(
+    instance_path: Annotated[Path, typer.Argument(help="The instance (.vrp.json), static or time-dependent.")],
+    solution_path: Annotated[
+        Path,
+        typer.Argument(help="Solution file: CVRPLIB .sol (Route #k / Cost), JSON routes, or an LKH-3 MTSP solution."),
+    ],
+    objective: Annotated[
+        Optional[ObjectiveFunction],
+        typer.Option("--objective", case_sensitive=False, help="Objective (default: the family's published one)."),
+    ] = None,
+    ids: Annotated[str, typer.Option("--ids", help=_IDS_HELP)] = "auto",
+    as_json: Annotated[bool, typer.Option("--json", help="Print the verdict as JSON.")] = False,
+) -> None:
+    """Check an externally found solution with the reference checker.
+
+    The routes are mapped onto the instance's ids (depot 0, customers 1..n) and
+    priced by the same checker that validates every BKS, static or
+    time-dependent. A declared cost that differs from the checker's is reported,
+    not trusted. Exit status 0 when valid, 1 when the checker rejects the routes,
+    2 when the file cannot be read or does not fit the instance.
+    """
+    from mamut_routing_lib.objectives import base_objective
+    from mamut_routing_lib.solutions import check_routes
+
+    instance, parsed = _load_external_solution(instance_path, solution_path, ids)
+    resolved = objective or base_objective(instance)
+    if objective is not None:
+        _warn_objective(instance, resolved)
+    result = check_routes(instance, instance_path, parsed.routes, resolved)
+    valid = result.is_valid()
+    mismatch = (
+        valid
+        and parsed.declared_cost is not None
+        and result.routing_cost is not None
+        and abs(float(parsed.declared_cost) - float(result.routing_cost)) > 1e-6 * max(1.0, abs(float(result.routing_cost)))
+    )
+    payload = {
+        "valid": valid,
+        "status": result.status.value,
+        "error": result.error_message or None,
+        "cost": result.routing_cost,
+        "num_routes": result.num_routes if valid else len(parsed.routes),
+        "declared_cost": parsed.declared_cost,
+        "declared_cost_matches": None if parsed.declared_cost is None or not valid else not mismatch,
+        "objective_function": resolved.value,
+        "format": parsed.format,
+        "instance_name": instance.instance_name,
+        "problem_type": _problem_type_from_instance(instance).value,
+        "routes": parsed.routes,
+    }
+    if as_json:
+        typer.echo(json.dumps(payload, indent=1))
+    else:
+        typer.echo(f"instance   {instance.instance_name} ({payload['problem_type']})")
+        typer.echo(f"solution   {solution_path} ({parsed.format}, {len(parsed.routes)} routes)")
+        typer.echo(f"objective  {resolved.value}")
+        typer.echo(f"verdict    {result.status.value}" + (f": {result.error_message}" if result.error_message else ""))
+        if valid:
+            declared = "" if parsed.declared_cost is None else f" (declared {parsed.declared_cost:g})"
+            typer.echo(f"cost       {result.routing_cost}{declared}")
+    if mismatch:
+        typer.secho(
+            f"Warning: the file declares cost {parsed.declared_cost:g} but the checker gives {result.routing_cost} "
+            "(another metric variant, rounding, or a different instance).",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+    if not valid:
+        raise typer.Exit(code=1)
+
+
+@bks_app.command("submit")
+def bks_submit(
+    instance_path: Annotated[Path, typer.Argument(help="The instance (.vrp.json) inside a benchmark tree.")],
+    solution_path: Annotated[
+        Path,
+        typer.Argument(help="Solution file: CVRPLIB .sol (Route #k / Cost), JSON routes, or an LKH-3 MTSP solution."),
+    ],
+    authors: Annotated[
+        Optional[str],
+        typer.Option(
+            "--authors",
+            envvar=BKS_AUTHORS_ENV,
+            help="Who found the solution, as it should be credited (required; or set $MAMUT_ROUTING_BKS_AUTHORS).",
+        ),
+    ] = None,
+    objective: Annotated[
+        Optional[ObjectiveFunction],
+        typer.Option("--objective", case_sensitive=False, help="Objective (default: the family's published one)."),
+    ] = None,
+    method: Annotated[Optional[str], typer.Option("--method", help="Method label, e.g. 'lkh3' or a paper reference.")] = None,
+    seed: Annotated[Optional[int], typer.Option("--seed", help="Seed of the run that found it.")] = None,
+    time_limit_s: Annotated[Optional[float], typer.Option("--time-limit-s", help="Budget of that run, in seconds.")] = None,
+    solver_version: Annotated[Optional[str], typer.Option("--solver-version", help="Solver version or commit.")] = None,
+    meta: Annotated[
+        Optional[list[str]],
+        typer.Option("--meta", help="Extra metadata as KEY=VALUE (JSON values are decoded); repeatable."),
+    ] = None,
+    ids: Annotated[str, typer.Option("--ids", help=_IDS_HELP)] = "auto",
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Report what the store would do without writing.")] = False,
+) -> None:
+    """Propose an externally found solution as the BKS of an instance.
+
+    The solution is checked, then stored next to the instance as
+    <base>.bks.<Objective>.json only if it strictly beats the stored BKS (exact
+    decimal costs for static instances; the TD checker for time-dependent ones).
+    A tie keeps the incumbent. Exit status 0 for created / replaced / kept, 1
+    when the checker rejects the solution, 2 on a usage error.
+    """
+    from mamut_routing_lib.objectives import base_objective
+    from mamut_routing_lib.solutions import preview_bks_update, submit_bks
+
+    instance, parsed = _load_external_solution(instance_path, solution_path, ids)
+    resolved = objective or base_objective(instance)
+    if objective is not None:
+        _warn_objective(instance, resolved)
+    if dry_run:
+        preview = preview_bks_update(instance_path, parsed.routes, objective_function=resolved, instance=instance)
+        typer.echo(json.dumps(preview, indent=1))
+        if preview["action"] == "invalid":
+            raise typer.Exit(code=1)
+        return
+    if not authors or not authors.strip():
+        typer.echo(f"Error: --authors is required (or set ${BKS_AUTHORS_ENV}).", err=True)
+        raise typer.Exit(code=2)
+    metadata: dict[str, Any] = {
+        "method": method,
+        "seed": seed,
+        "time_limit_s": time_limit_s,
+        "solver_version": solver_version,
+        "submitted_from": solution_path.name,
+        **_meta_pairs(meta),
+    }
+    metadata = {key: value for key, value in metadata.items() if value is not None}
+    try:
+        update = submit_bks(
+            instance_path,
+            parsed.routes,
+            authors=authors,
+            objective_function=resolved,
+            metadata=metadata,
+            instance=instance,
+        )
+    except ValueError as error:
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(code=1) from error
+    typer.echo(
+        json.dumps(
+            {
+                "action": update.action,
+                "tie": update.tie,
+                "path": str(update.path),
+                "previous_path": str(update.previous_path) if update.previous_path else None,
+                "candidate_cost": update.candidate_cost,
+                "candidate_num_routes": update.candidate_num_routes,
+                "objective_function": resolved.value,
+            },
+            indent=1,
+        )
+    )
+
+
 if __name__ == "__main__":
     app()
