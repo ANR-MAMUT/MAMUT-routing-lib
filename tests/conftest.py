@@ -76,3 +76,15 @@ def toy_vrptw_instance() -> BenchmarkInstance:
         time_windows=[(0, 100), (0, 50), (0, 50)],
         metadata=_TOY_METADATA_VRPTW,
     )
+
+
+@pytest.fixture(autouse=True)
+def _isolated_solvers_config(tmp_path_factory, monkeypatch):
+    """No test reads the developer's ~/.config/mamut-routing/solvers.toml or $MAMUT_ROUTING_SOLVERS_CONFIG."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path_factory.mktemp("xdg-config")))
+    monkeypatch.delenv("MAMUT_ROUTING_SOLVERS_CONFIG", raising=False)
+    from mamut_routing_lib.solvers import registry
+
+    registry.reload_solvers()
+    yield
+    registry.reload_solvers()

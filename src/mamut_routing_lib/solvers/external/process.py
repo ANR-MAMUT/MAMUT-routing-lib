@@ -243,6 +243,9 @@ def run_process(
                 continue
             if best is None or cost < best:
                 best = cost
+    if monitor is not None and termination == "exited":
+        # The last progress lines usually land right before exit: report the final incumbent.
+        monitor.observe(best, iterations=iterations, force=True)
     return ProcessOutcome(
         returncode=process.returncode,
         termination=termination,
