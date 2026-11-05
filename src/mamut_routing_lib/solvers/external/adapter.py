@@ -119,18 +119,20 @@ class ExternalSolver:
             if not jar.is_absolute() or not jar.is_file():
                 return None, f"jar not found: {jar} (an absolute path is required)"
             return str(jar), None
-        candidates: list[str] = []
         if descriptor.executable:
-            candidates.append(descriptor.executable)
-        candidates.extend(descriptor.executable_names)
-        for candidate in candidates:
-            path = Path(candidate).expanduser()
-            if os.sep in candidate or path.is_absolute():
+            # A configured executable is the only candidate: falling back to another build found on
+            # PATH (an unpatched HGS, an older FILO2) would run, and credit, the wrong solver.
+            configured = descriptor.executable
+            path = Path(configured).expanduser()
+            if os.sep in configured or path.is_absolute():
                 if path.is_file() and os.access(path, os.X_OK):
                     return str(path.resolve()), None
-                if descriptor.executable == candidate:
-                    return None, f"executable not found or not executable: {path}"
-                continue
+                return None, f"executable not found or not executable: {path}"
+            found = shutil.which(configured)
+            if found:
+                return str(Path(found).resolve()), None
+            return None, f"configured executable {configured!r} is not on PATH"
+        for candidate in descriptor.executable_names:
             found = shutil.which(candidate)
             if found:
                 return str(Path(found).resolve()), None
@@ -395,6 +397,9 @@ class ExternalSolver:
                                        stopped_early=True, provenance=provenance)
                 monitor.rescale(prepared.plan.factor)
                 monitor.phase("solving")
+            # A solution left by an earlier run in a reused workdir (--keep-artifacts, a resumed campaign)
+            # must never be read back as this run's answer when the solver writes nothing.
+            prepared.solution.unlink(missing_ok=True)
             grace = max(descriptor.timeout_grace_s, descriptor.timeout_grace_fraction * float(request.time_limit_s))
             env = dict(os.environ)
             env.update(descriptor.env)

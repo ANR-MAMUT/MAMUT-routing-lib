@@ -44,6 +44,7 @@ __all__ = [
     "preview_bks_update",
     "read_solution_file",
     "read_solution_text",
+    "resolve_convention",
     "submit_bks",
     "write_cvrplib_solution",
 ]
@@ -69,6 +70,8 @@ class ParsedSolution:
     declared_cost: float | None
     format: str
     penalty: float | None = None
+    #: How the file's stop ids were read: ``one-based`` (customers 1..n, 0 = depot) or ``zero-based``.
+    ids: str = "one-based"
 
 
 # --------------------------------------------------------------------------- #
@@ -101,10 +104,9 @@ def parse_solution_text(text: str, *, filename: str = "") -> tuple[list[list[int
         for route in raw_routes:
             if not isinstance(route, list):
                 raise SolutionFormatError("Every entry of 'routes' must be a list of stops.")
-            try:
-                routes.append([int(stop) for stop in route])
-            except (TypeError, ValueError) as error:
-                raise SolutionFormatError(f"Route stops must be integers: {error}") from error
+            routes.append([_json_stop(stop) for stop in route])
+        if declared is not None and (isinstance(declared, bool) or not isinstance(declared, (int, float))):
+            raise SolutionFormatError(f"JSON 'cost' must be a number, got {declared!r}.")
         return routes, (float(declared) if declared is not None else None)
 
     routes = []
@@ -125,6 +127,12 @@ def parse_solution_text(text: str, *, filename: str = "") -> tuple[list[list[int
             "No 'Route #k: ...' lines found. Provide a CVRPLIB .sol file or JSON routes."
         )
     return routes, declared_cost
+
+
+def _json_stop(stop: Any) -> int:
+    if isinstance(stop, bool) or not isinstance(stop, (int, float)) or float(stop) != int(stop):
+        raise SolutionFormatError(f"Route stops must be integers, got {stop!r}.")
+    return int(stop)
 
 
 def parse_lkh_mtsp_solution(text: str) -> tuple[list[list[int]], float | None, float | None]:
@@ -163,6 +171,17 @@ def _looks_like_lkh(text: str) -> bool:
     return "salesmen are:" in head or bool(_LKH_HEADER.search(head.splitlines()[0] if head else ""))
 
 
+def resolve_convention(routes: list[list[int]], num_customers: int, convention: IdConvention = "auto") -> str:
+    """``zero-based`` or ``one-based``: what ``convention="auto"`` reads these stop ids as."""
+    if convention in ("zero-based", "one-based"):
+        return convention
+    raw_stops = [stop for route in routes for stop in route]
+    covers_zero_to_n_minus_1 = (
+        0 in raw_stops and len(raw_stops) == len(set(raw_stops)) and set(raw_stops) == set(range(num_customers))
+    )
+    return "zero-based" if covers_zero_to_n_minus_1 else "one-based"
+
+
 def normalize_routes(
     routes: list[list[int]],
     num_customers: int,
@@ -177,7 +196,9 @@ def normalize_routes(
     ``convention="auto"`` the two are told apart *before* any depot stripping, because
     a literal 0 is a depot marker under one and a customer under the other: only a
     file that covers 0..n-1 exactly once, zero included, is read as 0-based;
-    everything else is read as 1..n with 0 meaning the depot.
+    everything else is read as 1..n with 0 meaning the depot. Under 1..n a 0 inside
+    a route is a return to the depot: the route is split there into two trips (the
+    cost of the stops as written), never merged across it.
     """
     if depot != 0:
         raise SolutionFormatError(
@@ -188,21 +209,21 @@ def normalize_routes(
     if not raw_stops:
         raise SolutionFormatError("The solution contains no customer stops.")
 
-    if convention == "zero-based":
-        zero_based = True
-    elif convention == "one-based":
-        zero_based = False
-    else:
-        zero_based = (
-            0 in raw_stops
-            and len(raw_stops) == len(set(raw_stops))
-            and set(raw_stops) == set(range(num_customers))
-        )
+    zero_based = resolve_convention(routes, num_customers, convention) == "zero-based"
     if zero_based:
         normalized = [[stop + 1 for stop in route] for route in routes]
     else:
-        # 0 is the depot written at the route boundaries: drop it, ids are 1..n.
-        normalized = [[stop for stop in route if stop != 0] for route in routes]
+        # 0 is the depot: dropped at the route ends, a split into two trips inside a route.
+        normalized = []
+        for route in routes:
+            trip: list[int] = []
+            for stop in route:
+                if stop == 0:
+                    normalized.append(trip)
+                    trip = []
+                else:
+                    trip.append(stop)
+            normalized.append(trip)
 
     flat = [stop for route in normalized if route for stop in route]
     if not flat:
@@ -247,9 +268,10 @@ def read_solution_text(
         library = normalize_routes([[node - 1 for node in route] for route in routes], num_customers, depot=depot, convention="one-based")
         return ParsedSolution(library, cost, "lkh-mtsp", penalty)
     routes, declared = parse_solution_text(text, filename=filename)
-    library = normalize_routes(routes, num_customers, depot=depot, convention=convention)
+    ids = resolve_convention(routes, num_customers, convention)
+    library = normalize_routes(routes, num_customers, depot=depot, convention=ids)  # type: ignore[arg-type]
     fmt = "json" if text.lstrip()[:1] in "[{" or filename.lower().endswith(".json") else "cvrplib-sol"
-    return ParsedSolution(library, declared, fmt)
+    return ParsedSolution(library, declared, fmt, ids=ids)
 
 
 def read_solution_file(path: str | Path, instance: Any, *, convention: IdConvention = "auto") -> ParsedSolution:
@@ -365,18 +387,18 @@ def submit_bks(
     Static instances go through ``bks.save_solution_as_bks_if_improved`` (exact decimal
     comparison), TD instances through ``td.save_td_solution_as_bks_if_improved``. The
     objective defaults to the family's published one (``objectives.base_objective``).
-    Returns the store's ``BKSUpdateResult``; raises ``ValueError`` for an invalid solution
-    or empty ``authors``.
+    Returns the store's ``BKSUpdateResult``; raises ``ValueError`` for an invalid solution,
+    an objective that does not apply to the instance, or empty ``authors``.
     """
     from mamut_routing_lib.artifacts import get_instance_identifier, load_benchmark_instance
     from mamut_routing_lib.models import BenchmarkSolution
-    from mamut_routing_lib.objectives import base_objective
+    from mamut_routing_lib.objectives import base_objective, require_supported_objective
 
     if not isinstance(authors, str) or not authors.strip():
         raise ValueError("authors must be a non-empty string (who found the solution)")
     path = Path(instance_path)
     loaded = instance if instance is not None else load_benchmark_instance(path)
-    objective = objective_function or base_objective(loaded)
+    objective = require_supported_objective(loaded, objective_function or base_objective(loaded))
     solution = BenchmarkSolution(
         instance_name=get_instance_identifier(loaded),
         routes=[[int(stop) for stop in route] for route in routes],
@@ -409,15 +431,16 @@ def preview_bks_update(
     ``would_replace``, ``would_keep`` (``tie`` when equal) or ``invalid``.
 
     Uses the stores' own comparisons: exact decimal costs for static instances, the TD
-    checker's costs for time-dependent ones.
+    checker's costs for time-dependent ones. Raises ``ValueError`` for an objective that
+    does not apply to the instance.
     """
     from mamut_routing_lib.artifacts import get_bks_path_for_instance, load_benchmark_instance, load_bks
     from mamut_routing_lib.checker import get_objective_tuple
-    from mamut_routing_lib.objectives import base_objective
+    from mamut_routing_lib.objectives import base_objective, require_supported_objective
 
     path = Path(instance_path)
     loaded = instance if instance is not None else load_benchmark_instance(path)
-    objective = objective_function or base_objective(loaded)
+    objective = require_supported_objective(loaded, objective_function or base_objective(loaded))
     check = check_routes(loaded, path, routes, objective)
     bks_path = get_bks_path_for_instance(path, objective)
     summary: dict[str, Any] = {

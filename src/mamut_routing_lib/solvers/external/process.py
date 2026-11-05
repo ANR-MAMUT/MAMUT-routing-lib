@@ -38,6 +38,8 @@ __all__ = ["ProcessOutcome", "kill_process_tree", "live_process_count", "run_pro
 _IS_WINDOWS = sys.platform == "win32"
 _LIVE: dict[int, subprocess.Popen] = {}
 _LIVE_LOCK = threading.Lock()
+#: Pids that ``terminate_all`` stopped: their run is ``cancelled``, not a solver failure.
+_TERMINATED: set[int] = set()
 
 
 @dataclass(frozen=True)
@@ -66,6 +68,14 @@ def _register(process: subprocess.Popen) -> None:
 def _unregister(process: subprocess.Popen) -> None:
     with _LIVE_LOCK:
         _LIVE.pop(process.pid, None)
+
+
+def _was_terminated(process: subprocess.Popen) -> bool:
+    with _LIVE_LOCK:
+        if process.pid in _TERMINATED:
+            _TERMINATED.discard(process.pid)
+            return True
+    return False
 
 
 def kill_process_tree(process: subprocess.Popen, *, term_grace_s: float = 2.0) -> None:
@@ -109,6 +119,7 @@ def terminate_all(term_grace_s: float = 1.0) -> int:
     """Kill every live solver process group started by this interpreter; returns how many."""
     with _LIVE_LOCK:
         processes = list(_LIVE.values())
+        _TERMINATED.update(process.pid for process in processes)
     for process in processes:
         kill_process_tree(process, term_grace_s=term_grace_s)
         _unregister(process)
@@ -189,6 +200,8 @@ def run_process(
             while True:
                 try:
                     process.wait(timeout=poll_s)
+                    if _was_terminated(process):
+                        termination = "cancelled"  # terminate_all() from another thread (shutdown, Ctrl-C)
                     break
                 except subprocess.TimeoutExpired:
                     pass
@@ -223,6 +236,7 @@ def run_process(
             kill_process_tree(process, term_grace_s=term_grace_s)
             raise
         finally:
+            _was_terminated(process)  # forget the pid whichever way the run ended
             if not _IS_WINDOWS:
                 # The solver exited, but children it spawned may still hold the group.
                 try:

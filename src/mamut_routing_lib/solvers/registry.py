@@ -11,7 +11,10 @@ Three sources, in increasing precedence:
    external solvers).
 
 Importing this module never imports PyVRP or KAYROS: solvers whose extra is
-missing are listed and report ``availability().available == False``.
+missing are listed and report ``availability().available == False``. The user
+config cannot define in-process solvers, so ``get_solver("pyvrp")`` and
+``get_solver("kayros")`` never read it: a broken config blocks only the
+external solvers.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ from mamut_routing_lib.solvers.base import Solver
 __all__ = [
     "BUILTIN_SOLVERS",
     "ENTRY_POINT_GROUP",
+    "IN_PROCESS_SOLVERS",
     "UnknownSolverError",
     "get_solver",
     "list_solvers",
@@ -37,6 +41,8 @@ __all__ = [
 ENTRY_POINT_GROUP = "mamut_routing.solvers"
 #: Built-in names, in listing order (the CLI help names these; user config can add more).
 BUILTIN_SOLVERS = ("pyvrp", "kayros", "filo2", "hgs-cvrp", "ails2", "lkh3")
+#: Built-ins that run in this process; the user config refuses these names.
+IN_PROCESS_SOLVERS = ("pyvrp", "kayros")
 
 SolverSource = Union[Solver, Callable[[], Solver]]
 ConfigPath = Union[str, Path, None]
@@ -118,12 +124,13 @@ def _config_sources(config: ConfigPath) -> dict[str, SolverSource]:
     return configured_solvers(config)
 
 
-def _sources(config: ConfigPath) -> dict[str, SolverSource]:
+def _sources(config: ConfigPath, *, with_config: bool = True) -> dict[str, SolverSource]:
     sources: dict[str, SolverSource] = {}
     sources.update(_builtin_factories())
     sources.update(_entry_point_sources())
     sources.update(_REGISTERED)
-    sources.update(_config_sources(config))
+    if with_config:
+        sources.update(_config_sources(config))
     return sources
 
 
@@ -155,11 +162,12 @@ def solver_names(*, config: ConfigPath = None) -> list[str]:
 
 def get_solver(name: str, *, config: ConfigPath = None) -> Solver:
     """The solver called ``name``; ``UnknownSolverError`` lists the known names."""
-    key = (_config_key(config), name)
+    in_process = name in IN_PROCESS_SOLVERS
+    key = ("" if in_process else _config_key(config), name)
     cached = _CACHE.get(key)
     if cached is not None:
         return cached
-    sources = _sources(config)
+    sources = _sources(config, with_config=not in_process)
     if name not in sources:
         raise UnknownSolverError(f"unknown solver {name!r}; known solvers: {', '.join(solver_names(config=config))}")
     solver = _instantiate(sources[name])

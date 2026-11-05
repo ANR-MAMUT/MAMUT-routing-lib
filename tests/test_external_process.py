@@ -169,4 +169,5 @@ def test_terminate_all_kills_running_solvers(tmp_path: Path) -> None:
     assert terminate_all(term_grace_s=0.3) == 1
     worker.join(timeout=10)
     assert not worker.is_alive()
-    assert result["outcome"].termination == "exited" and result["outcome"].returncode != 0
+    # Stopped from another thread (GUI shutdown, Ctrl-C): a cancellation, not a solver failure.
+    assert result["outcome"].termination == "cancelled" and result["outcome"].returncode != 0

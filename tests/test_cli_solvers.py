@@ -91,3 +91,81 @@ def test_solve_skips_instances_a_solver_cannot_take(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "skipped (unsupported) 1" in result.stdout  # the VRPTW variant
     assert "skipped (TD) 2" in result.stdout
+
+
+def _interrupt_cli(args: list[str], *, ready, env: dict[str, str], timeout_s: float = 30.0):
+    """Run the CLI in a subprocess, send SIGINT once ``ready()`` holds, return (rc, output, seconds after SIGINT)."""
+    import os
+    import signal
+    import subprocess
+    import time
+
+    child = subprocess.Popen(
+        [sys.executable, "-c", "from mamut_routing_lib.cli import app; app()", *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env={**os.environ, **env},
+        preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL),
+    )
+    try:
+        deadline = time.monotonic() + timeout_s
+        while not ready():
+            assert child.poll() is None, child.stdout.read().decode()
+            assert time.monotonic() < deadline, "the solves never started"
+            time.sleep(0.1)
+        time.sleep(0.5)
+        child.send_signal(signal.SIGINT)
+        sent = time.monotonic()
+        output, _ = child.communicate(timeout=timeout_s)
+        return child.returncode, output.decode(), time.monotonic() - sent
+    finally:
+        if child.poll() is None:
+            child.kill()
+
+
+def _solver_processes(marker: Path) -> list[str]:
+    import shutil
+    import subprocess
+
+    if shutil.which("pgrep") is None:
+        pytest.skip("pgrep is needed to look for orphaned solvers")
+    found = subprocess.run(["pgrep", "-af", str(marker)], capture_output=True, text=True)
+    return [line for line in found.stdout.splitlines() if "_fake_solver" in line]
+
+
+@pytest.mark.parametrize("batch", [False, True], ids=["one-instance", "parallel-batch"])
+def test_ctrl_c_stops_running_external_solves_at_once(tmp_path: Path, toy_cvrp_instance, toy_vrptw_instance, batch) -> None:
+    paths = [_instance(toy_cvrp_instance, tmp_path)]
+    if batch:
+        paths.append(_instance(toy_vrptw_instance, tmp_path))
+    artifacts = tmp_path / "artifacts"
+    args = ["solve", *map(str, paths), "--solver", "fake", "--solvers-config", str(_config(tmp_path)),
+            "--time-limit-s", "120", "--keep-artifacts", str(artifacts), "--save-bks", "--authors", "Tester"]
+    if batch:
+        args += ["--jobs", "2"]
+    rc, output, after = _interrupt_cli(
+        args,
+        ready=lambda: len(list(artifacts.rglob("solver.log"))) == len(paths),
+        env={"FAKE_MODE": "sleep"},
+    )
+    assert rc == 130, output
+    assert after < 10, f"Ctrl-C took {after:.1f}s"
+    assert "every running solve was stopped and wrote no BKS" in output
+    assert not list(tmp_path.glob("*.bks.*.json"))
+    assert _solver_processes(artifacts) == []
+
+
+def test_ctrl_c_stops_a_pyvrp_solve_at_once(tmp_path: Path, toy_cvrp_instance) -> None:
+    import time
+
+    pytest.importorskip("pyvrp")
+    path = _instance(toy_cvrp_instance, tmp_path)
+    launched = time.monotonic()
+    rc, output, after = _interrupt_cli(
+        ["solve", str(path), "--time-limit-s", "120", "--save-bks", "--authors", "Tester"],
+        ready=lambda: time.monotonic() - launched > 4,  # PyVRP leaves no file behind while it solves
+        env={},
+    )
+    assert rc == 130, output
+    assert after < 10, f"Ctrl-C took {after:.1f}s"
+    assert not list(tmp_path.glob("*.bks.*.json"))

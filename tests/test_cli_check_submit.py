@@ -126,3 +126,54 @@ def test_submit_warns_when_the_objective_differs_from_the_family(toy_vrptw_insta
     )
     assert result.exit_code == 0, result.output
     assert "publishes its BKS under MonoCost" in result.stderr
+
+
+@pytest.mark.parametrize("command", [["bks", "submit"], ["check"]])
+@pytest.mark.parametrize("objective", ["Duration", "FleetCostDuration", "HierarchicalVehicleCost"])
+def test_an_objective_that_does_not_apply_is_a_usage_error(toy_cvrp_instance, tmp_path: Path, command, objective) -> None:
+    instance = _write(toy_cvrp_instance, tmp_path)
+    args = [*command, str(instance), str(_sol(tmp_path, "Route #1: 1 2\n")), "--objective", objective]
+    if command[0] == "bks":
+        args += ["--authors", "X"]
+    result = _runner().invoke(app, args)
+    assert result.exit_code == 2, result.output
+    assert f"{objective} does not apply to CVRP instances (use MonoCost)" in result.stderr
+    assert not list(tmp_path.glob("*.bks.*.json"))
+
+
+def test_submit_bks_refuses_an_objective_that_does_not_apply(toy_cvrp_instance, tmp_path: Path) -> None:
+    from td_utils import write_toy_instance_files
+
+    from mamut_routing_lib.solutions import preview_bks_update, submit_bks
+
+    instance = _write(toy_cvrp_instance, tmp_path)
+    with pytest.raises(ValueError, match="Duration does not apply to CVRP instances"):
+        submit_bks(instance, [[1, 2]], authors="X", objective_function=ObjectiveFunction.DURATION)
+    with pytest.raises(ValueError, match="Duration does not apply to CVRP instances"):
+        preview_bks_update(instance, [[1, 2]], objective_function=ObjectiveFunction.DURATION)
+    td = write_toy_instance_files(tmp_path / "td", with_time_windows=True)
+    with pytest.raises(ValueError, match="MonoCost does not apply to TDVRPTW instances"):
+        submit_bks(td, [[1], [2]], authors="X", objective_function=ObjectiveFunction.MONO_COST)
+    assert not list(tmp_path.rglob("*.bks.*.json"))
+
+
+def test_check_says_when_it_reads_ids_as_zero_based(toy_cvrp_instance, tmp_path: Path) -> None:
+    instance = _write(toy_cvrp_instance, tmp_path)
+    result = _runner().invoke(app, ["check", str(instance), str(_sol(tmp_path, "Route #1: 0 1\n"))])
+    assert result.exit_code == 0, result.output
+    assert "read as 0-based customer ids" in result.stderr and "zero-based ids" in result.stdout
+    quiet = _runner().invoke(app, ["check", str(instance), str(_sol(tmp_path, "Route #1: 1 2\n", "b.sol"))])
+    assert "0-based" not in quiet.stderr and "one-based ids" in quiet.stdout
+
+
+def test_check_prints_the_exact_decimal_cost(toy_cvrp_instance, tmp_path: Path) -> None:
+    # The route 0-1-2-0 sums 0.1 + 0.2 + 0.4 = 0.7000000000000001 in floats; its exact cost is 0.7.
+    costs = [[0.0, 0.1, 0.4], [0.1, 0.0, 0.2], [0.4, 0.2, 0.0]]
+    toy = toy_cvrp_instance.model_copy(update={"arc_costs": costs})
+    instance = _write(toy, tmp_path)
+    solution = _sol(tmp_path, "Route #1: 1 2\n")
+    result = _runner().invoke(app, ["check", str(instance), str(solution)])
+    assert result.exit_code == 0, result.output
+    assert "cost       0.7\n" in result.stdout
+    payload = json.loads(_runner().invoke(app, ["check", str(instance), str(solution), "--json"]).stdout)
+    assert payload["exact_cost"] == "0.7" and payload["cost"] == 0.7000000000000001

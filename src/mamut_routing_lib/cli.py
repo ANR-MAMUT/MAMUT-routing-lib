@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import time
 import tomllib
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
@@ -701,6 +702,7 @@ def _run_with_time_progress(
     time_limit_s: int,
     enabled: bool,
     operation: Callable[[], T],
+    on_interrupt: Callable[[], None] | None = None,
 ) -> T:
     if not enabled:
         return operation()
@@ -709,31 +711,40 @@ def _run_with_time_progress(
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(operation)
         started_at = time.monotonic()
-        with tqdm(
-            total=float(time_limit_s),
-            desc=f"{desc} ({time_limit_s}s left)",
-            unit="s",
-            leave=False,
-            dynamic_ncols=True,
-            mininterval=0.2,
-            bar_format="{desc}: {percentage:3.0f}%|{bar}|",
-            file=sys.stderr,
-        ) as bar:
-            while not future.done():
-                elapsed = time.monotonic() - started_at
-                target = min(elapsed, float(time_limit_s))
-                remaining = max(0.0, float(time_limit_s) - elapsed)
-                bar.n = target
-                bar.set_description_str(f"{desc} ({remaining:.0f}s left)", refresh=False)
-                bar.refresh()
-                time.sleep(0.2)
-
-            elapsed = min(time.monotonic() - started_at, float(time_limit_s))
-            if elapsed > bar.n:
-                bar.n = elapsed
-                bar.refresh()
-
+        try:
+            _show_time_progress(future, desc=desc, time_limit_s=time_limit_s, started_at=started_at)
+        except KeyboardInterrupt:
+            # Stop the solve before the executor's exit waits for it, or Ctrl-C hangs until the budget runs out.
+            if on_interrupt is not None:
+                on_interrupt()
+            raise
         return future.result()
+
+
+def _show_time_progress(future: Any, *, desc: str, time_limit_s: int, started_at: float) -> None:
+    with tqdm(
+        total=float(time_limit_s),
+        desc=f"{desc} ({time_limit_s}s left)",
+        unit="s",
+        leave=False,
+        dynamic_ncols=True,
+        mininterval=0.2,
+        bar_format="{desc}: {percentage:3.0f}%|{bar}|",
+        file=sys.stderr,
+    ) as bar:
+        while not future.done():
+            elapsed = time.monotonic() - started_at
+            target = min(elapsed, float(time_limit_s))
+            remaining = max(0.0, float(time_limit_s) - elapsed)
+            bar.n = target
+            bar.set_description_str(f"{desc} ({remaining:.0f}s left)", refresh=False)
+            bar.refresh()
+            time.sleep(0.2)
+
+        elapsed = min(time.monotonic() - started_at, float(time_limit_s))
+        if elapsed > bar.n:
+            bar.n = elapsed
+            bar.refresh()
 
 
 def _default_solve_jobs() -> int:
@@ -741,6 +752,29 @@ def _default_solve_jobs() -> int:
     if cpu_count is None:
         return 1
     return max(1, cpu_count - 2)
+
+
+def _artifact_workdirs(records: list[LocalInstanceRecord], root: Path | None, leaf: str) -> dict[int, Path]:
+    """One ``--keep-artifacts`` folder per selected instance, never shared by two of them.
+
+    Instance ids repeat when the layout cannot be read from the path (explicit files outside a
+    benchmarks tree, metric variants of one instance): those get a short hash of their path.
+    """
+    if root is None:
+        return {}
+    import hashlib
+
+    base = root.resolve()
+    counts: dict[str, int] = {}
+    for record in records:
+        counts[record.instance_id] = counts.get(record.instance_id, 0) + 1
+    workdirs: dict[int, Path] = {}
+    for record in records:
+        name = record.instance_id
+        if counts[name] > 1:
+            name = f"{name}-{hashlib.sha256(str(record.path.resolve()).encode()).hexdigest()[:8]}"
+        workdirs[id(record)] = base / name / leaf
+    return workdirs
 
 
 def _duplicate_resolved_paths(records: list[LocalInstanceRecord]) -> list[Path]:
@@ -1176,14 +1210,24 @@ def solve_instances(
     rows: list[SolveSummaryRow | None] = [None] * len(selected)
 
     monitors: list[Any] = []
+    interrupted = threading.Event()
+    workdirs = _artifact_workdirs(selected, keep_artifacts, f"{solver_obj.name}-seed{seed}")
+
+    def _stop_everything() -> None:
+        # Solvers in their own process group never see the terminal's Ctrl-C: stop them all now,
+        # before any executor waits for its running solves.
+        interrupted.set()
+        for monitor in list(monitors):
+            monitor.request_stop()
+        terminate_all()
 
     def _solve_record(record: LocalInstanceRecord) -> SolveSummaryRow:
         run_objective = objectives[id(record)]
         monitor = SolveMonitor(None, interval_s=3600.0)
         monitors.append(monitor)
-        workdir = None
-        if keep_artifacts is not None:
-            workdir = keep_artifacts.resolve() / record.instance_id / f"{solver_obj.name}-seed{seed}"
+        if interrupted.is_set():
+            monitor.request_stop()
+        workdir = workdirs.get(id(record))
 
         def _solve_selected_instance() -> Any:
             return run_solver(
@@ -1208,10 +1252,11 @@ def solve_instances(
                 time_limit_s=time_limit_s,
                 enabled=not display,
                 operation=_solve_selected_instance,
+                on_interrupt=_stop_everything,
             )
 
         result = solved.result
-        if result.status == "cancelled":
+        if result.status == "cancelled" or interrupted.is_set():
             return SolveSummaryRow(
                 instance_id=record.instance_id,
                 instance_name=record.instance_name,
@@ -1240,6 +1285,12 @@ def solve_instances(
             status = "infeasible"
             if solved.check is not None:
                 detail = f"checker: {solved.validation_status}: {solved.check.error_message}"
+            elif result.status == "timeout":
+                detail = f"timeout: {result.error or 'the solver hit the hard timeout'} (no solution to check)"
+            elif result.error:
+                detail = result.error
+            else:
+                detail = "the solver returned no routes"
         bks_label = "-" if save_bks else "skipped"
         if save_bks and solved.valid:
             update = submit_bks(
@@ -1304,15 +1355,18 @@ def solve_instances(
                 except KeyboardInterrupt:
                     for future in future_indices:
                         future.cancel()
+                    _stop_everything()
                     raise
         elif selected:
             rows[0] = _solve_record_safe(selected[0])
     except KeyboardInterrupt:
-        # Solvers in their own process group never see the terminal's Ctrl-C: stop them all.
-        for monitor in monitors:
-            monitor.request_stop()
-        terminate_all()
-        typer.echo("Interrupted: every running solve was stopped; no BKS was written for them.", err=True)
+        _stop_everything()
+        finished = [row for row in rows if row is not None and row.detail != "interrupted"]
+        message = "Interrupted: every running solve was stopped and wrote no BKS."
+        written = [row for row in finished if row.bks_label.startswith(("created", "replaced"))]
+        if written:
+            message += f" {len(written)} solve(s) that finished before the interrupt wrote their BKS."
+        typer.echo(message, err=True)
         raise typer.Exit(code=130)
 
     solved_rows = [row for row in rows if row is not None] + error_rows
@@ -1801,7 +1855,29 @@ def _load_external_solution(instance_path: Path, solution_path: Path, ids: str) 
     except (SolutionFormatError, OSError) as error:
         typer.echo(f"Error: {solution_path}: {error}", err=True)
         raise typer.Exit(code=2) from error
+    if ids == "auto" and parsed.ids == "zero-based":
+        typer.secho(
+            f"Note: {solution_path.name} numbers its stops 0..{instance.num_customers - 1}: read as 0-based customer ids "
+            "(pass --ids one-based if 0 is the depot).",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
     return instance, parsed
+
+
+def _resolve_objective(instance: Any, objective: ObjectiveFunction | None) -> ObjectiveFunction:
+    """The family's published objective, or ``objective`` if it applies to the instance (else exit 2)."""
+    from mamut_routing_lib.objectives import base_objective, require_supported_objective
+
+    if objective is None:
+        return base_objective(instance)
+    try:
+        require_supported_objective(instance, objective)
+    except ValueError as error:
+        typer.echo(f"Error: --objective {error}.", err=True)
+        raise typer.Exit(code=2) from error
+    _warn_objective(instance, objective)
+    return objective
 
 
 def _warn_objective(instance: Any, objective: ObjectiveFunction) -> None:
@@ -1815,6 +1891,27 @@ def _warn_objective(instance: Any, objective: ObjectiveFunction) -> None:
             fg=typer.colors.YELLOW,
             err=True,
         )
+
+
+def _exact_cost_text(instance: Any, instance_path: Path, routes: list[list[int]]) -> str | None:
+    """The static checker's exact decimal cost (``204030.827``, not the float sum ``204030.82699999996``)."""
+    from mamut_routing_lib.artifacts import hydrate_collection_instance
+    from mamut_routing_lib.checker import compute_exact_solution_cost
+    from mamut_routing_lib.solutions import is_time_dependent
+
+    if is_time_dependent(instance):
+        return None
+    try:
+        exact = compute_exact_solution_cost(hydrate_collection_instance(instance, instance_path), routes)
+    except Exception:  # noqa: BLE001 - the float cost is still printed
+        return None
+    places = next((k for k in range(31) if (10**k) % exact.denominator == 0), None)
+    if places is None:  # not a finite decimal: cannot come from decimal arc costs
+        return None
+    scaled = abs(exact.numerator) * (10**places // exact.denominator)
+    whole, fraction = divmod(scaled, 10**places)
+    text = f"{whole}.{fraction:0{places}d}".rstrip("0").rstrip(".") if places else str(whole)
+    return f"-{text}" if exact < 0 else text
 
 
 def _number(value: float) -> str:
@@ -1857,13 +1954,10 @@ def check_external_solution(
     not trusted. Exit status 0 when valid, 1 when the checker rejects the routes,
     2 when the file cannot be read or does not fit the instance.
     """
-    from mamut_routing_lib.objectives import base_objective
     from mamut_routing_lib.solutions import check_routes
 
     instance, parsed = _load_external_solution(instance_path, solution_path, ids)
-    resolved = objective or base_objective(instance)
-    if objective is not None:
-        _warn_objective(instance, resolved)
+    resolved = _resolve_objective(instance, objective)
     result = check_routes(instance, instance_path, parsed.routes, resolved)
     valid = result.is_valid()
     mismatch = (
@@ -1877,11 +1971,13 @@ def check_external_solution(
         "status": result.status.value,
         "error": result.error_message or None,
         "cost": result.routing_cost,
+        "exact_cost": _exact_cost_text(instance, instance_path, parsed.routes) if valid else None,
         "num_routes": result.num_routes if valid else len(parsed.routes),
         "declared_cost": parsed.declared_cost,
         "declared_cost_matches": None if parsed.declared_cost is None or not valid else not mismatch,
         "objective_function": resolved.value,
         "format": parsed.format,
+        "ids": parsed.ids,
         "instance_name": instance.instance_name,
         "problem_type": _problem_type_from_instance(instance).value,
         "routes": parsed.routes,
@@ -1890,12 +1986,12 @@ def check_external_solution(
         typer.echo(json.dumps(payload, indent=1))
     else:
         typer.echo(f"instance   {instance.instance_name} ({payload['problem_type']})")
-        typer.echo(f"solution   {solution_path} ({parsed.format}, {len(parsed.routes)} routes)")
+        typer.echo(f"solution   {solution_path} ({parsed.format}, {parsed.ids} ids, {len(parsed.routes)} routes)")
         typer.echo(f"objective  {resolved.value}")
         typer.echo(f"verdict    {result.status.value}" + (f": {result.error_message}" if result.error_message else ""))
         if valid:
             declared = "" if parsed.declared_cost is None else f" (declared {_number(parsed.declared_cost)})"
-            typer.echo(f"cost       {result.routing_cost}{declared}")
+            typer.echo(f"cost       {payload['exact_cost'] or result.routing_cost}{declared}")
     if mismatch:
         typer.secho(
             f"Warning: the file declares cost {_number(parsed.declared_cost)} but the checker gives {result.routing_cost} "
@@ -1945,13 +2041,10 @@ def bks_submit(
     A tie keeps the incumbent. Exit status 0 for created / replaced / kept, 1
     when the checker rejects the solution, 2 on a usage error.
     """
-    from mamut_routing_lib.objectives import base_objective
     from mamut_routing_lib.solutions import preview_bks_update, submit_bks
 
     instance, parsed = _load_external_solution(instance_path, solution_path, ids)
-    resolved = objective or base_objective(instance)
-    if objective is not None:
-        _warn_objective(instance, resolved)
+    resolved = _resolve_objective(instance, objective)
     if dry_run:
         preview = preview_bks_update(instance_path, parsed.routes, objective_function=resolved, instance=instance)
         typer.echo(json.dumps(preview, indent=1))

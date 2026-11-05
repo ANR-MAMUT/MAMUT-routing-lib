@@ -203,6 +203,18 @@ def test_keep_artifacts(collection: Path, tmp_path: Path) -> None:
     assert solved.result.provenance["artifacts_dir"] == str(workdir.resolve())
 
 
+@pytest.mark.parametrize("descriptor", [FAKE_LKH, FAKE_X], ids=["lkh", "x-format"])
+def test_a_reused_workdir_never_hands_back_an_earlier_solution(collection: Path, tmp_path: Path, monkeypatch, descriptor) -> None:
+    workdir = tmp_path / "reused"
+    path = _variant(collection, "CVRP", "fastest" if descriptor is FAKE_LKH else "euclidean")
+    first = run_solver(ExternalSolver(descriptor), path, time_limit_s=5, workdir=workdir, keep_artifacts=True)
+    assert first.valid
+    _env(monkeypatch, FAKE_MODE="crash")
+    crashed = run_solver(ExternalSolver(descriptor), path, time_limit_s=5, workdir=workdir, keep_artifacts=True)
+    assert crashed.result.status == "failed" and "no solution file" in crashed.result.error
+    assert not crashed.valid and not crashed.result.routes
+
+
 def test_a_temporary_workdir_is_removed(collection: Path) -> None:
     solved = run_solver(ExternalSolver(FAKE_LKH), _variant(collection, "CVRP", "fastest"), time_limit_s=5)
     assert "artifacts_dir" not in solved.result.provenance
@@ -224,6 +236,24 @@ def _executable(tmp_path: Path, name: str) -> Path:
     path.write_text("#!/bin/sh\nexit 0\n")
     path.chmod(0o755)
     return path
+
+
+def test_a_configured_executable_never_falls_back_to_another_on_path(tmp_path: Path, monkeypatch) -> None:
+    import dataclasses
+
+    on_path = tmp_path / "bin"
+    on_path.mkdir()
+    _executable(on_path, "hgs")  # an unpatched build somebody left on PATH
+    monkeypatch.setenv("PATH", str(on_path))
+    builtin = BUILTIN_DESCRIPTORS["hgs-cvrp"]
+    assert ExternalSolver(builtin).resolve_executable()[0] == str((on_path / "hgs").resolve())
+    typo = ExternalSolver(dataclasses.replace(builtin, executable="hgs-patched"))
+    executable, reason = typo.resolve_executable()
+    assert executable is None and "'hgs-patched' is not on PATH" in reason
+    missing = ExternalSolver(dataclasses.replace(builtin, executable=str(tmp_path / "nowhere" / "hgs")))
+    assert missing.resolve_executable()[0] is None
+    _executable(on_path, "hgs-patched")
+    assert typo.resolve_executable()[0] == str((on_path / "hgs-patched").resolve())
 
 
 def test_builtin_argv_templates(collection: Path, tmp_path: Path, toy_cvrp_instance) -> None:

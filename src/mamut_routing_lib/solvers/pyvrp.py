@@ -254,7 +254,23 @@ def _warm_start(problem: ProblemData, initial_routes: list[list[int]] | None) ->
     """A PyVRP ``Solution`` from library routes (depot 0, customers 1..n), or None."""
     if not initial_routes:
         return None
-    return Solution(problem, [[int(stop) for stop in route] for route in initial_routes if route])
+    routes = [[int(stop) for stop in route] for route in initial_routes if route]
+    stops = [stop for route in routes for stop in route]
+    expected = set(range(1, int(problem.num_clients) + 1))
+    repeated = sorted({stop for stop in stops if stops.count(stop) > 1}) if len(stops) != len(set(stops)) else []
+    missing = sorted(expected - set(stops))
+    foreign = sorted(set(stops) - expected)
+    if repeated or missing or foreign:
+        # PyVRP would start from an incomplete solution and could hand it back as the result.
+        problems = []
+        if missing:
+            problems.append(f"{len(missing)} customer(s) missing (first: {', '.join(map(str, missing[:5]))})")
+        if repeated:
+            problems.append(f"customer(s) {', '.join(map(str, repeated[:5]))} visited more than once")
+        if foreign:
+            problems.append(f"stop id(s) {', '.join(map(str, foreign[:5]))} outside 1..{len(expected)}")
+        raise ValueError(f"initial_routes must visit every customer exactly once: {'; '.join(problems)}")
+    return Solution(problem, routes)
 
 
 def solve_cvrp(

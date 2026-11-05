@@ -3,10 +3,11 @@
 Two different defaults:
 
 - :func:`base_objective` is the objective the family *publishes* its BKS under
-  (``docs/benchmarks/formats/solutions.md``): Sintef2008 and Ortec2022 rank
-  fleet first (``HierarchicalVehicleCost``), Blauth2024 adds a fleet fixed cost
+  (``docs/benchmarks/formats/solutions.md``): Sintef2008 ranks fleet first
+  (``HierarchicalVehicleCost``), Blauth2024 adds a fleet fixed cost
   (``FleetCostDuration``), other TD families use ``Duration`` and every other
-  static family ``MonoCost``. ``bks submit`` and ``check`` default to it, so a
+  static family ``MonoCost`` (Ortec2022 included: the EURO Meets NeurIPS 2022
+  challenge ranked total cost, and all its BKS are ``MonoCost``). ``bks submit`` and ``check`` default to it, so a
   submitted solution is compared with the published file.
 - :func:`default_objective` is what a solve uses when the caller names none:
   ``MonoCost`` for static instances (warning when the family publishes another
@@ -20,10 +21,17 @@ from typing import Any
 
 from mamut_routing_lib.enums import BenchmarkName, ObjectiveFunction, ProblemType
 
-__all__ = ["HIERARCHICAL_FAMILIES", "FLEET_COST_FAMILIES", "base_objective", "default_objective"]
+__all__ = [
+    "HIERARCHICAL_FAMILIES",
+    "FLEET_COST_FAMILIES",
+    "base_objective",
+    "default_objective",
+    "require_supported_objective",
+    "supported_objectives",
+]
 
 #: Static families whose BKS rank solutions by fleet size first.
-HIERARCHICAL_FAMILIES = frozenset({BenchmarkName.SINTEF_2008.value, BenchmarkName.ORTEC_2022.value})
+HIERARCHICAL_FAMILIES = frozenset({BenchmarkName.SINTEF_2008.value})
 #: Time-dependent families whose objective adds a fixed cost per used vehicle.
 FLEET_COST_FAMILIES = frozenset({BenchmarkName.BLAUTH_2024.value})
 
@@ -50,6 +58,31 @@ def base_objective(instance: Any) -> ObjectiveFunction:
     if problem is ProblemType.VRPTW and benchmark in HIERARCHICAL_FAMILIES:
         return ObjectiveFunction.HIERARCHICAL_VEHICLE_COST
     return ObjectiveFunction.MONO_COST
+
+
+def supported_objectives(instance: Any) -> tuple[ObjectiveFunction, ...]:
+    """The objectives a solution of this instance can be checked and stored under.
+
+    CVRP: ``MonoCost``. VRPTW: ``MonoCost`` and ``HierarchicalVehicleCost``. Time-dependent
+    instances: ``Duration`` and ``FleetCostDuration`` (the TD checker's objectives).
+    """
+    problem = _problem_type(instance)
+    if problem in (ProblemType.TDVRP, ProblemType.TDVRPTW):
+        return (ObjectiveFunction.DURATION, ObjectiveFunction.FLEET_COST_DURATION)
+    if problem is ProblemType.VRPTW:
+        return (ObjectiveFunction.MONO_COST, ObjectiveFunction.HIERARCHICAL_VEHICLE_COST)
+    return (ObjectiveFunction.MONO_COST,)
+
+
+def require_supported_objective(instance: Any, objective: ObjectiveFunction) -> ObjectiveFunction:
+    """``objective`` if it applies to the instance, else ``ValueError`` naming the ones that do."""
+    allowed = supported_objectives(instance)
+    if objective not in allowed:
+        raise ValueError(
+            f"{ObjectiveFunction(objective).value} does not apply to {_problem_type(instance).value} instances "
+            f"(use {' or '.join(item.value for item in allowed)})"
+        )
+    return objective
 
 
 def default_objective(instance: Any) -> ObjectiveFunction:

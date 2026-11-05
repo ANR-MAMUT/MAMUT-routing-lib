@@ -123,9 +123,19 @@ def test_warm_start_routes_seed_a_mono_cost_solve(toy_cvrp_instance) -> None:
     assert result.metadata["cost_exact"] is True
 
 
+def test_a_partial_warm_start_is_refused_with_its_reason(toy_cvrp_instance, tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="1 customer\\(s\\) missing \\(first: 2\\)"):
+        solve_cvrp(toy_cvrp_instance, time_limit_s=1, seed=2, initial_routes=[[1]])
+    solved = run_solver("pyvrp", _write(toy_cvrp_instance, tmp_path), time_limit_s=1, initial_routes=[[1, 1], [2]])
+    assert solved.result.status == "failed" and "visited more than once" in solved.result.error
+
+
 def test_objective_defaults(toy_cvrp_instance, toy_vrptw_instance) -> None:
     assert default_objective(toy_vrptw_instance) is ObjectiveFunction.MONO_COST
     assert base_objective(toy_cvrp_instance) is ObjectiveFunction.MONO_COST
     sintef = toy_vrptw_instance.model_copy(update={"benchmark_name": "Sintef2008"})
     assert base_objective(sintef) is ObjectiveFunction.HIERARCHICAL_VEHICLE_COST
     assert default_objective(sintef) is ObjectiveFunction.MONO_COST
+    # EURO Meets NeurIPS 2022 ranked total cost: every published Ortec2022 BKS is MonoCost.
+    ortec = toy_vrptw_instance.model_copy(update={"benchmark_name": "Ortec2022"})
+    assert base_objective(ortec) is ObjectiveFunction.MONO_COST

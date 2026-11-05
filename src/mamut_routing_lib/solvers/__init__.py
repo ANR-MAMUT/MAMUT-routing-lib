@@ -25,6 +25,7 @@ from mamut_routing_lib.solvers.base import (
 )
 from mamut_routing_lib.solvers.registry import (
     BUILTIN_SOLVERS,
+    IN_PROCESS_SOLVERS,
     UnknownSolverError,
     get_solver,
     list_solvers,
@@ -38,6 +39,7 @@ __all__ = [
     "Availability",
     "BUILTIN_SOLVERS",
     "CheckedSolve",
+    "IN_PROCESS_SOLVERS",
     "InstanceNotSupportedError",
     "InstanceProfile",
     "SolveMonitor",

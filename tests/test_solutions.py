@@ -85,6 +85,40 @@ def test_normalize_auto_conventions() -> None:
     assert normalize_routes([[0, 1], [2]], 3, convention="zero-based") == [[1, 2], [3]]
 
 
+def test_a_depot_inside_a_route_splits_it_into_two_trips() -> None:
+    # Merging "1 0 2" into one route [1, 2] would drop the return to the depot and change the cost.
+    assert normalize_routes([[1, 0, 2], [3]], 3) == [[1], [2], [3]]
+    assert normalize_routes([[0, 1, 2, 0, 3, 0]], 3) == [[1, 2], [3]]  # a giant tour with depot separators
+    assert normalize_routes([[0, 1, 0, 0, 2, 3, 0]], 3) == [[1], [2, 3]]
+    assert normalize_routes([[2, 0, 1]], 3, convention="zero-based") == [[3, 1, 2]]  # 0 is a customer there
+
+
+def test_the_reading_of_the_ids_is_reported() -> None:
+    from mamut_routing_lib.solutions import read_solution_text, resolve_convention
+
+    assert read_solution_text("Route #1: 1 2\nRoute #2: 3\n", 3).ids == "one-based"
+    assert read_solution_text("Route #1: 0 1 2\n", 3).ids == "zero-based"
+    with pytest.raises(SolutionFormatError, match="never visited"):  # read as 1-based, customer 3 is missing
+        read_solution_text("Route #1: 0 1 2\n", 3, convention="one-based")
+    assert resolve_convention([[0, 1, 2]], 3) == "zero-based"
+    assert resolve_convention([[0, 1, 2, 0]], 3) == "one-based"
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ('{"routes": [[1, 2]], "cost": "abc"}', "'cost' must be a number"),
+        ('{"routes": [[1, 2]], "cost": {"a": 1}}', "'cost' must be a number"),
+        ('{"routes": [[1.7, 2]]}', "must be integers"),
+        ('{"routes": [[true, 2]]}', "must be integers"),
+        ('{"routes": [[1, [2]]]}', "must be integers"),
+    ],
+)
+def test_json_values_that_are_not_numbers_are_format_errors(text: str, message: str) -> None:
+    with pytest.raises(SolutionFormatError, match=message):
+        parse_solution_text(text)
+
+
 @pytest.mark.parametrize(
     ("routes", "message"),
     [

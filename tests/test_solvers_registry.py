@@ -86,3 +86,20 @@ def test_a_broken_plugin_warns_instead_of_hiding_the_others(monkeypatch) -> None
     with pytest.warns(UserWarning, match="broken"):
         names = registry.solver_names()
     assert "plugin" in names and "broken" not in names
+
+
+def test_a_broken_solvers_config_does_not_block_in_process_solvers(tmp_path, monkeypatch) -> None:
+    from mamut_routing_lib.solvers import get_solver, reload_solvers
+    from mamut_routing_lib.solvers.external.config import SolverConfigError
+
+    broken = tmp_path / "broken.toml"
+    broken.write_text('schema_version = 1\n[solvers.filo2]\nexecutable = "/opt/filo2\n')  # unclosed string
+    reload_solvers()
+    for config in (broken, tmp_path / "missing.toml"):
+        assert get_solver("pyvrp", config=config).name == "pyvrp"
+        assert get_solver("kayros", config=config).name == "kayros"
+        with pytest.raises(SolverConfigError):
+            get_solver("filo2", config=config)
+    monkeypatch.setenv("MAMUT_ROUTING_SOLVERS_CONFIG", str(broken))
+    reload_solvers()
+    assert get_solver("pyvrp").name == "pyvrp"
