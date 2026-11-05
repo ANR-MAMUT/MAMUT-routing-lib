@@ -9,8 +9,8 @@ instance and says whether the scaled problem is *exactly* the published one.
 Explicit matrices (:func:`plan_explicit_scale`):
 
 - **Exact**: ``s = 10**K`` where ``K`` is the largest number of decimals among
-  arc costs, time windows and service times (read as the decimals their JSON
-  text spells, like the checker's ``exact_cost_value``). Mamut2026 and
+  arc costs, time windows and service times, as the checker reads them
+  (``checker.exact_cost_value``, asked rather than restated). Mamut2026 and
   Poryos2026 matrices have 3 decimals, so ``s = 1000``; Dimacs2021 is already
   integral (``s = 1``). Used when the scaled largest arc, star bound and
   largest due date fit the solver's limits. The solver's reported cost then
@@ -33,7 +33,9 @@ the cost of any reasonable incumbent, which is what solver accumulators hold.
 
 from __future__ import annotations
 
+import itertools
 import math
+import numbers
 from dataclasses import asdict, dataclass
 from fractions import Fraction
 from typing import Any, Iterable, Literal, Sequence
@@ -41,6 +43,7 @@ from typing import Any, Iterable, Literal, Sequence
 __all__ = [
     "Limits",
     "ScaleError",
+    "agrees_with_checker",
     "ScalePlan",
     "decimal_places",
     "max_decimals",
@@ -108,13 +111,20 @@ class ScalePlan:
 # --------------------------------------------------------------------------- #
 
 
+def _exact_value(value: int | float) -> Fraction:
+    """The exact value the checker and the BKS store give a published number.
+
+    Asked of ``checker.exact_cost_value`` at each call rather than restated here, so that the
+    scaler calls a matrix exact by the same definition the store prices it with.
+    """
+    from mamut_routing_lib import checker
+
+    return checker.exact_cost_value(value)
+
+
 def decimal_places(value: int | float, *, limit: int = MAX_DECIMALS) -> int | None:
-    """Decimals the value's shortest text spells (``0.125`` -> 3, ``7`` -> 0), ``None`` above ``limit``."""
-    if isinstance(value, bool):
-        raise TypeError("not a number")
-    if isinstance(value, int) or float(value).is_integer():
-        return 0
-    denominator = Fraction(repr(float(value))).denominator
+    """Decimals of the value as the checker reads it (``0.125`` -> 3, ``7`` -> 0), ``None`` above ``limit``."""
+    denominator = _exact_value(value).denominator
     twos = fives = 0
     while denominator % 2 == 0:
         denominator //= 2
@@ -131,24 +141,55 @@ def max_decimals(values: Any, *, limit: int = MAX_DECIMALS) -> int | None:
 
     A round trip, not a tolerance: ``0.123`` has 3 decimals; a full-precision
     double such as ``265.88719412562915`` (Sintef2008) or float noise such as
-    ``0.30000000000000004`` has none within the limit, like the checker's reading
-    of the decimal text.
+    ``0.30000000000000004`` has none within the limit. The round trip is a fast
+    stand-in for the checker's exact reading; the answer is confirmed against
+    that reading (:func:`agrees_with_checker`) and is ``None`` when they differ.
     """
     flat = _flatten(values)
     if not flat:
         return 0
+    found: int | None = None
     if _np is not None:
         array = _np.asarray(flat, dtype=_np.float64)
         for places in range(0, limit + 1):
             factor = 10.0**places
             if _np.array_equal(_np.round(array * factor) / factor, array):
-                return places
+                found = places
+                break
+    else:
+        for places in range(0, limit + 1):
+            factor = 10.0**places
+            if all(round(v * factor) / factor == v for v in flat):
+                found = places
+                break
+    if found is None or not agrees_with_checker(flat, found):
         return None
-    for places in range(0, limit + 1):
-        factor = 10.0**places
-        if all(round(v * factor) / factor == v for v in flat):
-            return places
-    return None
+    return found
+
+
+def agrees_with_checker(values: Any, places: int, *, sample: int = 4096) -> bool:
+    """Whether the checker reads every sampled value as a multiple of ``10**-places``.
+
+    ``max_decimals`` decides by a float round trip, and collections declare their
+    decimals (``cvrplib.collection_cost_decimals``); an exact scale is only sound if
+    the checker's exact reading agrees. ``sample`` values, evenly strided through
+    ``values`` (a flat sequence or rows), are checked with that reading.
+    """
+    rows = values if isinstance(values, (list, tuple)) else ([] if values is None else list(values))
+    if not rows:
+        return True
+    items = iter(rows) if isinstance(rows[0], numbers.Real) else itertools.chain.from_iterable(rows)
+    total = len(rows) if isinstance(rows[0], numbers.Real) else sum(len(row) for row in rows)
+    step = max(1, total // max(1, sample))
+    scale = 10**places
+    return all((_exact_value(value) * scale).denominator == 1 for value in itertools.islice(items, 0, None, step))
+
+
+def _declared_or_measured(values: Any, declared: int | None) -> int | None:
+    """The declared decimals when the checker agrees with them, else ``max_decimals``."""
+    if declared is not None and agrees_with_checker(values, declared):
+        return declared
+    return max_decimals(values)
 
 
 def _flatten(values: Any) -> list[float]:
@@ -210,10 +251,7 @@ def plan_explicit_scale(
     largest_arc = _max_arc(arc_costs)
     star = star_bound(arc_costs, depot)
     horizon = max((float(window[1]) for window in time_windows), default=None) if time_windows else None
-    if decimals_hint is not None:
-        decimals: int | None = decimals_hint
-    else:
-        decimals = max_decimals(arc_costs)
+    decimals = _declared_or_measured(arc_costs, decimals_hint)
     if decimals is not None and time_windows is not None:
         windows = max_decimals(time_windows)
         services = max_decimals(service_times or [])
@@ -337,7 +375,7 @@ def plan_float_matrix_scale(
     """
     largest_arc = _max_arc(arc_costs)
     star = star_bound(arc_costs, depot)
-    decimals = decimals_hint if decimals_hint is not None else max_decimals(arc_costs)
+    decimals = _declared_or_measured(arc_costs, decimals_hint)
     for factor in candidates:
         factor = float(factor)
         if not _fits(limits, arc=largest_arc * factor, total=star * factor, time=None):
