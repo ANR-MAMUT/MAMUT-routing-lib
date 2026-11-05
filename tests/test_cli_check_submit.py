@@ -177,3 +177,35 @@ def test_check_prints_the_exact_decimal_cost(toy_cvrp_instance, tmp_path: Path) 
     assert "cost       0.7\n" in result.stdout
     payload = json.loads(_runner().invoke(app, ["check", str(instance), str(solution), "--json"]).stdout)
     assert payload["exact_cost"] == "0.7" and payload["cost"] == 0.7000000000000001
+
+
+def test_submit_meta_cannot_set_what_the_store_writes(toy_cvrp_instance, tmp_path: Path) -> None:
+    instance = _write(toy_cvrp_instance, tmp_path)
+    solution = _sol(tmp_path, "Route #1: 1 2\n")
+    result = _runner().invoke(
+        app, ["bks", "submit", str(instance), str(solution), "--authors", "X", "--meta", "date=2020-01-01"]
+    )
+    assert result.exit_code == 2 and "written by the BKS store" in result.output
+    assert not list(tmp_path.glob("*.bks.*.json"))
+
+
+def test_dry_run_reports_a_stored_bks_that_fails_the_checker(toy_cvrp_instance, tmp_path: Path) -> None:
+    instance = _write(toy_cvrp_instance, tmp_path)
+    solution = _sol(tmp_path, "Route #1: 1 2\n")
+    created = _runner().invoke(app, ["bks", "submit", str(instance), str(solution), "--authors", "X"])
+    assert created.exit_code == 0, created.output
+    stored = next(tmp_path.glob("*.bks.MonoCost.json"))
+    payload = json.loads(stored.read_text())
+    payload["routes"] = [[1]]  # customer 2 no longer served
+    stored.write_text(json.dumps(payload))
+    preview = _runner().invoke(app, ["bks", "submit", str(instance), str(solution), "--dry-run"])
+    assert preview.exit_code == 1 and json.loads(preview.stdout)["action"] == "stored_invalid"
+
+
+def test_check_recognises_a_cost_in_scaled_units(toy_cvrp_instance, tmp_path: Path) -> None:
+    instance = _write(toy_cvrp_instance, tmp_path)
+    checked = _runner().invoke(app, ["check", str(instance), str(_sol(tmp_path, "Route #1: 1 2\n"))])
+    cost = float(checked.stdout.split("cost")[-1].split()[0])
+    scaled = _sol(tmp_path, f"Route #1: 1 2\nCost {cost * 1000:.0f}\n", "scaled.sol")
+    result = _runner().invoke(app, ["check", str(instance), str(scaled)])
+    assert result.exit_code == 0 and "x 1000" in result.stderr and "scaled integer units" in result.stderr

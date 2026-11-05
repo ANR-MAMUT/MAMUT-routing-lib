@@ -72,6 +72,8 @@ class ParsedSolution:
     penalty: float | None = None
     #: How the file's stop ids were read: ``one-based`` (customers 1..n, 0 = depot) or ``zero-based``.
     ids: str = "one-based"
+    #: The ``metadata`` object of a JSON solution file (``None`` for other formats).
+    metadata: dict[str, Any] | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -271,7 +273,12 @@ def read_solution_text(
     ids = resolve_convention(routes, num_customers, convention)
     library = normalize_routes(routes, num_customers, depot=depot, convention=ids)  # type: ignore[arg-type]
     fmt = "json" if text.lstrip()[:1] in "[{" or filename.lower().endswith(".json") else "cvrplib-sol"
-    return ParsedSolution(library, declared, fmt, ids=ids)
+    metadata = None
+    if fmt == "json":
+        payload = json.loads(text)
+        if isinstance(payload, dict) and isinstance(payload.get("metadata"), dict):
+            metadata = payload["metadata"]
+    return ParsedSolution(library, declared, fmt, ids=ids, metadata=metadata)
 
 
 def read_solution_file(path: str | Path, instance: Any, *, convention: IdConvention = "auto") -> ParsedSolution:
@@ -428,7 +435,8 @@ def preview_bks_update(
     instance: Any = None,
 ) -> dict[str, Any]:
     """What ``submit_bks`` would do, without writing: ``action`` is ``would_create``,
-    ``would_replace``, ``would_keep`` (``tie`` when equal) or ``invalid``.
+    ``would_replace``, ``would_keep`` (``tie`` when equal), ``invalid`` (the candidate) or
+    ``stored_invalid`` (the stored BKS fails the checker; ``submit_bks`` would raise).
 
     Uses the stores' own comparisons: exact decimal costs for static instances, the TD
     checker's costs for time-dependent ones. Raises ``ValueError`` for an objective that
@@ -459,6 +467,10 @@ def preview_bks_update(
     existing = load_bks(bks_path)
     summary["existing_cost"] = existing.cost
     summary["existing_num_routes"] = existing.num_routes
+    stored_check = check_routes(loaded, path, existing.routes, objective)
+    if not stored_check.is_valid():
+        # submit_bks refuses to compare against it ("Stored BKS is invalid"): say so instead of guessing.
+        return {**summary, "action": "stored_invalid", "error": stored_check.error_message or str(stored_check.status)}
     if is_time_dependent(loaded):
         from mamut_routing_lib.checker import is_better_solution
 

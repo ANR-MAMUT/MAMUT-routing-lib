@@ -77,9 +77,18 @@ def test_extends_makes_a_named_variant(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("text", "message"),
     [
-        ('[solvers.filo2]\nexecutabel = "x"\n', "unknown key"),
+        ('[solvers.filo2]\nexecutabel = "x"\n', "unknown key.*did you mean 'executable'"),
         ('[solvers.new]\nargv = ["x"]\n', "a new solver needs"),
-        ('[solvers.ails2]\njar = "relative.jar"\n', "absolute"),
+        ('[solvers.filo2]\nfleet_limit = "false"\n', "true or false"),
+        ('[solvers.filo2]\nsymmetric_only = "false"\n', "true or false"),
+        ('[solvers.filo2]\nlive_progress = "always"\n', "live_progress must be one of"),
+        ('[solvers.filo2]\nruntime = "jvm"\n', "runtime must be one of"),
+        ('[solvers.filo2]\nwarm_start = true\n', "no warm start"),
+        ('[solvers.filo2]\nargv = ["{executable}", "{problme}"]\n', "did you mean 'problem'"),
+        ('[solvers.filo2]\nargv = ["{executable", "{problem}"]\n', "literal braces"),
+        ('[solvers.filo2]\nvehicles_factor = "2"\n', "must be a number"),
+        ('[solvers.filo2]\nprogress_pattern = "(unclosed"\n', "regular expression"),
+        ('[solvers.a]\nextends = "b"\n[solvers.b]\nextends = "a"\n', "circular"),
         ('[solvers.x]\nextends = "nope"\n', "unknown solver"),
         ('[solvers.pyvrp]\nlabel = "x"\n', "in-process"),
         ('[solvers.td]\nargv = ["x"]\ninput_format = "lkh"\noutput_format = "lkh-mtsp"\nproblem_types = ["TDVRP"]\n', "static"),
@@ -163,3 +172,93 @@ def test_extends_inherits_the_builtin_symmetry_requirement(tmp_path: Path) -> No
     assert descriptors["lkh-fork"].capabilities.symmetric_only is False
     assert descriptors["hgs-fork"].capabilities.symmetric_only is False  # full-matrix reader patch
     assert descriptors["filo-fork"].capabilities.symmetric_only is True
+
+
+def test_one_bad_table_disables_only_its_solver(tmp_path: Path, monkeypatch) -> None:
+    from mamut_routing_lib.solvers import SolverUnavailableError
+    from mamut_routing_lib.solvers.external.config import BrokenSolver, load_config
+
+    path = _config(tmp_path, FAKE_SOLVER + '[solvers.filo2]\nexecutabel = "/opt/filo2"\n[solvers.my]\nargv = ["x"]\n')
+    loaded = load_config(path)
+    assert set(loaded.descriptors) == {"fake"} and set(loaded.errors) == {"filo2", "my"}
+    monkeypatch.setenv(CONFIG_ENV, str(path))
+    registry.reload_solvers()
+    assert get_solver("fake").availability().available
+    broken = get_solver("filo2")
+    assert isinstance(broken, BrokenSolver) and broken.capabilities.problem_types  # the built-in's, for listing
+    availability = broken.availability()
+    assert not availability.available and "did you mean 'executable'" in availability.reason
+    assert str(path.resolve()) in availability.hint
+    with pytest.raises(SolverUnavailableError, match="config error"):
+        get_solver("my").solve(None)
+    assert get_solver("pyvrp").name == "pyvrp"
+    with pytest.raises(SolverConfigError, match="executabel"):
+        configured_descriptors(path)  # the strict reader still refuses the file
+
+
+def test_extends_may_name_a_table_defined_later(tmp_path: Path) -> None:
+    path = _config(
+        tmp_path,
+        '[solvers.lkh-long]\nextends = "lkh-mine"\nextra_args = ["RUNS = 10"]\n'
+        '[solvers.lkh-mine]\nextends = "lkh3"\nexecutable = "/opt/lkh"\nversion = "3.0.9"\n',
+    )
+    descriptors = configured_descriptors(path)
+    assert descriptors["lkh-long"].executable == "/opt/lkh" and descriptors["lkh-long"].version == "3.0.9"
+    assert descriptors["lkh-long"].extra_args == ("RUNS = 10",)
+    assert list(descriptors) == ["lkh-long", "lkh-mine"]  # file order kept
+
+
+def test_an_error_in_a_parent_names_the_parent(tmp_path: Path) -> None:
+    from mamut_routing_lib.solvers.external.config import load_config
+
+    path = _config(tmp_path, '[solvers.child]\nextends = "parent"\n[solvers.parent]\nextends = "lkh3"\nfleet_limit = "no"\n')
+    errors = load_config(path).errors
+    assert "true or false" in errors["parent"] and "[solvers.parent] has a config error" in errors["child"]
+
+
+def test_relative_paths_are_read_from_the_config_folder(tmp_path: Path, monkeypatch) -> None:
+    config_dir = tmp_path / "conf"
+    config_dir.mkdir()
+    monkeypatch.chdir(tmp_path)  # never the working directory
+    path = _config(
+        config_dir,
+        '[solvers.filo2]\nexecutable = "./bin/filo2"\n[solvers.lkh3]\nexecutable = "LKH"\n'
+        '[solvers.ails2]\njar = "AILSII.jar"\njava = "jdk/bin/java"\n',
+    )
+    descriptors = configured_descriptors(path)
+    assert descriptors["filo2"].executable == str(config_dir.resolve() / "bin" / "filo2")
+    assert descriptors["lkh3"].executable == "LKH"  # a bare name is looked up on PATH
+    assert descriptors["ails2"].jar == str(config_dir.resolve() / "AILSII.jar")
+    assert descriptors["ails2"].java == str(config_dir.resolve() / "jdk" / "bin" / "java")
+
+
+def test_lkh_extra_args_are_literal_parameter_lines(tmp_path: Path) -> None:
+    path = _config(tmp_path, '[solvers.lkh3]\nextra_args = ["SPECIAL = {not a placeholder}"]\n')
+    assert configured_descriptors(path)["lkh3"].extra_args == ("SPECIAL = {not a placeholder}",)
+
+
+def _uncommented_tables(text: str) -> str:
+    """The starter with every commented ``[solvers.x]`` table switched on."""
+    lines, active = [], False
+    for line in text.splitlines():
+        if line.startswith("# [solvers."):
+            active = True
+        elif not line.startswith("# ") or " = " not in line and not line.startswith("# ["):
+            active = False
+        lines.append(line[2:] if active else line)
+    return "\n".join(lines) + "\n"
+
+
+def test_the_starter_config_parses_and_each_table_is_valid(tmp_path: Path) -> None:
+    from mamut_routing_lib.solvers.external.config import load_config, starter_config_text
+
+    text = starter_config_text(detect=False)
+    starter = tmp_path / "starter.toml"
+    starter.write_text(text)
+    assert load_config(starter).descriptors == {} and load_config(starter).errors == {}
+    enabled = tmp_path / "enabled.toml"
+    enabled.write_text(_uncommented_tables(text))
+    loaded = load_config(enabled)
+    assert loaded.errors == {}
+    assert set(loaded.descriptors) == {"filo2", "hgs-cvrp", "ails2", "lkh3", "lkh3-long", "my-solver"}
+    assert loaded.descriptors["lkh3-long"].extra_args == ("RUNS = 10",)

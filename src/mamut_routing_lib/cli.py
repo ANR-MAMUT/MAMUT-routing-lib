@@ -150,6 +150,11 @@ class SolveSummaryRow:
     wall_time: float
     bks_label: str
     detail: str = ""
+    #: Gap to the BKS stored before this solve, under the run's objective ("" when not computed).
+    gap: str = ""
+    #: Negative gap: the solution beats the stored BKS (or there is none to beat).
+    improves: bool = False
+    solution_path: Path | None = None
 
 
 T = TypeVar("T")
@@ -754,27 +759,84 @@ def _default_solve_jobs() -> int:
     return max(1, cpu_count - 2)
 
 
-def _artifact_workdirs(records: list[LocalInstanceRecord], root: Path | None, leaf: str) -> dict[int, Path]:
-    """One ``--keep-artifacts`` folder per selected instance, never shared by two of them.
+def _unique_record_names(records: list[LocalInstanceRecord]) -> dict[int, str]:
+    """A file-name-safe name per selected instance, never shared by two of them.
 
     Instance ids repeat when the layout cannot be read from the path (explicit files outside a
     benchmarks tree, metric variants of one instance): those get a short hash of their path.
     """
-    if root is None:
-        return {}
     import hashlib
 
-    base = root.resolve()
     counts: dict[str, int] = {}
     for record in records:
         counts[record.instance_id] = counts.get(record.instance_id, 0) + 1
-    workdirs: dict[int, Path] = {}
+    names: dict[int, str] = {}
     for record in records:
-        name = record.instance_id
-        if counts[name] > 1:
+        name = record.instance_id.replace(os.sep, "_")
+        if counts[record.instance_id] > 1:
             name = f"{name}-{hashlib.sha256(str(record.path.resolve()).encode()).hexdigest()[:8]}"
-        workdirs[id(record)] = base / name / leaf
-    return workdirs
+        names[id(record)] = name
+    return names
+
+
+def _artifact_workdirs(records: list[LocalInstanceRecord], root: Path | None, leaf: str) -> dict[int, Path]:
+    """One ``--keep-artifacts`` folder per selected instance, never shared by two of them."""
+    if root is None:
+        return {}
+    base = root.resolve()
+    return {key: base / name / leaf for key, name in _unique_record_names(records).items()}
+
+
+def _stored_bks(record: LocalInstanceRecord, objective: ObjectiveFunction) -> tuple[float | None, int | None] | None:
+    """(cost, routes) of the BKS stored for ``objective``; ``None`` when there is none."""
+    from mamut_routing_lib.artifacts import get_bks_path_for_instance, load_bks
+
+    path = get_bks_path_for_instance(record.path, objective)
+    if not path.is_file():
+        return None
+    try:
+        bks = load_bks(path)
+    except Exception:  # noqa: BLE001 - an unreadable BKS only blanks the gap
+        return (None, None)
+    return (float(bks.cost) if bks.cost is not None else None, bks.num_routes)
+
+
+def _gap_to_bks(
+    cost: float, routes: int, reference: tuple[float | None, int | None] | None, objective: ObjectiveFunction
+) -> tuple[str, bool]:
+    """("+1.23%", improves) against the stored BKS; hierarchical objectives compare routes first."""
+    if reference is None:
+        return "no BKS", True
+    bks_cost, bks_routes = reference
+    if objective == ObjectiveFunction.HIERARCHICAL_VEHICLE_COST and bks_routes is not None and routes != bks_routes:
+        return f"{routes - bks_routes:+d} veh", routes < bks_routes
+    if bks_cost is None or bks_cost == 0:
+        return "?", False
+    if cost == bks_cost:
+        return "0.00%", False
+    gap = (float(cost) - bks_cost) / abs(bks_cost) * 100.0
+    text = f"{gap:+.2f}%" if abs(gap) >= 0.005 else ("-<0.01%" if gap < 0 else "+<0.01%")
+    return text, gap < 0
+
+
+def _write_solution_file(path: Path, record: LocalInstanceRecord, solved: Any, objective: ObjectiveFunction) -> None:
+    """The routes and their provenance, as a JSON solution `check` and `bks submit` read back."""
+    from mamut_routing_lib.json_utils import save_json_to_file
+
+    solution = solved.to_solution(
+        metadata={
+            "written_by": f"mamut-routing solve ({_get_package_version()})",
+            "instance_id": record.instance_id,
+            "instance_path": str(record.path.resolve()),
+            "objective_function": objective.value,
+            "validation": solved.validation_status,
+            "checker_cost": solved.cost,
+            "status": solved.result.status,
+            "bks_metadata": solved.bks_metadata(),
+        }
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    save_json_to_file(solution.model_dump(mode="json"), path)
 
 
 def _duplicate_resolved_paths(records: list[LocalInstanceRecord]) -> list[Path]:
@@ -984,13 +1046,25 @@ def solve_instances(
     ] = None,
     time_limit_s: Annotated[
         int,
-        typer.Option("--time-limit-s", min=1, help="Wall-clock budget per instance, in seconds."),
+        typer.Option(
+            "--time-limit-s", "--time-limit", min=1, help="Wall-clock budget per instance, in seconds."
+        ),
     ] = 15,
     seed: Annotated[int, typer.Option("--seed", help="Solver random seed.")] = 42,
+    output_dir: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--output-dir",
+            "-o",
+            help="Write each solution to DIR/<instance-id>.<solver>-seed<seed>.json (routes, checker verdict, provenance); "
+            "`mamut-routing check` and `bks submit` read these files.",
+        ),
+    ] = None,
     save_bks: Annotated[
         bool,
         typer.Option(
             "--save-bks/--no-save-bks",
+            "--update-bks/--no-update-bks",
             help="Store the solution as the instance's BKS when it strictly improves it (needs --authors). Off by default.",
         ),
     ] = False,
@@ -1021,10 +1095,11 @@ def solve_instances(
     """Solve benchmark instances with a registered solver and check every result.
 
     Every solution is priced by the reference checker; COST is the checker's
-    cost. With --save-bks --authors NAME, a solution that strictly beats the
-    stored BKS (exact decimal costs; ties keep the incumbent) is written next
-    to the instance. PyVRP needs the 'pyvrp' extra:
-    pip install "mamut-routing-lib[pyvrp]".
+    cost and GAP its distance to the BKS stored before the solve. Nothing is
+    kept by default: --output-dir DIR saves every solution, and --save-bks
+    --authors NAME stores a solution that strictly beats the stored BKS (exact
+    decimal costs; ties keep the incumbent) next to the instance. PyVRP needs
+    the 'pyvrp' extra: pip install "mamut-routing-lib\\[pyvrp]".
     """
     from mamut_routing_lib.objectives import default_objective
     from mamut_routing_lib.solutions import submit_bks
@@ -1051,8 +1126,7 @@ def solve_instances(
         raise typer.Exit(code=2) from error
     availability = solver_obj.availability()
     if not availability.available:
-        hint = f" ({availability.hint})" if availability.hint else ""
-        typer.echo(f"Error: solver {solver_obj.name} is not available: {availability.reason}{hint}", err=True)
+        typer.echo(f"Error: solver {solver_obj.name} is not available: {availability.describe()}", err=True)
         raise typer.Exit(code=2)
     if save_bks and not (authors and authors.strip()):
         typer.echo(
@@ -1212,6 +1286,12 @@ def solve_instances(
     monitors: list[Any] = []
     interrupted = threading.Event()
     workdirs = _artifact_workdirs(selected, keep_artifacts, f"{solver_obj.name}-seed{seed}")
+    solution_paths: dict[int, Path] = {}
+    if output_dir is not None:
+        solution_paths = {
+            key: output_dir.resolve() / f"{name}.{solver_obj.name}-seed{seed}.json"
+            for key, name in _unique_record_names(selected).items()
+        }
 
     def _stop_everything() -> None:
         # Solvers in their own process group never see the terminal's Ctrl-C: stop them all now,
@@ -1279,8 +1359,11 @@ def solve_instances(
                 detail=result.error or "the solver failed",
             )
         detail = ""
+        gap, improves = "", False
         if solved.valid:
             status = "feasible"
+            detail = result.error or ""  # e.g. a nonzero exit after writing a solution
+            gap, improves = _gap_to_bks(solved.cost, len(result.routes), _stored_bks(record, run_objective), run_objective)
         else:
             status = "infeasible"
             if solved.check is not None:
@@ -1291,7 +1374,12 @@ def solve_instances(
                 detail = result.error
             else:
                 detail = "the solver returned no routes"
-        bks_label = "-" if save_bks else "skipped"
+        solution_path = solution_paths.get(id(record))
+        if solution_path is not None and result.routes:
+            _write_solution_file(solution_path, record, solved, run_objective)
+        else:
+            solution_path = None
+        bks_label = "-" if save_bks else "not saved"
         if save_bks and solved.valid:
             update = submit_bks(
                 record.path,
@@ -1311,6 +1399,9 @@ def solve_instances(
             wall_time=result.wall_time,
             bks_label=bks_label,
             detail=detail,
+            gap=gap,
+            improves=improves,
+            solution_path=solution_path,
         )
 
     def _solve_record_safe(record: LocalInstanceRecord) -> SolveSummaryRow:
@@ -1374,7 +1465,7 @@ def solve_instances(
 
     header = (
         f"{'INSTANCE_ID':<64}  {'INSTANCE_NAME':<24}  {'STATUS':<10}  "
-        f"{'COST':>14}  {'ROUTES':>6}  {'WALL_S':>7}  {'BKS':<14}"
+        f"{'COST':>14}  {'GAP':>9}  {'ROUTES':>6}  {'WALL_S':>7}  {'BKS':<14}"
     )
     typer.echo(header)
     typer.echo("-" * len(header))
@@ -1387,8 +1478,8 @@ def solve_instances(
         else:
             cost_str = f"{int(row.cost):>14}"
         typer.echo(
-            f"{row.instance_id:<64}  {row.instance_name:<24}  {row.status:<10}  {cost_str}  {row.route_count:>6}  "
-            f"{row.wall_time:>7.2f}  {row.bks_label:<14}"
+            f"{row.instance_id:<64}  {row.instance_name:<24}  {row.status:<10}  {cost_str}  {row.gap or '-':>9}  "
+            f"{row.route_count:>6}  {row.wall_time:>7.2f}  {row.bks_label:<14}"
         )
 
     for row in solved_rows:
@@ -1396,6 +1487,24 @@ def solve_instances(
             typer.echo(f"error: {row.instance_id}: {row.detail}", err=True)
         elif row.detail:
             typer.echo(f"{row.status}: {row.instance_id}: {row.detail}", err=True)
+    written = [row for row in solved_rows if row.solution_path is not None]
+    if written:
+        typer.echo(f"Solutions: {len(written)} written to {output_dir.resolve() if output_dir else ''}")
+    if not save_bks:
+        better = [row for row in solved_rows if row.status == "feasible" and row.improves]
+        if better:
+            how = (
+                "`mamut-routing bks submit INSTANCE SOLUTION --authors NAME` stores one from --output-dir"
+                if written
+                else "rerun with --save-bks --authors NAME to store them, or --output-dir DIR to keep the routes"
+            )
+            typer.secho(
+                f"Note: {len(better)} solution(s) beat the stored BKS (or have none) and were not stored; {how}.",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
+        elif not written:
+            typer.echo("The routes were not kept: pass --output-dir DIR to save them.", err=True)
     counts = {status: sum(1 for row in solved_rows if row.status == status) for status in ("feasible", "infeasible", "error")}
     skipped_td = len(time_dependent) if not explicit_paths else 0
     skipped_sidecar = len(unmaterialized) if not explicit_paths else 0
@@ -1782,14 +1891,15 @@ def solvers_list(
 ) -> None:
     """List every registered solver: availability here, version, what it solves, and how to enable it."""
     from mamut_routing_lib.solvers import list_solvers
-    from mamut_routing_lib.solvers.external.config import SolverConfigError, resolve_config_path
+    from mamut_routing_lib.solvers.external.config import SolverConfigError, default_config_path, load_config
 
     try:
         solvers = list_solvers(config=solvers_config)
-        config_path = resolve_config_path(solvers_config)
+        loaded = load_config(solvers_config)
     except SolverConfigError as error:
         typer.echo(f"Error: solvers config: {error}", err=True)
         raise typer.Exit(code=2) from error
+    config_path = loaded.path
     rows = []
     for solver_obj in solvers:
         availability = solver_obj.availability()
@@ -1801,29 +1911,98 @@ def solvers_list(
                 "available": availability.available,
                 "reason": availability.reason,
                 "hint": availability.hint,
+                "note": availability.note,
                 "version": availability.version,
                 "executable": availability.executable,
                 "source": getattr(descriptor, "source", "builtin"),
                 "capabilities": solver_obj.capabilities.to_json(),
             }
         )
+    listed = {row["name"] for row in rows}
+    orphan_errors = {name: error for name, error in loaded.errors.items() if name not in listed or name in ("pyvrp", "kayros")}
     if as_json:
-        typer.echo(json.dumps({"config": str(config_path) if config_path else None, "solvers": rows}, indent=1))
+        typer.echo(
+            json.dumps(
+                {"config": str(config_path) if config_path else None, "config_errors": loaded.errors, "solvers": rows},
+                indent=1,
+            )
+        )
         return
-    typer.echo(f"solvers config: {config_path or 'none'}")
-    header = f"{'NAME':<12}  {'AVAILABLE':<9}  {'VERSION':<12}  {'SOLVES':<52}  NOTE"
+    if config_path is not None:
+        typer.echo(f"solvers config: {config_path}")
+    else:
+        typer.echo(f"solvers config: none ({default_config_path()} does not exist; `mamut-routing solvers init` writes a starter)")
+    width = max(12, *(len(row["name"]) for row in rows))
+    header = f"{'NAME':<{width}}  {'AVAILABLE':<9}  {'VERSION':<12}  {'SOLVES':<52}  NOTE"
     typer.echo(header)
     typer.echo("-" * len(header))
     for row in rows:
         solves = "; ".join(
             f"{problem} {'/'.join(objectives)}" for problem, objectives in row["capabilities"]["objectives"].items()
-        )
-        note = row["reason"] or ""
-        if row["hint"]:
-            note = f"{note} -- {row['hint']}" if note else row["hint"]
+        ) or "-"
+        note = "" if row["available"] else row["reason"] or ""
         typer.echo(
-            f"{row['name']:<12}  {'yes' if row['available'] else 'no':<9}  {str(row['version'] or '-'):<12}  "
+            f"{row['name']:<{width}}  {'yes' if row['available'] else 'no':<9}  {str(row['version'] or '-'):<12}  "
             f"{solves:<52}  {note}"
+        )
+    where = str(config_path or default_config_path())
+    to_enable = [row for row in rows if not row["available"] and (row["hint"] or row["note"])]
+    if to_enable:
+        typer.echo(f"\nTo enable (the solvers config is {where}):")
+        for row in to_enable:
+            lines = [line.replace(f" in {where}", " in the solvers config") for line in (row["hint"], row["note"]) if line]
+            typer.echo(f"  {row['name']:<{width}}  {lines[0]}")
+            for line in lines[1:]:
+                typer.echo(f"  {'':<{width}}  {line[0].upper()}{line[1:]}")
+    notes = [row for row in rows if row["available"] and row["note"]]
+    if notes:
+        typer.echo("\nNotes:")
+        for row in notes:
+            typer.echo(f"  {row['name']:<{width}}  {row['note'][0].upper()}{row['note'][1:]}")
+    for name, error in orphan_errors.items():
+        typer.secho(f"Warning: [solvers.{name}] ignored: {error}", fg=typer.colors.YELLOW, err=True)
+
+
+@solvers_app.command("init")
+def solvers_init(
+    path: Annotated[
+        Optional[Path],
+        typer.Argument(
+            help="Where to write the starter config. Default: $MAMUT_ROUTING_SOLVERS_CONFIG when set, "
+            "else the default config path (~/.config/mamut-routing/solvers.toml).",
+        ),
+    ] = None,
+    force: Annotated[bool, typer.Option("--force", help="Overwrite an existing file.")] = False,
+    to_stdout: Annotated[bool, typer.Option("--print", help="Print the starter config instead of writing it.")] = False,
+) -> None:
+    """Write a commented starter solvers config: one table per built-in external solver.
+
+    Every table is commented out; uncomment the solvers you have built, set
+    their paths, then check them with `mamut-routing solvers list`. Solvers
+    already on PATH are marked in the file.
+    """
+    from mamut_routing_lib.solvers.external.config import CONFIG_ENV, default_config_path, starter_config_text
+
+    text = starter_config_text()
+    if to_stdout:
+        typer.echo(text, nl=False)
+        return
+    env_value = os.environ.get(CONFIG_ENV)
+    target = (path or (Path(env_value) if env_value else default_config_path())).expanduser()
+    if target.exists() and not force:
+        typer.echo(f"Error: {target} already exists; pass --force to overwrite it, or --print to see the starter.", err=True)
+        raise typer.Exit(code=2)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
+    typer.echo(f"Wrote {target}.")
+    typer.echo("Uncomment the solvers you have built, set their paths, then run `mamut-routing solvers list`.")
+    resolved = target.resolve()
+    read_by_default = (Path(env_value).expanduser().resolve() == resolved) if env_value else resolved == default_config_path().resolve()
+    if not read_by_default:
+        typer.secho(
+            f"Note: this file is not read by default; pass --solvers-config {target} or set {CONFIG_ENV}={target}.",
+            fg=typer.colors.YELLOW,
+            err=True,
         )
 
 
@@ -1914,9 +2093,33 @@ def _exact_cost_text(instance: Any, instance_path: Path, routes: list[list[int]]
     return f"-{text}" if exact < 0 else text
 
 
+def _power_of_ten_ratio(declared: float, checker: float) -> float | None:
+    """10^k (k != 0) when ``declared`` is ``checker`` scaled by it, to 0.1 %: a solver's integer units."""
+    import math
+
+    if declared <= 0 or checker <= 0:
+        return None
+    exponent = round(math.log10(declared / checker))
+    if exponent == 0 or abs(exponent) > 9:
+        return None
+    scale = 10.0**exponent
+    return scale if abs(declared / (checker * scale) - 1.0) <= 1e-3 else None
+
+
 def _number(value: float) -> str:
     """A cost as written: integers without a decimal point, floats in full (shortest round-trip)."""
     return str(int(value)) if float(value).is_integer() else repr(float(value))
+
+
+#: BKS metadata the stores write themselves; ``--meta`` cannot set them.
+_STORE_METADATA_KEYS = frozenset(
+    {"authors", "date", "validated_cost", "validated_num_routes", "route_durations", "route_departure_times", "optimality", "repriced"}
+)
+#: Provenance a solution file written by ``solve --output-dir`` carries into ``bks submit``.
+_CARRIED_PROVENANCE_KEYS = (
+    "method", "solver", "solver_version", "seed", "time_limit_s", "wall_time", "solver_cost", "cost_exact", "machine",
+    "vehicle_penalty", "executable_sha256", "input_sha256",
+)
 
 
 def _meta_pairs(pairs: list[str] | None) -> dict[str, Any]:
@@ -1925,6 +2128,9 @@ def _meta_pairs(pairs: list[str] | None) -> dict[str, Any]:
         key, sep, raw = pair.partition("=")
         if not sep or not key.strip():
             raise typer.BadParameter(f"expected KEY=VALUE, got {pair!r}", param_hint="--meta")
+        if key.strip() in _STORE_METADATA_KEYS:
+            hint = " (use --authors)" if key.strip() == "authors" else ""
+            raise typer.BadParameter(f"{key.strip()!r} is written by the BKS store itself{hint}", param_hint="--meta")
         try:
             values[key.strip()] = json.loads(raw)
         except ValueError:
@@ -1993,9 +2199,12 @@ def check_external_solution(
             declared = "" if parsed.declared_cost is None else f" (declared {_number(parsed.declared_cost)})"
             typer.echo(f"cost       {payload['exact_cost'] or result.routing_cost}{declared}")
     if mismatch:
+        why = "another metric variant, rounding, or a different instance"
+        scale = _power_of_ten_ratio(float(parsed.declared_cost), float(result.routing_cost))
+        if scale is not None:
+            why = f"it is about the checker's cost x {scale:g}: probably the solver's scaled integer units"
         typer.secho(
-            f"Warning: the file declares cost {_number(parsed.declared_cost)} but the checker gives {result.routing_cost} "
-            "(another metric variant, rounding, or a different instance).",
+            f"Warning: the file declares cost {_number(parsed.declared_cost)} but the checker gives {result.routing_cost} ({why}).",
             fg=typer.colors.YELLOW,
             err=True,
         )
@@ -2038,8 +2247,10 @@ def bks_submit(
     The solution is checked, then stored next to the instance as
     <base>.bks.<Objective>.json only if it strictly beats the stored BKS (exact
     decimal costs for static instances; the TD checker for time-dependent ones).
-    A tie keeps the incumbent. Exit status 0 for created / replaced / kept, 1
-    when the checker rejects the solution, 2 on a usage error.
+    A tie keeps the incumbent. A file written by `solve --output-dir` brings its
+    run's provenance (solver, version, seed, budget); the flags override it.
+    Exit status 0 for created / replaced / kept, 1 when the checker rejects the
+    solution, 2 on a usage error.
     """
     from mamut_routing_lib.solutions import preview_bks_update, submit_bks
 
@@ -2048,21 +2259,23 @@ def bks_submit(
     if dry_run:
         preview = preview_bks_update(instance_path, parsed.routes, objective_function=resolved, instance=instance)
         typer.echo(json.dumps(preview, indent=1))
-        if preview["action"] == "invalid":
+        if preview["action"] in ("invalid", "stored_invalid"):
             raise typer.Exit(code=1)
         return
     if not authors or not authors.strip():
         typer.echo(f"Error: --authors is required (or set ${BKS_AUTHORS_ENV}).", err=True)
         raise typer.Exit(code=2)
+    carried: dict[str, Any] = {}
+    recorded = (parsed.metadata or {}).get("bks_metadata")
+    if isinstance(recorded, dict):  # a file written by `mamut-routing solve --output-dir`
+        carried = {key: recorded[key] for key in _CARRIED_PROVENANCE_KEYS if recorded.get(key) is not None}
+    flags = {"method": method, "seed": seed, "time_limit_s": time_limit_s, "solver_version": solver_version}
     metadata: dict[str, Any] = {
-        "method": method,
-        "seed": seed,
-        "time_limit_s": time_limit_s,
-        "solver_version": solver_version,
+        **carried,
+        **{key: value for key, value in flags.items() if value is not None},
         "submitted_from": solution_path.name,
         **_meta_pairs(meta),
     }
-    metadata = {key: value for key, value in metadata.items() if value is not None}
     try:
         update = submit_bks(
             instance_path,

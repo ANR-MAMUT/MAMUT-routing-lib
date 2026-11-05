@@ -163,6 +163,10 @@ CLI:
 # Solve; nothing is written unless asked
 mamut-routing solve path/to/inst.vrp.json --time-limit-s 30 --seed 42
 
+# Keep the solutions (routes, checker verdict, provenance), to check or submit later
+mamut-routing solve path/to/inst.vrp.json --output-dir runs/
+mamut-routing bks submit path/to/inst.vrp.json runs/<instance-id>.pyvrp-seed42.json --authors "Your Name (handle)"
+
 # Store improvements as BKS (credited to --authors, or $MAMUT_ROUTING_BKS_AUTHORS)
 mamut-routing --benchmarks-dir ./benchmarks solve \
     --problem-type VRPTW --benchmark-name Sintef2008 \
@@ -177,7 +181,11 @@ mamut-routing --benchmarks-dir ./benchmarks list --problem-type CVRP --paths-onl
     | xargs -r mamut-routing solve --time-limit-s 30
 ```
 
-The COST column is the checker's cost. Instances a solver cannot take are
+The COST column is the checker's cost and GAP its distance to the BKS stored
+before the solve (`no BKS` when there is none; under HierarchicalVehicleCost a
+different route count shows as `+1 veh`). The BKS column says what the store did
+(`not saved` without `--save-bks`). `--time-limit` and `--update-bks` are
+accepted as aliases, the names `mamut-tools solve` used. Instances a solver cannot take are
 skipped in scans (time-dependent instances for static solvers, road metrics for
 coordinate solvers, ...) and are error rows for explicit paths; so are
 collection instances whose distances sidecar is a sha256 pin missing from the
@@ -191,6 +199,9 @@ External executables are declared in a TOML file: `--solvers-config PATH`,
 else `$MAMUT_ROUTING_SOLVERS_CONFIG` (empty disables it), else
 `$XDG_CONFIG_HOME/mamut-routing/solvers.toml` (`~/.config/...`). It is never
 read from the working directory: it names programs that will be run.
+`mamut-routing solvers init` writes a commented starter there (one table per
+built-in solver, with its build notes), and `mamut-routing solvers list` shows
+what is available and how to enable the rest.
 
 ```toml
 schema_version = 1
@@ -217,6 +228,11 @@ output_format = "cvrplib-sol"           # cvrplib-sol | lkh-mtsp
 problem_types = ["CVRP"]
 # symmetric_only = false                # only if it really reads asymmetric FULL_MATRIX files
 ```
+
+Relative paths are read from the config file's folder; a bare executable name is looked up on PATH. Unknown keys
+and mistyped values (`fleet_limit = "false"`) are errors, with a suggestion for near-miss keys; an error in one
+`[solvers.<name>]` table disables that solver only (`solvers list` shows why), and `extends` may name a table defined
+anywhere in the file.
 
 A solver declared in the config is `symmetric_only = true` unless it says otherwise, so the asymmetric
 road-network variants (`fastest`, `shortest`) are refused for it rather than handed over as a `TYPE : CVRP` file a
@@ -247,7 +263,11 @@ mamut-routing bks submit path/to/inst.vrp.json found.sol \
 Both read CVRPLIB `.sol` files (`Route #k: ...` and `Cost ...`, exponents
 accepted), JSON routes and LKH-3 MTSP solution files, and map 1-based,
 0-based or depot-marked stop ids onto the instance (`--ids` forces one). The
-objective defaults to the one the family publishes its BKS under.
+objective defaults to the one the family publishes its BKS under. A file written
+by `solve --output-dir` brings its run's provenance into `bks submit`; `--meta`
+cannot set the fields the store writes itself (`authors`, `date`,
+`validated_cost`, ...). `--dry-run` also re-checks the stored BKS
+(`stored_invalid` when it fails the checker).
 
 ## Exporting to CVRPLIB `.vrp` (classic solvers)
 

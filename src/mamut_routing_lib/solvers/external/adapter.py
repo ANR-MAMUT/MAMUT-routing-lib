@@ -105,7 +105,10 @@ class ExternalSolver:
         where = self._config_path or str(default_config_path())
         if self.descriptor.runtime == "java":
             return f"set solvers.{self.name}.jar in {where}"
-        return f"set solvers.{self.name}.executable in {where}, or put {self.descriptor.executable_names[0] if self.descriptor.executable_names else self.name} on PATH"
+        if self.descriptor.executable:
+            return f"fix solvers.{self.name}.executable in {where}"
+        names = self.descriptor.executable_names
+        return f"set solvers.{self.name}.executable in {where}, or put {names[0] if names else self.name} on PATH"
 
     def resolve_executable(self) -> tuple[str | None, str | None]:
         """(absolute executable or jar, reason when missing)."""
@@ -117,7 +120,7 @@ class ExternalSolver:
                 return None, "no jar configured"
             jar = Path(descriptor.jar).expanduser()
             if not jar.is_absolute() or not jar.is_file():
-                return None, f"jar not found: {jar} (an absolute path is required)"
+                return None, f"jar not found: {jar}" + ("" if jar.is_absolute() else " (give an absolute path)")
             return str(jar), None
         if descriptor.executable:
             # A configured executable is the only candidate: falling back to another build found on
@@ -148,16 +151,16 @@ class ExternalSolver:
 
     def availability(self) -> Availability:
         executable, reason = self.resolve_executable()
+        note = self.descriptor.requires_note
         if executable is None:
-            hint = self._config_hint()
-            if self.descriptor.requires_note:
-                hint = f"{hint}; {self.descriptor.requires_note}"
-            return Availability(False, reason=reason, hint=hint)
+            return Availability(False, reason=reason, hint=self._config_hint(), note=note)
         if self.descriptor.runtime == "java":
             java, java_reason = self._java()
             if java is None:
-                return Availability(False, reason=java_reason, executable=executable, hint="install a JDK/JRE or set solvers.<name>.java")
-        return Availability(True, version=self.descriptor.version, executable=executable, hint=self.descriptor.requires_note)
+                return Availability(
+                    False, reason=java_reason, executable=executable, hint=f"install a JDK/JRE or set solvers.{self.name}.java", note=note
+                )
+        return Availability(True, version=self.descriptor.version, executable=executable, note=note)
 
     def supports(self, profile: InstanceProfile, objective: ObjectiveFunction) -> Support:
         return capability_support(self.capabilities, profile, objective, solver_label=self.label)

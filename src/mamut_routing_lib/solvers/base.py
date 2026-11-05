@@ -268,13 +268,27 @@ class SolverCapabilities:
 
 @dataclass(frozen=True)
 class Availability:
-    """Whether a solver can run here (``reason`` explains a ``False``)."""
+    """Whether a solver can run here (``reason`` explains a ``False``).
+
+    ``hint`` says how to make it available (install, configure); ``note`` is a standing
+    requirement worth knowing either way (a patched build, for instance).
+    """
 
     available: bool
     reason: str | None = None
     version: str | None = None
     executable: str | None = None
     hint: str | None = None
+    note: str | None = None
+
+    def describe(self) -> str:
+        """``reason (hint). note`` -- one line for an error message."""
+        text = self.reason or ("available" if self.available else "not available")
+        if self.hint:
+            text = f"{text} ({self.hint})"
+        if self.note:
+            text = f"{text}. {self.note[0].upper()}{self.note[1:]}"
+        return text
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -283,6 +297,7 @@ class Availability:
             "version": self.version,
             "executable": self.executable,
             "hint": self.hint,
+            "note": self.note,
         }
 
 

@@ -336,4 +336,5 @@ def test_builtin_hgs_reads_the_full_matrix(collection: Path, tmp_path: Path, mon
     assert argv[1:3] == [str(prepared.problem), str(prepared.solution)] and "-round" in argv
     monkeypatch.setenv("PATH", "/nonexistent")
     missing = ExternalSolver(BUILTIN_DESCRIPTORS["hgs-cvrp"]).availability()
-    assert not missing.available and "hgs-cvrp-explicit-matrix.patch" in missing.hint
+    assert not missing.available and "hgs-cvrp-explicit-matrix.patch" in missing.note
+    assert "hgs-cvrp-explicit-matrix.patch" in missing.describe()  # what `solve` prints

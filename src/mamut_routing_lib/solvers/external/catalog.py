@@ -99,7 +99,7 @@ HGS_CVRP = ExternalSolverDescriptor(
     progress_pattern=r"^It\s+(?P<iterations>\d+)\s+\d+\s+\|\s+T\(s\)\s+[\d.]+\s+\|\s+Feas\s+\d+\s+(?P<cost>[\d.]+)",
     env=_THREADS_ONE,
     requires_note=(
-        "HGS-CVRP needs the MAMUT-routing full-matrix reader patch (upstream builds reject EDGE_WEIGHT_SECTION): "
+        "needs the full-matrix reader patch (upstream HGS-CVRP rejects EDGE_WEIGHT_SECTION): "
         "git apply " + patch_path("hgs-cvrp-explicit-matrix.patch") + " in vidalt/HGS-CVRP 1a92795, then rebuild"
     ),
     homepage="https://github.com/vidalt/HGS-CVRP (1a92795) + patches/hgs-cvrp-explicit-matrix.patch",
@@ -128,8 +128,8 @@ AILS2 = ExternalSolverDescriptor(
     coordinate_scales=(1.0,),
     limits=Limits(max_total_cost=2.1e9),
     requires_note=(
-        "AILS-II needs a build with the -seed/-out patch (upstream writes no routes and is not seedable): "
-        "MAMUT-routing paper7 campaign3/patch_ails2.py; set solvers.ails2.jar in the solvers config"
+        "needs a build with the -seed/-out patch (upstream AILS-II writes no routes and is not seedable): "
+        "MAMUT-routing paper7 campaign3/patch_ails2.py"
     ),
     homepage="https://github.com/INFORMSJoC/2023.0106 (4ff3611) + patch",
 )

@@ -148,8 +148,7 @@ def prepare_solve(
     objective = objective_function or default_objective(loaded)
     availability = solver_obj.availability()
     if not availability.available:
-        hint = f" ({availability.hint})" if availability.hint else ""
-        raise SolverUnavailableError(f"{solver_obj.name}: {availability.reason}{hint}")
+        raise SolverUnavailableError(f"{solver_obj.name}: {availability.describe()}")
     support = solver_obj.supports(profile_instance(loaded, path), objective)
     if not support.supported:
         raise InstanceNotSupportedError(f"{solver_obj.name}: " + "; ".join(support.reasons))
