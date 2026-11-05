@@ -139,3 +139,17 @@ def test_profile_instance_on_embedded_matrices(toy_cvrp_instance, toy_vrptw_inst
     assert profile.symmetric is True  # the toy matrix is symmetric
     assert profile.coordinates_define_costs is False  # fastest metric
     assert profile_instance(toy_vrptw_instance).problem_type is ProblemType.VRPTW
+
+
+def test_a_cancel_poll_stops_the_solve_without_a_tick() -> None:
+    from mamut_routing_lib.solvers.base import SolveMonitor
+
+    flag = {"cancelled": False}
+    ticks: list = []
+    monitor = SolveMonitor(lambda tick: ticks.append(tick) or False, interval_s=3600.0, cancelled=lambda: flag["cancelled"])
+    assert not monitor.observe(10.0) and not monitor.stop_requested
+    flag["cancelled"] = True
+    assert monitor.stop_requested
+    assert monitor.observe(9.0) and monitor.stopped_early
+    flag["cancelled"] = False
+    assert monitor.stop_requested  # a stop latches

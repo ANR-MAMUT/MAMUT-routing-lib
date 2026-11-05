@@ -381,6 +381,9 @@ class ExternalSolver:
         provenance: dict[str, Any] = {**environment(), "descriptor_sha256": descriptor.sha256(), "descriptor_source": descriptor.source}
         try:
             if monitor is not None:
+                if monitor.stop_requested:  # cancelled before anything was written
+                    return SolveResult(**base, wall_time=time.perf_counter() - started, status="cancelled", stopped_early=True,
+                                       provenance=provenance)
                 monitor.phase("preparing input")
             prepared = self.prepare(request, workdir)
             argv = self.build_argv(prepared, request)

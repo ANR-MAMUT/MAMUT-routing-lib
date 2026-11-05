@@ -93,6 +93,10 @@ class SolveMonitor:
       would go silent the moment the budget expires.
 
     ``best_cost`` is in solver units; ``rescale`` sets the factor that brings it back to instance units.
+
+    ``cancelled`` is a cheap poll (a job's cancel flag, say) read by ``stop_requested`` and by every
+    ``observe`` call, unthrottled: a driver checks it between its own steps (an external solver
+    before and after writing a large input), not only when a tick is due.
     """
 
     def __init__(
@@ -104,8 +108,10 @@ class SolveMonitor:
         budget_s: float | None = None,
         record_trajectory: bool = False,
         trajectory_min_gap_s: float = 0.5,
+        cancelled: Callable[[], bool] | None = None,
     ):
         self._on_tick = on_tick
+        self._cancelled = cancelled
         self._scale = scale if scale and scale > 0 else 1
         self._interval_s = max(0.0, interval_s)
         self._budget_s = budget_s
@@ -160,6 +166,8 @@ class SolveMonitor:
 
     @property
     def stop_requested(self) -> bool:
+        if not self._stop.is_set() and self._cancelled is not None and self._cancelled():
+            self._stop.set()
         return self._stop.is_set()
 
     def request_stop(self) -> None:
@@ -191,7 +199,7 @@ class SolveMonitor:
                 self.best_cost = real_cost
                 if self._record:
                     self._record_point(elapsed, real_cost)
-        if self._stop.is_set():
+        if self.stop_requested:
             self.stopped_early = True
             return True
         if not force and now - self._last_tick < self._interval_s:

@@ -338,3 +338,32 @@ def test_builtin_hgs_reads_the_full_matrix(collection: Path, tmp_path: Path, mon
     missing = ExternalSolver(BUILTIN_DESCRIPTORS["hgs-cvrp"]).availability()
     assert not missing.available and "hgs-cvrp-explicit-matrix.patch" in missing.note
     assert "hgs-cvrp-explicit-matrix.patch" in missing.describe()  # what `solve` prints
+
+
+def test_a_cancel_poll_is_seen_between_steps_not_only_at_ticks(collection: Path, tmp_path: Path, monkeypatch) -> None:
+    """The GUI cancels through a flag: a cancel while a large input is written must not launch the solver."""
+    path = _variant(collection, "CVRP", "fastest")
+    flag = {"cancelled": True}
+    early = tmp_path / "early"
+    solved = run_solver(
+        ExternalSolver(FAKE_LKH), path, time_limit_s=60, workdir=early, keep_artifacts=True,
+        monitor=SolveMonitor(None, interval_s=3600.0, cancelled=lambda: flag["cancelled"]),
+    )
+    assert solved.result.status == "cancelled" and not (early / "problem.vrp").exists()
+
+    flag["cancelled"] = False
+    original = ExternalSolver.prepare
+
+    def prepare(self, request, workdir):  # the user cancels while the input is being written
+        prepared = original(self, request, workdir)
+        flag["cancelled"] = True
+        return prepared
+
+    monkeypatch.setattr(ExternalSolver, "prepare", prepare)
+    late = tmp_path / "late"
+    solved = run_solver(
+        ExternalSolver(FAKE_LKH), path, time_limit_s=60, workdir=late, keep_artifacts=True,
+        monitor=SolveMonitor(None, interval_s=3600.0, cancelled=lambda: flag["cancelled"]),
+    )
+    assert solved.result.status == "cancelled" and (late / "problem.vrp").exists()
+    assert not (late / "solver.log").exists()  # the solver never started
