@@ -150,6 +150,33 @@ def _tail(log_path: Path, limit: int = 4000) -> str:
         return ""
 
 
+def _scan_progress(
+    pattern: re.Pattern[str], text: str, best: float | None, iterations: int | None
+) -> tuple[float | None, int | None]:
+    """Fold the progress lines of ``text`` into the running best cost and iteration count.
+
+    A match whose groups are not numbers (a user ``progress_pattern`` that is too loose) is
+    skipped: progress is a display, and reading it must never end a solve.
+    """
+    for match in pattern.finditer(text):
+        groups = match.groupdict()
+        try:
+            penalty = groups.get("penalty")
+            if penalty is not None and float(penalty) != 0:
+                continue
+            cost = float(groups["cost"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if best is None or cost < best:
+            best = cost
+        if groups.get("iterations"):
+            try:
+                iterations = int(float(groups["iterations"]))
+            except (TypeError, ValueError, OverflowError):
+                pass
+    return best, iterations
+
+
 def run_process(
     argv: Sequence[str],
     *,
@@ -210,19 +237,7 @@ def run_process(
                     if chunk:
                         text = pending + chunk
                         lines, _, pending = text.rpartition("\n")
-                        for match in pattern.finditer(lines):
-                            groups = match.groupdict()
-                            penalty = groups.get("penalty")
-                            if penalty is not None and float(penalty) != 0:
-                                continue
-                            try:
-                                cost = float(groups["cost"])
-                            except (KeyError, TypeError, ValueError):
-                                continue
-                            if best is None or cost < best:
-                                best = cost
-                            if groups.get("iterations"):
-                                iterations = int(float(groups["iterations"]))
+                        best, iterations = _scan_progress(pattern, lines, best, iterations)
                 if monitor is not None and monitor.observe(best, iterations=iterations):
                     termination = "cancelled"
                     kill_process_tree(process, term_grace_s=term_grace_s)
@@ -246,17 +261,7 @@ def run_process(
             _unregister(process)
     if pattern is not None:  # progress lines written right before exit
         chunk, offset = _read_new(log_path, offset)
-        for match in pattern.finditer(pending + chunk):
-            groups = match.groupdict()
-            penalty = groups.get("penalty")
-            if penalty is not None and float(penalty) != 0:
-                continue
-            try:
-                cost = float(groups["cost"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            if best is None or cost < best:
-                best = cost
+        best, iterations = _scan_progress(pattern, pending + chunk, best, iterations)
     if monitor is not None and termination == "exited":
         # The last progress lines usually land right before exit: report the final incumbent.
         monitor.observe(best, iterations=iterations, force=True)

@@ -209,3 +209,11 @@ def test_check_recognises_a_cost_in_scaled_units(toy_cvrp_instance, tmp_path: Pa
     scaled = _sol(tmp_path, f"Route #1: 1 2\nCost {cost * 1000:.0f}\n", "scaled.sol")
     result = _runner().invoke(app, ["check", str(instance), str(scaled)])
     assert result.exit_code == 0 and "x 1000" in result.stderr and "scaled integer units" in result.stderr
+
+
+@pytest.mark.parametrize("text", ["null", "42", '"abc"'])
+def test_check_json_that_is_not_a_solution_exits_2(toy_cvrp_instance, tmp_path: Path, text: str) -> None:
+    instance = _write(toy_cvrp_instance, tmp_path)
+    result = _runner().invoke(app, ["check", str(instance), str(_sol(tmp_path, text, "found.json"))])
+    assert result.exit_code == 2, result.output
+    assert "must be an object with a 'routes' array" in result.stderr

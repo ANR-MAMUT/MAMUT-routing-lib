@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 import threading
 from pathlib import Path
@@ -146,6 +145,15 @@ def test_solver_failures_are_results_not_exceptions(collection: Path, monkeypatc
     solved = run_solver(ExternalSolver(FAKE_LKH), _variant(collection, "CVRP", "fastest"), time_limit_s=5)
     assert solved.result.status == status and message in solved.result.error
     assert not solved.valid
+
+
+def test_a_run_without_a_solution_reports_what_the_solver_said(collection: Path, monkeypatch) -> None:
+    """The work directory and its log are gone by the time the error is read: the error carries the reason."""
+    _env(monkeypatch, FAKE_MODE="crash")
+    solved = run_solver(ExternalSolver(FAKE_LKH), _variant(collection, "CVRP", "fastest"), time_limit_s=5)
+    assert solved.result.status == "failed"
+    assert "no solution file (returncode 3)" in solved.result.error
+    assert "the solver's output ends with: fake solver: mode=crash" in solved.result.error
 
 
 def test_zero_based_ids_are_understood(collection: Path, monkeypatch) -> None:
@@ -367,3 +375,50 @@ def test_a_cancel_poll_is_seen_between_steps_not_only_at_ticks(collection: Path,
     )
     assert solved.result.status == "cancelled" and (late / "problem.vrp").exists()
     assert not (late / "solver.log").exists()  # the solver never started
+
+
+def test_lkh_extra_args_go_to_the_parameter_file_whatever_the_argv(collection: Path, tmp_path: Path) -> None:
+    """A wrapped command (taskset, a launcher script) still gets its extra parameter lines."""
+    from mamut_routing_lib.artifacts import load_benchmark_instance
+    from mamut_routing_lib.solvers.base import SolveRequest
+
+    path = _variant(collection, "CVRP", "fastest")
+    request = SolveRequest(
+        instance=load_benchmark_instance(path), instance_path=path, objective=ObjectiveFunction.MONO_COST, time_limit_s=5,
+    )
+    for argv in (("{executable}", "{params}"), ("taskset", "-c", "0", "{executable}", "{params}")):
+        solver = ExternalSolver(
+            BUILTIN_DESCRIPTORS["lkh3"].with_overrides(
+                executable=str(_executable(tmp_path, "LKH")), argv=argv, extra_args=("RUNS = 10", "POPULATION_SIZE = {5}")
+            )
+        )
+        workdir = tmp_path / f"w{len(argv)}"
+        workdir.mkdir()
+        prepared = solver.prepare(request, workdir)
+        assert prepared.params.read_text().splitlines()[-2:] == ["RUNS = 10", "POPULATION_SIZE = {5}"]
+        assert solver.build_argv(prepared, request)[-1] == str(prepared.params)  # no stray command-line token
+
+
+def test_one_solve_reads_the_distance_matrix_once(collection: Path, monkeypatch) -> None:
+    """The adapter's input, the check and the store share the hydrated instance."""
+    from mamut_routing_lib import distances
+    from mamut_routing_lib.solutions import submit_bks
+
+    reads: list[Path] = []
+    original = distances.load_instance_distances
+
+    def counting(path, *args, **kwargs):
+        reads.append(Path(path))
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(distances, "load_instance_distances", counting)
+    path = _variant(collection, "CVRP", "fastest")
+    solved = run_solver(ExternalSolver(FAKE_LKH), path, time_limit_s=5)
+    assert solved.valid and solved.checkable is not None
+    update = submit_bks(path, solved.result.routes, authors="Ada", checkable=solved.checkable)
+    assert update.action == "created" and len(reads) == 1
+
+    reads.clear()
+    pytest.importorskip("pyvrp")
+    assert run_solver("pyvrp", path, time_limit_s=1).valid
+    assert len(reads) == 1

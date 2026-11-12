@@ -19,6 +19,11 @@ never silently reinterpreted into a different instance.
 ``check_routes`` prices a route set with the reference checker (static or
 time-dependent); ``submit_bks`` stores it through the BKS stores, which only
 ever replace a BKS with a strictly better, re-validated solution.
+
+Reading a large distance matrix, or a time-dependent instance's travel-time
+functions, is the expensive part of a check. ``load_checkable`` does it once;
+``check_routes``, ``preview_bks_update`` and ``submit_bks`` take the result as
+``checkable``, so a caller that checks and then stores reads the data one time.
 """
 
 from __future__ import annotations
@@ -38,6 +43,7 @@ __all__ = [
     "SolutionFormatError",
     "check_routes",
     "is_time_dependent",
+    "load_checkable",
     "normalize_routes",
     "parse_lkh_mtsp_solution",
     "parse_solution_text",
@@ -98,10 +104,16 @@ def parse_solution_text(text: str, *, filename: str = "") -> tuple[list[list[int
             payload = json.loads(stripped)
         except ValueError as error:
             raise SolutionFormatError(f"Not valid JSON: {error}") from error
-        raw_routes = payload if isinstance(payload, list) else payload.get("routes")
+        if isinstance(payload, list):
+            raw_routes, declared = payload, None
+        elif isinstance(payload, dict):
+            raw_routes, declared = payload.get("routes"), payload.get("cost")
+        else:  # null, a number, a string: valid JSON, not a solution
+            raise SolutionFormatError(
+                f"JSON solution must be an object with a 'routes' array or an array of routes, not {stripped[:40]!r}."
+            )
         if not isinstance(raw_routes, list):
             raise SolutionFormatError("JSON solution has no 'routes' array.")
-        declared = None if isinstance(payload, list) else payload.get("cost")
         routes = []
         for route in raw_routes:
             if not isinstance(route, list):
@@ -317,6 +329,24 @@ def is_time_dependent(instance: Any) -> bool:
     return instance_problem_type(instance) in (ProblemType.TDVRP, ProblemType.TDVRPTW)
 
 
+def load_checkable(instance: Any, instance_path: str | Path | None) -> Any:
+    """The instance in the form the reference checker reads.
+
+    A static instance with its collection matrix hydrated from the sidecar
+    (``artifacts.hydrate_collection_instance``; other static instances pass through), or the
+    ``LoadedTDInstance`` of a time-dependent one. Raises what those loaders raise.
+    """
+    if is_time_dependent(instance):
+        from mamut_routing_lib.td import load_td_instance
+
+        if instance_path is None:
+            raise ValueError("Time-dependent instances are loaded from their file; pass instance_path.")
+        return load_td_instance(Path(instance_path))
+    from mamut_routing_lib.artifacts import hydrate_collection_instance
+
+    return hydrate_collection_instance(instance, instance_path)
+
+
 def check_routes(
     instance: Any,
     instance_path: str | Path,
@@ -324,12 +354,15 @@ def check_routes(
     objective_function: ObjectiveFunction | None = None,
     *,
     declared_cost: int | float | None = None,
+    checkable: Any = None,
 ) -> Any:
     """Check ``routes`` (library ids, depot implicit) on the instance at ``instance_path``.
 
     Returns a ``SolutionCheckResult`` (static) or ``TDSolutionCheckResult`` (TD); both expose
     ``status``, ``routing_cost``, ``num_routes``, ``error_message`` and ``is_valid()``. A
     ``declared_cost`` makes the checker refuse any deviation (``objective_value_mismatch``).
+    ``checkable`` is the instance as :func:`load_checkable` returns it, when the caller already
+    holds it; it is loaded here otherwise.
     """
     from mamut_routing_lib.artifacts import get_instance_identifier
     from mamut_routing_lib.models import BenchmarkSolution
@@ -344,17 +377,16 @@ def check_routes(
         )
     except ValueError as error:  # pydantic: a route visits a customer twice, or a bad id
         return _invalid(instance, error)
+    if checkable is None:
+        checkable = load_checkable(instance, path)
     if is_time_dependent(instance):
-        from mamut_routing_lib.td import check_td_solution, load_td_instance
+        from mamut_routing_lib.td import check_td_solution
 
         objective = objective_function or ObjectiveFunction.DURATION
-        loaded = load_td_instance(path)
-        return check_td_solution(loaded, candidate, objective_function=objective)
+        return check_td_solution(checkable, candidate, objective_function=objective)
 
-    from mamut_routing_lib.artifacts import hydrate_collection_instance
     from mamut_routing_lib.checker import check_solution
 
-    checkable = hydrate_collection_instance(instance, path)
     return check_solution(checkable, candidate)
 
 
@@ -388,6 +420,7 @@ def submit_bks(
     objective_function: ObjectiveFunction | None = None,
     metadata: Mapping[str, Any] | None = None,
     instance: Any = None,
+    checkable: Any = None,
 ) -> Any:
     """Store ``routes`` as the BKS of the instance if they strictly improve it.
 
@@ -395,7 +428,9 @@ def submit_bks(
     comparison), TD instances through ``td.save_td_solution_as_bks_if_improved``. The
     objective defaults to the family's published one (``objectives.base_objective``).
     Returns the store's ``BKSUpdateResult``; raises ``ValueError`` for an invalid solution,
-    an objective that does not apply to the instance, or empty ``authors``.
+    an objective that does not apply to the instance, or empty ``authors``. ``checkable``
+    (:func:`load_checkable`, or ``CheckedSolve.checkable`` after a solve) spares the store
+    its own load of the matrix or the travel-time functions.
     """
     from mamut_routing_lib.artifacts import get_instance_identifier, load_benchmark_instance
     from mamut_routing_lib.models import BenchmarkSolution
@@ -416,15 +451,19 @@ def submit_bks(
         from mamut_routing_lib.td import load_td_instance, save_td_solution_as_bks_if_improved
 
         return save_td_solution_as_bks_if_improved(
-            load_td_instance(path),
+            checkable if checkable is not None else load_td_instance(path),
             solution,
             authors=authors,
             metadata=dict(metadata or {}),
             objective_function=objective,
         )
-    from mamut_routing_lib.bks import save_solution_as_bks_if_improved
+    from mamut_routing_lib.bks import create_bks_from_solution, save_bks_if_improved, save_solution_as_bks_if_improved
 
-    return save_solution_as_bks_if_improved(path, objective, solution, authors=authors, metadata=dict(metadata or {}))
+    if checkable is None:
+        return save_solution_as_bks_if_improved(path, objective, solution, authors=authors, metadata=dict(metadata or {}))
+    # The same two steps as save_solution_as_bks_if_improved, on the instance already in hand.
+    bks = create_bks_from_solution(checkable, solution, objective, authors=authors, metadata=dict(metadata or {}))
+    return save_bks_if_improved(checkable, bks, path)
 
 
 def preview_bks_update(
@@ -433,6 +472,7 @@ def preview_bks_update(
     *,
     objective_function: ObjectiveFunction | None = None,
     instance: Any = None,
+    checkable: Any = None,
 ) -> dict[str, Any]:
     """What ``submit_bks`` would do, without writing: ``action`` is ``would_create``,
     ``would_replace``, ``would_keep`` (``tie`` when equal), ``invalid`` (the candidate) or
@@ -449,7 +489,9 @@ def preview_bks_update(
     path = Path(instance_path)
     loaded = instance if instance is not None else load_benchmark_instance(path)
     objective = require_supported_objective(loaded, objective_function or base_objective(loaded))
-    check = check_routes(loaded, path, routes, objective)
+    if checkable is None:  # one load for the candidate, the stored BKS and the exact comparison
+        checkable = load_checkable(loaded, path)
+    check = check_routes(loaded, path, routes, objective, checkable=checkable)
     bks_path = get_bks_path_for_instance(path, objective)
     summary: dict[str, Any] = {
         "objective_function": objective.value,
@@ -467,7 +509,7 @@ def preview_bks_update(
     existing = load_bks(bks_path)
     summary["existing_cost"] = existing.cost
     summary["existing_num_routes"] = existing.num_routes
-    stored_check = check_routes(loaded, path, existing.routes, objective)
+    stored_check = check_routes(loaded, path, existing.routes, objective, checkable=checkable)
     if not stored_check.is_valid():
         # submit_bks refuses to compare against it ("Stored BKS is invalid"): say so instead of guessing.
         return {**summary, "action": "stored_invalid", "error": stored_check.error_message or str(stored_check.status)}
@@ -481,10 +523,8 @@ def preview_bks_update(
             existing.routes, existing_cost, objective
         )
     else:
-        from mamut_routing_lib.artifacts import hydrate_collection_instance
         from mamut_routing_lib.checker import compute_exact_solution_cost, is_better_exact
 
-        checkable = hydrate_collection_instance(loaded, path)
         candidate_exact = compute_exact_solution_cost(checkable, routes)
         existing_exact = compute_exact_solution_cost(checkable, existing.routes)
         better = is_better_exact(routes, candidate_exact, existing.routes, existing_exact, objective)

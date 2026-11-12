@@ -47,6 +47,10 @@ class CheckedSolve:
     instance_name: str
     support_warnings: tuple[str, ...] = ()
     extra: dict[str, Any] = field(default_factory=dict)
+    #: The instance as the checker read it (``solutions.load_checkable``; ``None`` when nothing was
+    #: checked). Pass it to ``submit_bks(..., checkable=...)`` so storing does not load the matrix
+    #: again. It can be large: do not keep many ``CheckedSolve`` objects of big instances alive.
+    checkable: Any = field(default=None, repr=False, compare=False)
 
     @property
     def valid(self) -> bool:
@@ -201,9 +205,10 @@ def run_solver(
         options=dict(options or {}),
     )
     result = solver_obj.solve(request, monitor)
-    check = None
+    check = checkable = None
     if result.routes:
-        check = check_routes(loaded, path, result.routes, objective)
+        checkable = request.checkable()  # already loaded when the adapter needed it for its input
+        check = check_routes(loaded, path, result.routes, objective, checkable=checkable)
     return CheckedSolve(
         result=result,
         check=check,
@@ -211,4 +216,5 @@ def run_solver(
         instance_path=path,
         instance_name=get_instance_identifier(loaded),
         support_warnings=tuple(warnings),
+        checkable=checkable,
     )

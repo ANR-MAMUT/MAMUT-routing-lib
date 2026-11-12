@@ -17,7 +17,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 try:
     import numpy as np
@@ -221,11 +221,14 @@ def _build_method_metadata(
 def _conversion_plan(
     instance: AnyBenchmarkInstance,
     instance_path: str | Path | None,
+    arc_costs: list[list[int]] | list[list[float]] | None = None,
 ) -> tuple[list[list[int]] | list[list[float]], str, int]:
     """(arc costs, round_func, cost scale) for the solve. Slim collection
     instances carry 3-decimal float costs; PyVRP's 'exact' rounding scales
-    them x1000 to integers, so reported solver costs are in milli-units."""
-    arc_costs = _hydrated_arc_costs(instance, instance_path)
+    them x1000 to integers, so reported solver costs are in milli-units.
+    ``arc_costs`` is the instance's matrix when the caller already resolved it."""
+    if arc_costs is None:
+        arc_costs = _hydrated_arc_costs(instance, instance_path)
     weights = np.asarray(arc_costs)
     if np.allclose(weights, np.round(weights)):
         return arc_costs, "none", 1
@@ -282,13 +285,16 @@ def solve_cvrp(
     instance_path: str | Path | None = None,
     monitor: SolveMonitor | None = None,
     initial_routes: list[list[int]] | None = None,
+    arc_costs: list[list[int]] | list[list[float]] | None = None,
 ) -> MethodResult:
     """Solve a CVRP instance with PyVRP's ILS (mono-cost objective only).
 
-    ``initial_routes`` (library ids) warm-start the search.
+    ``initial_routes`` (library ids) warm-start the search. ``arc_costs`` is the instance's
+    matrix when the caller already resolved it (a slim collection instance's sidecar is read
+    here otherwise).
     """
     start_time = time.perf_counter()
-    arc_costs, round_func, scale = _conversion_plan(instance, instance_path)
+    arc_costs, round_func, scale = _conversion_plan(instance, instance_path, arc_costs)
     if monitor is not None:
         monitor.rescale(scale)
     problem = to_pyvrp_problem(instance, round_func=round_func, arc_costs=arc_costs)
@@ -341,11 +347,13 @@ def solve_vrptw(
     instance_path: str | Path | None = None,
     monitor: SolveMonitor | None = None,
     initial_routes: list[list[int]] | None = None,
+    arc_costs: list[list[int]] | list[list[float]] | None = None,
 ) -> MethodResult:
     """Solve a VRPTW instance with PyVRP's ILS.
 
     ``initial_routes`` (library ids) warm-start a MonoCost solve; the hierarchical
     solve builds its own warm start on the minimised fleet and ignores them.
+    ``arc_costs`` is the instance's matrix when the caller already resolved it.
 
     For ObjectiveFunction.MONO_COST, runs a single solve with the full time budget.
     For ObjectiveFunction.HIERARCHICAL_VEHICLE_COST, runs a two-phase solve:
@@ -358,7 +366,7 @@ def solve_vrptw(
          infeasible solutions that use fewer vehicles.
     """
     start_time = time.perf_counter()
-    arc_costs, round_func, scale = _conversion_plan(instance, instance_path)
+    arc_costs, round_func, scale = _conversion_plan(instance, instance_path, arc_costs)
     if monitor is not None:
         monitor.rescale(scale)
     problem = to_pyvrp_problem(instance, round_func=round_func, arc_costs=arc_costs)
@@ -465,13 +473,15 @@ def solve_instance(
     instance_path: str | Path | None = None,
     monitor: SolveMonitor | None = None,
     initial_routes: list[list[int]] | None = None,
+    arc_costs: list[list[int]] | list[list[float]] | None = None,
 ) -> MethodResult:
     """Dispatch to `solve_cvrp` or `solve_vrptw` based on instance type.
 
     For VRPTW instances, `objective_function` defaults to MONO_COST when not provided.
     For CVRP instances, the objective is fixed to MONO_COST regardless of the argument.
     Slim collection instances need `instance_path` when their arc costs live in
-    a distances sidecar. Pass a `SolveMonitor` to observe the search while it runs.
+    a distances sidecar, unless `arc_costs` hands the resolved matrix in. Pass a
+    `SolveMonitor` to observe the search while it runs.
     """
     if isinstance(instance, (BenchmarkInstanceCVRP, BenchmarkInstanceCVRPCollection)):
         return solve_cvrp(
@@ -482,6 +492,7 @@ def solve_instance(
             instance_path=instance_path,
             monitor=monitor,
             initial_routes=initial_routes,
+            arc_costs=arc_costs,
         )
 
     if _is_vrptw_like(instance):
@@ -495,6 +506,7 @@ def solve_instance(
             instance_path=instance_path,
             monitor=monitor,
             initial_routes=initial_routes,
+            arc_costs=arc_costs,
         )
 
     raise TypeError(f"Unsupported instance type: {type(instance).__name__}")

@@ -171,3 +171,27 @@ def test_terminate_all_kills_running_solvers(tmp_path: Path) -> None:
     assert not worker.is_alive()
     # Stopped from another thread (GUI shutdown, Ctrl-C): a cancellation, not a solver failure.
     assert result["outcome"].termination == "cancelled" and result["outcome"].returncode != 0
+
+
+def test_progress_groups_that_are_not_numbers_are_skipped(tmp_path: Path) -> None:
+    """A user pattern that matches other text: progress is a display, it never ends a solve."""
+    import re
+
+    from mamut_routing_lib.solvers.external.process import _scan_progress
+
+    pattern = re.compile(r"^it (?P<iterations>\S+) pen (?P<penalty>\S+) cost (?P<cost>\S+)$", re.MULTILINE)
+    log = "it n/a pen 0 cost 12\nit 3 pen none cost 11\nit 4 pen 0 cost eleven\nit 5 pen 1 cost 9\nit 6 pen 0 cost 10\n"
+    assert _scan_progress(pattern, log, None, None) == (10.0, 6)  # 12 kept its cost; its iteration text is ignored
+
+    solution = tmp_path / "solution.sol"
+    outcome = run_process(
+        [*FAKE, "--problem", str(_problem(tmp_path)), "--solution", str(solution)],
+        cwd=tmp_path,
+        log_path=tmp_path / "solver.log",
+        time_limit_s=10,
+        # Matches "fake solver: mode=ok seed=0" too, with words where numbers are expected.
+        progress_pattern=r"^(?P<penalty>\w+) (?:solver: mode=\w+ seed|cost)=(?P<cost>[0-9.]+)",
+        poll_s=0.05,
+    )
+    assert outcome.termination == "exited" and outcome.returncode == 0 and solution.is_file()
+    assert outcome.best_cost is None

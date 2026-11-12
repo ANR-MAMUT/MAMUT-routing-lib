@@ -25,12 +25,9 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Protocol, runtime_checkable
+from typing import Any, Callable, Literal, Mapping, Protocol, runtime_checkable
 
 from mamut_routing_lib.enums import ObjectiveFunction, ProblemType
-
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    from mamut_routing_lib.artifacts import AnyBenchmarkInstance
 
 __all__ = [
     "INFEASIBLE_COST",
@@ -426,6 +423,21 @@ class SolveRequest:
     keep_artifacts: bool = False
     display: bool = False
     options: Mapping[str, Any] = field(default_factory=dict)
+    _checkable: Any = field(default=None, init=False, repr=False, compare=False)
+
+    def checkable(self) -> Any:
+        """The instance in the form the reference checker reads, loaded once per request.
+
+        A static instance with its collection matrix hydrated from the sidecar, or the
+        ``LoadedTDInstance`` of a time-dependent one (``solutions.load_checkable``). The adapter that
+        writes the solver's input and ``run_solver``'s check share it, so one solve reads a large
+        matrix once. Raises what the loaders raise (a sidecar that is missing, say).
+        """
+        if self._checkable is None:
+            from mamut_routing_lib.solutions import load_checkable
+
+            object.__setattr__(self, "_checkable", load_checkable(self.instance, self.instance_path))
+        return self._checkable
 
 
 @dataclass(frozen=True)

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 import pytest
@@ -235,6 +234,19 @@ def test_relative_paths_are_read_from_the_config_folder(tmp_path: Path, monkeypa
 def test_lkh_extra_args_are_literal_parameter_lines(tmp_path: Path) -> None:
     path = _config(tmp_path, '[solvers.lkh3]\nextra_args = ["SPECIAL = {not a placeholder}"]\n')
     assert configured_descriptors(path)["lkh3"].extra_args == ("SPECIAL = {not a placeholder}",)
+    # The input format decides, not the exact command: a wrapped LKH keeps its parameter lines.
+    wrapped = _config(
+        tmp_path,
+        '[solvers.lkh-pinned]\nextends = "lkh3"\nargv = ["taskset", "-c", "0", "{executable}", "{params}"]\n'
+        'extra_args = ["SPECIAL = {not a placeholder}"]\n',
+        name="wrapped.toml",
+    )
+    assert configured_descriptors(wrapped)["lkh-pinned"].extra_args == ("SPECIAL = {not a placeholder}",)
+    # Any other format formats its extra_args as command-line tokens, placeholders checked.
+    with pytest.raises(SolverConfigError, match="extra_args"):
+        configured_descriptors(
+            _config(tmp_path, '[solvers.filo2]\nextra_args = ["--flag={not a placeholder}"]\n', name="filo.toml")
+        )
 
 
 def _uncommented_tables(text: str) -> str:

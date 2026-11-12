@@ -191,3 +191,51 @@ def test_submit_td(tmp_path: Path) -> None:
     assert preview["action"] == "would_create"
     assert submit_bks(path, [[1], [2]], authors="Tester").action == "created"
     assert preview_bks_update(path, [[1], [2]])["action"] == "would_keep"
+
+
+@pytest.mark.parametrize("text", ["null", "42", '"routes"', "true"])
+def test_json_that_is_not_a_solution_is_a_format_error(text: str) -> None:
+    """Valid JSON, but neither an object nor an array: a format error, never an AttributeError."""
+    with pytest.raises(SolutionFormatError, match="must be an object with a 'routes' array or an array of routes"):
+        parse_solution_text(text, filename="found.json")
+    with pytest.raises(SolutionFormatError):
+        read_solution_text(text, 2, filename="found.json")
+
+
+def _count_sidecar_reads(monkeypatch) -> list[Path]:
+    """Record every read of a distances sidecar (the expensive part of loading a collection instance)."""
+    from mamut_routing_lib import distances
+
+    reads: list[Path] = []
+    original = distances.load_instance_distances
+
+    def counting(path, *args, **kwargs):
+        reads.append(Path(path))
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(distances, "load_instance_distances", counting)
+    return reads
+
+
+def test_check_preview_and_submit_share_one_loaded_instance(tmp_path: Path, monkeypatch) -> None:
+    from collection_utils import write_toy_collection
+
+    from mamut_routing_lib.artifacts import load_benchmark_instance
+    from mamut_routing_lib.solutions import load_checkable
+
+    path = next((write_toy_collection(tmp_path) / "Poryos2026" / "CVRP" / "fastest").rglob("*.vrp.json"))
+    instance = load_benchmark_instance(path)
+    routes = [[customer] for customer in range(1, instance.num_customers + 1)]
+    reads = _count_sidecar_reads(monkeypatch)
+
+    checkable = load_checkable(instance, path)
+    assert len(reads) == 1
+    assert check_routes(instance, path, routes, checkable=checkable).is_valid()
+    assert preview_bks_update(path, routes, instance=instance, checkable=checkable)["action"] == "would_create"
+    update = submit_bks(path, routes, authors="Ada", instance=instance, checkable=checkable)
+    assert update.action == "created" and len(reads) == 1  # nothing read the sidecar again
+
+    # Without it, each call loads once -- preview no longer three times for one question.
+    reads.clear()
+    assert preview_bks_update(path, routes, instance=instance)["action"] == "would_keep"
+    assert len(reads) == 1

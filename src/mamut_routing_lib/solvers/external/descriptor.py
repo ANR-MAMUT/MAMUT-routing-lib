@@ -10,7 +10,8 @@ argv placeholders: ``{executable}`` (absolute path), ``{java}``, ``{jar}``,
 ``{workdir}`` (absolute paths), ``{seed}``, ``{time_limit_s}`` (``30`` or
 ``12.5``), ``{time_limit_int}`` (whole seconds, at least 1), ``{vehicles}``.
 ``fleet_args`` are appended (formatted) when the instance has a fixed fleet,
-then ``extra_args``.
+then ``extra_args`` -- except with ``input_format = "lkh"``, where ``extra_args``
+are literal lines appended to the parameter file, whatever the argv.
 """
 
 from __future__ import annotations

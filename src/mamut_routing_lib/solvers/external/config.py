@@ -128,7 +128,6 @@ _CHOICES = {
 _ARGV_FIELDS = frozenset(
     {"executable", "jar", "java", "python", "problem", "params", "solution", "workdir", "seed", "time_limit_s", "time_limit_int", "vehicles"}
 )
-_LKH_ARGV = ("{executable}", "{params}")
 
 
 @dataclass(frozen=True)
@@ -380,7 +379,8 @@ def _descriptor(
             _check_template(name, "argv", token, _ARGV_FIELDS)
     for token in values.get("fleet_args", ()):
         _check_template(name, "fleet_args", token, _ARGV_FIELDS)
-    if tuple(argv) != _LKH_ARGV:  # otherwise extra_args are literal LKH parameter-file lines
+    input_format = values.get("input_format", parent.input_format if parent else None)
+    if input_format != "lkh":  # with the lkh format, extra_args are literal parameter-file lines
         for token in values.get("extra_args", ()):
             _check_template(name, "extra_args", token, _ARGV_FIELDS)
 

@@ -119,6 +119,8 @@ class PyVRPSolver:
                 instance_path=request.instance_path,
                 monitor=monitor,
                 initial_routes=request.initial_routes,
+                # The matrix the checker will price the routes on: read from its sidecar once.
+                arc_costs=request.checkable().arc_costs,
             )
         except Exception as error:  # noqa: BLE001 - a solver failure is a result, not an exception
             return SolveResult(

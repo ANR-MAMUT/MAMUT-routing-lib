@@ -27,7 +27,6 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
-from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -82,6 +81,12 @@ class PreparedInput:
 
 def _fmt_seconds(value: float) -> str:
     return str(int(value)) if float(value).is_integer() else f"{float(value):g}"
+
+
+def _last_log_lines(log_tail: str, *, lines: int = 3, width: int = 200) -> str:
+    """The last non-empty lines of a solver log on one line, for an error message."""
+    kept = [line.strip() for line in log_tail.splitlines() if line.strip()][-lines:]
+    return " | ".join(line if len(line) <= width else line[: width - 1] + "…" for line in kept)
 
 
 class ExternalSolver:
@@ -181,7 +186,7 @@ class ExternalSolver:
 
     def prepare(self, request: SolveRequest, workdir: Path) -> PreparedInput:
         """Write the solver's input files into ``workdir``; raises ``InstanceNotSupportedError``."""
-        from mamut_routing_lib.artifacts import hydrate_collection_instance, is_collection_instance
+        from mamut_routing_lib.artifacts import is_collection_instance
         from mamut_routing_lib.cvrplib import collection_cost_decimals, is_symmetric_matrix
         from mamut_routing_lib.solvers.external.problem import (
             render_explicit_cvrplib,
@@ -194,7 +199,7 @@ class ExternalSolver:
 
         descriptor = self.descriptor
         instance = request.instance
-        checkable = hydrate_collection_instance(instance, request.instance_path)
+        checkable = request.checkable()  # hydrated once; run_solver's check reuses it
         if int(checkable.depot) != 0:
             raise InstanceNotSupportedError(f"{self.label} needs the depot at index 0 (it is {checkable.depot})")
         matrix = checkable.arc_costs
@@ -296,7 +301,7 @@ class ExternalSolver:
                             solution=solution,
                             seed=request.seed,
                             time_limit_s=request.time_limit_s,
-                            extra=descriptor.extra_args if descriptor.argv == ("{executable}", "{params}") else (),
+                            extra=descriptor.extra_args,  # literal parameter-file lines for this format
                         ),
                     )
                 else:
@@ -356,7 +361,7 @@ class ExternalSolver:
                 argv.append(token.format_map(values))
         if prepared.fixed_fleet is not None:
             argv.extend(token.format_map(values) for token in descriptor.fleet_args)
-        if descriptor.input_format != "lkh" or descriptor.argv != ("{executable}", "{params}"):
+        if descriptor.input_format != "lkh":  # LKH reads its extra_args from the parameter file
             argv.extend(token.format_map(values) for token in descriptor.extra_args)
         return argv
 
@@ -470,6 +475,11 @@ class ExternalSolver:
         if not solution.is_file():
             status = "timeout" if outcome.termination == "timeout" else "failed"
             reason = "the solver hit the hard timeout" if status == "timeout" else f"no solution file (returncode {outcome.returncode})"
+            # The solver's own words are the diagnosis (a rejected input format, a missing library);
+            # the work directory, log included, is usually gone by the time the error is read.
+            said = _last_log_lines(outcome.log_tail)
+            if said:
+                reason += f"; the solver's output ends with: {said}"
             return SolveResult(**common, status=status, error=reason)
         provenance["solution_sha256"] = file_sha256(solution)
         text = solution.read_text(encoding="utf-8", errors="replace")

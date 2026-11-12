@@ -65,7 +65,6 @@ from mamut_routing_lib.enums import BenchmarkName, MetricVariant, ProblemType
 from mamut_routing_lib.models import (
     ArcCostsEuclidean,
     BenchmarkInstance,
-    BenchmarkInstanceCVRP,
     BenchmarkInstanceCVRPCollection,
     BenchmarkInstanceVRPTWCollection,
 )

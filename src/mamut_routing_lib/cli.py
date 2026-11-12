@@ -1388,6 +1388,7 @@ def solve_instances(
                 objective_function=run_objective,
                 metadata=solved.bks_metadata(),
                 instance=record.instance,
+                checkable=solved.checkable,
             )
             bks_label = f"{update.action} (tie)" if update.tie else update.action
         return SolveSummaryRow(
@@ -2072,16 +2073,20 @@ def _warn_objective(instance: Any, objective: ObjectiveFunction) -> None:
         )
 
 
-def _exact_cost_text(instance: Any, instance_path: Path, routes: list[list[int]]) -> str | None:
-    """The static checker's exact decimal cost (``204030.827``, not the float sum ``204030.82699999996``)."""
-    from mamut_routing_lib.artifacts import hydrate_collection_instance
+def _exact_cost_text(instance: Any, instance_path: Path, routes: list[list[int]], checkable: Any = None) -> str | None:
+    """The static checker's exact decimal cost (``204030.827``, not the float sum ``204030.82699999996``).
+
+    ``checkable`` is the hydrated instance when the caller already has it (``solutions.load_checkable``).
+    """
     from mamut_routing_lib.checker import compute_exact_solution_cost
-    from mamut_routing_lib.solutions import is_time_dependent
+    from mamut_routing_lib.solutions import is_time_dependent, load_checkable
 
     if is_time_dependent(instance):
         return None
     try:
-        exact = compute_exact_solution_cost(hydrate_collection_instance(instance, instance_path), routes)
+        if checkable is None:
+            checkable = load_checkable(instance, instance_path)
+        exact = compute_exact_solution_cost(checkable, routes)
     except Exception:  # noqa: BLE001 - the float cost is still printed
         return None
     places = next((k for k in range(31) if (10**k) % exact.denominator == 0), None)
@@ -2160,11 +2165,12 @@ def check_external_solution(
     not trusted. Exit status 0 when valid, 1 when the checker rejects the routes,
     2 when the file cannot be read or does not fit the instance.
     """
-    from mamut_routing_lib.solutions import check_routes
+    from mamut_routing_lib.solutions import check_routes, load_checkable
 
     instance, parsed = _load_external_solution(instance_path, solution_path, ids)
     resolved = _resolve_objective(instance, objective)
-    result = check_routes(instance, instance_path, parsed.routes, resolved)
+    checkable = load_checkable(instance, instance_path)  # read once: the verdict, then the exact cost
+    result = check_routes(instance, instance_path, parsed.routes, resolved, checkable=checkable)
     valid = result.is_valid()
     mismatch = (
         valid
@@ -2177,7 +2183,7 @@ def check_external_solution(
         "status": result.status.value,
         "error": result.error_message or None,
         "cost": result.routing_cost,
-        "exact_cost": _exact_cost_text(instance, instance_path, parsed.routes) if valid else None,
+        "exact_cost": _exact_cost_text(instance, instance_path, parsed.routes, checkable) if valid else None,
         "num_routes": result.num_routes if valid else len(parsed.routes),
         "declared_cost": parsed.declared_cost,
         "declared_cost_matches": None if parsed.declared_cost is None or not valid else not mismatch,

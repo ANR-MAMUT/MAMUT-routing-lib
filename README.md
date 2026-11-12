@@ -146,9 +146,16 @@ print(solved.result.status, solved.result.solver_cost)     # the solver's own re
 
 if solved.valid:                                           # store only if strictly better
     update = submit_bks(solved.instance_path, solved.result.routes,
-                        authors="Your Name (handle)", metadata=solved.bks_metadata())
+                        authors="Your Name (handle)", metadata=solved.bks_metadata(),
+                        checkable=solved.checkable)        # the instance the check already loaded
     print(update.action)                                   # created / replaced / kept_existing
 ```
+
+One solve reads a large distance matrix (or a TD instance's travel-time
+functions) once: the solver's input, the check and, through `checkable=`, the
+store share it. `load_checkable(instance, path)` gives the same object to
+callers that check, preview and submit a solution found elsewhere. It can be
+large, so drop a `CheckedSolve` once it is stored rather than collecting them.
 
 `run_solver` takes any registered name (or a `Solver` object), an optional
 `objective_function` (default MonoCost for static instances, Duration for TD),
@@ -190,8 +197,11 @@ skipped in scans (time-dependent instances for static solvers, road metrics for
 coordinate solvers, ...) and are error rows for explicit paths; so are
 collection instances whose distances sidecar is a sha256 pin missing from the
 tree. A failing instance becomes an `error` row instead of stopping the batch.
-Ctrl-C stops every running solve. Exit status: 0 when every solved instance is
-feasible and checker-valid, 1 when one is not, 2 on usage errors.
+Ctrl-C stops every running solve: external solvers are killed with their
+process group, and so is KAYROS, which runs in a child Python process because
+its search has no stop hook between two incumbents (a stopped solve keeps its
+last incumbent). Exit status: 0 when every solved instance is feasible and
+checker-valid, 1 when one is not, 2 on usage errors.
 
 ### External solvers
 
@@ -248,9 +258,16 @@ published matrix as is (divided by 10, exactly, where a distance exceeds its 1e5
 limit), with the coordinates only for SWAP*'s polar sectors. Coordinate solvers
 get coordinates in a unit that fits their limits (FILO2 millimetres). The
 solver runs in its own process group with a hard timeout (budget + grace) and is
-killed with its children on cancellation. Provenance (command, executable and
-input sha256, scale, version, machine) goes into the run result and into a BKS
-stored from it.
+killed with its children on cancellation. A run that ends without a solution
+file reports the last lines the solver printed (an unpatched build rejecting the
+input, a missing library), since the scratch directory is gone by then.
+Provenance (command, executable and input sha256, scale, version, machine) goes
+into the run result and into a BKS stored from it.
+
+With `input_format = "lkh"`, `extra_args` are literal lines appended to the
+LKH-3 parameter file (`extra_args = ["RUNS = 10"]`), whatever the `argv` -- a
+command wrapped in `taskset` or a launcher script keeps them. For every other
+format they are extra command-line tokens.
 
 ### Solutions found elsewhere
 

@@ -41,7 +41,9 @@ __all__ = [
 ENTRY_POINT_GROUP = "mamut_routing.solvers"
 #: Built-in names, in listing order (the CLI help names these; user config can add more).
 BUILTIN_SOLVERS = ("pyvrp", "kayros", "filo2", "hgs-cvrp", "ails2", "lkh3")
-#: Built-ins that run in this process; the user config refuses these names.
+#: Built-ins that are Python packages, not configured executables (the user config refuses these
+#: names, and a broken config never blocks them). PyVRP runs in this process; KAYROS in a child
+#: Python process, so that a stop request can end it.
 IN_PROCESS_SOLVERS = ("pyvrp", "kayros")
 
 SolverSource = Union[Solver, Callable[[], Solver]]

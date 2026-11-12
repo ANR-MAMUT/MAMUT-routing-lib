@@ -129,6 +129,7 @@ from mamut_routing_lib.remote import (
 from mamut_routing_lib.solutions import (
     SolutionFormatError,
     check_routes,
+    load_checkable,
     parse_solution_text,
     preview_bks_update,
     read_solution_file,
@@ -148,6 +149,7 @@ __all__ = [
     "SolutionFormatError",
     "base_objective",
     "check_routes",
+    "load_checkable",
     "parse_solution_text",
     "preview_bks_update",
     "read_solution_file",
