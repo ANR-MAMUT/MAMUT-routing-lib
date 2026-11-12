@@ -17,11 +17,11 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 try:
     import numpy as np
-    from pyvrp import ProblemData, SolveParams
+    from pyvrp import ProblemData, Solution, SolveParams
     from pyvrp.minimise_fleet import minimise_fleet
     from pyvrp.read import ROUND_FUNCS, _InstanceParser, _ProblemDataBuilder, _RoundingFunc
     from pyvrp.solve import solve as pyvrp_solve
@@ -40,7 +40,6 @@ from mamut_routing_lib.artifacts import (
 )
 from mamut_routing_lib.bks import (
     BKSUpdateResult,
-    DEFAULT_BKS_AUTHORS,
     create_bks_from_solution,
     save_bks_if_improved,
 )
@@ -53,6 +52,7 @@ from mamut_routing_lib.models import (
     BenchmarkInstanceVRPTWCollection,
     BenchmarkSolution,
 )
+from mamut_routing_lib.solvers.base import INFEASIBLE_COST, SolveMonitor, SolveTick
 
 
 __all__ = [
@@ -73,81 +73,8 @@ __all__ = [
 _FLEET_MIN_TIME_FRACTION = 0.3
 _WARM_START_MAX_TIME = 5.0
 
-# PyVRP evaluates an infeasible incumbent at INT_MAX (see pyvrp.stop.FirstFeasible), so any
-# cost at or above this is "nothing feasible found yet" rather than an astronomically bad tour.
-_INFEASIBLE_COST = float(np.iinfo(np.int64).max)
-
-
-@dataclass(frozen=True)
-class SolveTick:
-    """One observation of a running solve, as seen from inside the search loop."""
-
-    phase: str
-    iterations: int
-    elapsed_s: float
-    best_cost: float | None
-
-
-class SolveMonitor:
-    """A PyVRP stopping criterion that reports the incumbent and honours cancellation.
-
-    PyVRP calls the stopping criterion once per iteration with the cost of the best solution
-    so far, which is the only point inside a solve where a caller can learn that anything is
-    happening. This criterion never stops on its own -- the `MaxRuntime` it is paired with
-    still owns the time budget. It relays throttled ticks to `on_tick`, and stops the search
-    only when `on_tick` returns True.
-
-    Compose it *before* `MaxRuntime` in a `MultipleCriteria`: that class uses `any()`, which
-    short-circuits, so a monitor placed second would go silent the moment the budget expires.
-    """
-
-    def __init__(
-        self,
-        on_tick: Callable[[SolveTick], bool],
-        *,
-        scale: int = 1,
-        interval_s: float = 1.0,
-    ):
-        self._on_tick = on_tick
-        self._scale = scale if scale > 0 else 1
-        self._interval_s = max(0.0, interval_s)
-        self._phase = "search"
-        self._iterations = 0
-        self._start = time.perf_counter()
-        # -inf, not the start time: the first iteration should report immediately rather than
-        # leave the caller showing nothing for a whole interval.
-        self._last_tick = float("-inf")
-        self.stopped_early = False
-
-    def phase(self, name: str) -> None:
-        """Name the stage the solve has just entered, and tick immediately so the label lands."""
-        self._phase = name
-        self._last_tick = float("-inf")  # tick on the next iteration so the label lands
-
-    def rescale(self, scale: int) -> None:
-        """Adopt the solve's cost scale, which is only known once the instance is converted."""
-        self._scale = scale if scale > 0 else 1
-
-    @property
-    def elapsed_s(self) -> float:
-        return time.perf_counter() - self._start
-
-    def __call__(self, best_cost: float) -> bool:
-        self._iterations += 1
-        now = time.perf_counter()
-        if now - self._last_tick < self._interval_s:
-            return False
-        self._last_tick = now
-        tick = SolveTick(
-            phase=self._phase,
-            iterations=self._iterations,
-            elapsed_s=now - self._start,
-            best_cost=None if best_cost >= _INFEASIBLE_COST else best_cost / self._scale,
-        )
-        if self._on_tick(tick):
-            self.stopped_early = True
-            return True
-        return False
+# Kept for callers of the private name; the constant now lives in solvers.base.
+_INFEASIBLE_COST = INFEASIBLE_COST
 
 
 def _stop_with(monitor: SolveMonitor | None, *criteria: Any) -> Any:
@@ -258,6 +185,11 @@ def _extract_routes(pyvrp_solution: Any) -> list[list[int]]:
     return routes
 
 
+def extract_routes(pyvrp_solution: Any) -> list[list[int]]:
+    """Public name of ``_extract_routes``: non-empty routes in library ids."""
+    return _extract_routes(pyvrp_solution)
+
+
 def _get_vehicle_fixed_cost(
     num_customers: int,
     arc_costs: list[list[int]] | list[list[float]],
@@ -289,15 +221,59 @@ def _build_method_metadata(
 def _conversion_plan(
     instance: AnyBenchmarkInstance,
     instance_path: str | Path | None,
+    arc_costs: list[list[int]] | list[list[float]] | None = None,
 ) -> tuple[list[list[int]] | list[list[float]], str, int]:
     """(arc costs, round_func, cost scale) for the solve. Slim collection
     instances carry 3-decimal float costs; PyVRP's 'exact' rounding scales
-    them x1000 to integers, so reported solver costs are in milli-units."""
-    arc_costs = _hydrated_arc_costs(instance, instance_path)
+    them x1000 to integers, so reported solver costs are in milli-units.
+    ``arc_costs`` is the instance's matrix when the caller already resolved it."""
+    if arc_costs is None:
+        arc_costs = _hydrated_arc_costs(instance, instance_path)
     weights = np.asarray(arc_costs)
     if np.allclose(weights, np.round(weights)):
         return arc_costs, "none", 1
     return arc_costs, "exact", 1000
+
+
+def conversion_plan(
+    instance: AnyBenchmarkInstance,
+    instance_path: str | Path | None,
+) -> tuple[list[list[int]] | list[list[float]], str, int]:
+    """Public name of ``_conversion_plan``: (arc costs, round_func, cost scale)."""
+    return _conversion_plan(instance, instance_path)
+
+
+def scale_is_exact(arc_costs: list[list[int]] | list[list[float]], scale: int) -> bool:
+    """Whether ``scale`` turns every arc cost into an integer without rounding.
+
+    False for full-precision float matrices (e.g. Sintef2008), which PyVRP's
+    ``exact`` rounding approximates to the nearest milli-unit.
+    """
+    weights = np.asarray(arc_costs, dtype=np.float64) * scale
+    return bool(np.all(np.abs(weights - np.round(weights)) <= 1e-9 * np.maximum(1.0, np.abs(weights))))
+
+
+def _warm_start(problem: ProblemData, initial_routes: list[list[int]] | None) -> Any:
+    """A PyVRP ``Solution`` from library routes (depot 0, customers 1..n), or None."""
+    if not initial_routes:
+        return None
+    routes = [[int(stop) for stop in route] for route in initial_routes if route]
+    stops = [stop for route in routes for stop in route]
+    expected = set(range(1, int(problem.num_clients) + 1))
+    repeated = sorted({stop for stop in stops if stops.count(stop) > 1}) if len(stops) != len(set(stops)) else []
+    missing = sorted(expected - set(stops))
+    foreign = sorted(set(stops) - expected)
+    if repeated or missing or foreign:
+        # PyVRP would start from an incomplete solution and could hand it back as the result.
+        problems = []
+        if missing:
+            problems.append(f"{len(missing)} customer(s) missing (first: {', '.join(map(str, missing[:5]))})")
+        if repeated:
+            problems.append(f"customer(s) {', '.join(map(str, repeated[:5]))} visited more than once")
+        if foreign:
+            problems.append(f"stop id(s) {', '.join(map(str, foreign[:5]))} outside 1..{len(expected)}")
+        raise ValueError(f"initial_routes must visit every customer exactly once: {'; '.join(problems)}")
+    return Solution(problem, routes)
 
 
 def solve_cvrp(
@@ -308,10 +284,17 @@ def solve_cvrp(
     display: bool = False,
     instance_path: str | Path | None = None,
     monitor: SolveMonitor | None = None,
+    initial_routes: list[list[int]] | None = None,
+    arc_costs: list[list[int]] | list[list[float]] | None = None,
 ) -> MethodResult:
-    """Solve a CVRP instance with PyVRP's ILS (mono-cost objective only)."""
+    """Solve a CVRP instance with PyVRP's ILS (mono-cost objective only).
+
+    ``initial_routes`` (library ids) warm-start the search. ``arc_costs`` is the instance's
+    matrix when the caller already resolved it (a slim collection instance's sidecar is read
+    here otherwise).
+    """
     start_time = time.perf_counter()
-    arc_costs, round_func, scale = _conversion_plan(instance, instance_path)
+    arc_costs, round_func, scale = _conversion_plan(instance, instance_path, arc_costs)
     if monitor is not None:
         monitor.rescale(scale)
     problem = to_pyvrp_problem(instance, round_func=round_func, arc_costs=arc_costs)
@@ -321,6 +304,7 @@ def solve_cvrp(
         seed=seed,
         collect_stats=False,
         display=display,
+        initial_solution=_warm_start(problem, initial_routes),
     )
     wall_time = time.perf_counter() - start_time
     is_feasible = result.is_feasible()
@@ -343,7 +327,12 @@ def solve_cvrp(
             ObjectiveFunction.MONO_COST,
             seed=seed,
             time_limit_s=time_limit_s,
-            extra={"arc_cost_scale": scale} if scale != 1 else None,
+            extra={
+                **({"arc_cost_scale": scale} if scale != 1 else {}),
+                "cost_exact": scale_is_exact(arc_costs, scale),
+                **({"warm_start": True} if initial_routes else {}),
+                **({"solver_distance": int(result.best.distance())} if is_feasible else {}),
+            },
         ),
     )
 
@@ -357,8 +346,14 @@ def solve_vrptw(
     display: bool = False,
     instance_path: str | Path | None = None,
     monitor: SolveMonitor | None = None,
+    initial_routes: list[list[int]] | None = None,
+    arc_costs: list[list[int]] | list[list[float]] | None = None,
 ) -> MethodResult:
     """Solve a VRPTW instance with PyVRP's ILS.
+
+    ``initial_routes`` (library ids) warm-start a MonoCost solve; the hierarchical
+    solve builds its own warm start on the minimised fleet and ignores them.
+    ``arc_costs`` is the instance's matrix when the caller already resolved it.
 
     For ObjectiveFunction.MONO_COST, runs a single solve with the full time budget.
     For ObjectiveFunction.HIERARCHICAL_VEHICLE_COST, runs a two-phase solve:
@@ -371,7 +366,7 @@ def solve_vrptw(
          infeasible solutions that use fewer vehicles.
     """
     start_time = time.perf_counter()
-    arc_costs, round_func, scale = _conversion_plan(instance, instance_path)
+    arc_costs, round_func, scale = _conversion_plan(instance, instance_path, arc_costs)
     if monitor is not None:
         monitor.rescale(scale)
     problem = to_pyvrp_problem(instance, round_func=round_func, arc_costs=arc_costs)
@@ -386,6 +381,7 @@ def solve_vrptw(
             collect_stats=False,
             display=display,
             params=params,
+            initial_solution=_warm_start(problem, initial_routes),
         )
     else:
         fleet_budget = max(1.0, float(time_limit_s) * _FLEET_MIN_TIME_FRACTION)
@@ -450,7 +446,19 @@ def solve_vrptw(
             objective_function,
             seed=seed,
             time_limit_s=time_limit_s,
-            extra={"vehicle_penalty": vehicle_penalty, **({"arc_cost_scale": scale} if scale != 1 else {})},
+            extra={
+                "vehicle_penalty": vehicle_penalty,
+                **({"arc_cost_scale": scale} if scale != 1 else {}),
+                "cost_exact": scale_is_exact(arc_costs, scale),
+                **(
+                    {"warm_start": True}
+                    if initial_routes and objective_function == ObjectiveFunction.MONO_COST
+                    else {}
+                ),
+                # Routing cost of the returned solution in solver units, without the hierarchical
+                # fleet cost (which the phase-1 fallback result does not carry at all).
+                **({"solver_distance": int(result.best.distance())} if is_feasible else {}),
+            },
         ),
     )
 
@@ -464,13 +472,16 @@ def solve_instance(
     display: bool = False,
     instance_path: str | Path | None = None,
     monitor: SolveMonitor | None = None,
+    initial_routes: list[list[int]] | None = None,
+    arc_costs: list[list[int]] | list[list[float]] | None = None,
 ) -> MethodResult:
     """Dispatch to `solve_cvrp` or `solve_vrptw` based on instance type.
 
     For VRPTW instances, `objective_function` defaults to MONO_COST when not provided.
     For CVRP instances, the objective is fixed to MONO_COST regardless of the argument.
     Slim collection instances need `instance_path` when their arc costs live in
-    a distances sidecar. Pass a `SolveMonitor` to observe the search while it runs.
+    a distances sidecar, unless `arc_costs` hands the resolved matrix in. Pass a
+    `SolveMonitor` to observe the search while it runs.
     """
     if isinstance(instance, (BenchmarkInstanceCVRP, BenchmarkInstanceCVRPCollection)):
         return solve_cvrp(
@@ -480,6 +491,8 @@ def solve_instance(
             display=display,
             instance_path=instance_path,
             monitor=monitor,
+            initial_routes=initial_routes,
+            arc_costs=arc_costs,
         )
 
     if _is_vrptw_like(instance):
@@ -492,6 +505,8 @@ def solve_instance(
             display=display,
             instance_path=instance_path,
             monitor=monitor,
+            initial_routes=initial_routes,
+            arc_costs=arc_costs,
         )
 
     raise TypeError(f"Unsupported instance type: {type(instance).__name__}")
@@ -504,10 +519,12 @@ def solve_and_update_bks(
     time_limit_s: int,
     seed: int = 42,
     objective_function: ObjectiveFunction | None = None,
-    authors: str = DEFAULT_BKS_AUTHORS,
+    authors: str,
     display: bool = False,
 ) -> tuple[MethodResult, BKSUpdateResult | None]:
     """Solve an instance and, if the solution is feasible, write a BKS file in place.
+
+    ``authors`` (who to credit in the BKS) is required: a stored BKS is published.
 
     Returns the `MethodResult` and a `BKSUpdateResult` (or None if the solver did not
     return a feasible solution). The BKS file path is derived from `instance_path`

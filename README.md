@@ -116,73 +116,175 @@ or `MAMUT_ROUTING_ROOT`. Remote flags `--repo`, `--token`, and `--tag` are read
 from `MAMUT_ROUTING_RELEASE_REPO` and `MAMUT_ROUTING_GITHUB_TOKEN` where
 applicable.
 
-## Solving with PyVRP
+## Solving: PyVRP, KAYROS and external solvers
 
-An optional `[pyvrp]` extra wraps PyVRP's HGS metaheuristic so users can solve
-CVRP and VRPTW instances directly from the library.
+Solvers are looked up by name in one registry and run behind one protocol;
+every solution is priced by the reference checker before it is reported or
+stored, whatever the solver claims.
+
+| Solver | Solves | Needs |
+|---|---|---|
+| `pyvrp` (default) | CVRP (MonoCost), VRPTW (MonoCost, HierarchicalVehicleCost) | the `[pyvrp]` extra |
+| `kayros` | TDVRP, TDVRPTW (Duration) | `pip install kayros` |
+| `hgs-cvrp` | CVRP (MonoCost), any metric (the published matrix, asymmetric included) | a build with the lib's full-matrix reader patch (`mamut-routing solvers list` prints its path) |
+| `filo2`, `ails2` | CVRP (MonoCost), euclidean-metric variants (they compute distances from coordinates) | the executable (AILS-II: a jar with the `-seed`/`-out` patch) |
+| `lkh3` | CVRP and VRPTW (MonoCost), any metric (explicit integer matrices, asymmetric included) | the `LKH` executable |
 
 ```bash
-# Python API only
-pip install "mamut-routing-lib[pyvrp]"
-
-# Both the CLI (mamut-routing solve) and the API
 pip install "mamut-routing-lib[cli,pyvrp]"
+mamut-routing solvers list          # what is available here, and how to enable the rest
 ```
 
 Python:
 
 ```python
-from mamut_routing_lib import load_benchmark_instance, ObjectiveFunction
-from mamut_routing_lib.solvers.pyvrp import solve_instance, solve_and_update_bks
+from mamut_routing_lib import run_solver, submit_bks
 
-instance = load_benchmark_instance("path/to/instance.vrp.json")
-result = solve_instance(instance, time_limit_s=30, seed=42)
-print(result.solver_is_feasible, result.solver_cost, result.route_count)
+solved = run_solver("pyvrp", "path/to/instance.vrp.json", time_limit_s=30, seed=42)
+print(solved.valid, solved.cost, solved.num_routes)        # the checker's verdict and cost
+print(solved.result.status, solved.result.solver_cost)     # the solver's own report
 
-# Or solve-and-write-BKS in one call
-result, update = solve_and_update_bks(
-    instance,
-    instance_path="path/to/instance.vrp.json",
-    time_limit_s=30,
-    seed=42,
-    objective_function=ObjectiveFunction.HIERARCHICAL_VEHICLE_COST,
-)
-print(update.action if update else "infeasible")
+if solved.valid:                                           # store only if strictly better
+    update = submit_bks(solved.instance_path, solved.result.routes,
+                        authors="Your Name (handle)", metadata=solved.bks_metadata(),
+                        checkable=solved.checkable)        # the instance the check already loaded
+    print(update.action)                                   # created / replaced / kept_existing
 ```
 
-CLI (requires `[cli,pyvrp]`):
+One solve reads a large distance matrix (or a TD instance's travel-time
+functions) once: the solver's input, the check and, through `checkable=`, the
+store share it. `load_checkable(instance, path)` gives the same object to
+callers that check, preview and submit a solution found elsewhere. It can be
+large, so drop a `CheckedSolve` once it is stored rather than collecting them.
+
+`run_solver` takes any registered name (or a `Solver` object), an optional
+`objective_function` (default MonoCost for static instances, Duration for TD),
+a `SolveMonitor` for live progress and cancellation, and `initial_routes` for
+warm starts (PyVRP). The PyVRP functions of `mamut_routing_lib.solvers.pyvrp`
+(`solve_instance`, `solve_cvrp`, `solve_vrptw`, `solve_and_update_bks`, which
+now requires `authors=`) remain available.
+
+CLI:
 
 ```bash
-# Inspect what's locally available before solving
-mamut-routing --benchmarks-dir ./benchmarks list \
-    --problem-type CVRP --benchmark-name Poryos2026
+# Solve; nothing is written unless asked
+mamut-routing solve path/to/inst.vrp.json --time-limit-s 30 --seed 42
 
-# Include source file paths in the table when needed
-mamut-routing --benchmarks-dir ./benchmarks list --show-path
+# Keep the solutions (routes, checker verdict, provenance), to check or submit later
+mamut-routing solve path/to/inst.vrp.json --output-dir runs/
+mamut-routing bks submit path/to/inst.vrp.json runs/<instance-id>.pyvrp-seed42.json --authors "Your Name (handle)"
 
-# Pipe the matching paths into solve
-mamut-routing --benchmarks-dir ./benchmarks list \
-    --problem-type CVRP --paths-only \
-    | xargs -r mamut-routing solve --time-limit-s 30
-
-# Solve specific instances
-mamut-routing solve path/to/inst1.vrp.json path/to/inst2.vrp.json \
-    --time-limit-s 30 --seed 42
-
-# Or discover under --benchmarks-dir and filter (Sintef2008 BKS use the
-# hierarchical objective)
+# Store improvements as BKS (credited to --authors, or $MAMUT_ROUTING_BKS_AUTHORS)
 mamut-routing --benchmarks-dir ./benchmarks solve \
     --problem-type VRPTW --benchmark-name Sintef2008 \
-    --objective hierarchicalvehiclecost \
-    --time-limit-s 60
+    --objective hierarchicalvehiclecost --time-limit-s 60 \
+    --save-bks --authors "Your Name (handle)"
+
+# Another solver, from the solvers config
+mamut-routing solve path/to/inst.vrp.json --solver lkh3 --time-limit-s 60
+
+# Pipe the matching paths into solve
+mamut-routing --benchmarks-dir ./benchmarks list --problem-type CVRP --paths-only \
+    | xargs -r mamut-routing solve --time-limit-s 30
 ```
 
-`solve` covers CVRP and VRPTW: scanned time-dependent instances are skipped
-with a warning (an explicit TD path is an error), and so are collection
-instances whose distances sidecar is a sha256 pin not present in the tree. A
-failing instance becomes an `error` row instead of stopping the batch; the
-table and a summary line are always printed. Exit status: 0 when every solved
-instance is feasible, 1 when one is infeasible or errors, 2 on usage errors.
+The COST column is the checker's cost and GAP its distance to the BKS stored
+before the solve (`no BKS` when there is none; under HierarchicalVehicleCost a
+different route count shows as `+1 veh`). The BKS column says what the store did
+(`not saved` without `--save-bks`). `--time-limit` and `--update-bks` are
+accepted as aliases, the names `mamut-tools solve` used. Instances a solver cannot take are
+skipped in scans (time-dependent instances for static solvers, road metrics for
+coordinate solvers, ...) and are error rows for explicit paths; so are
+collection instances whose distances sidecar is a sha256 pin missing from the
+tree. A failing instance becomes an `error` row instead of stopping the batch.
+Ctrl-C stops every running solve: external solvers are killed with their
+process group, and so is KAYROS, which runs in a child Python process because
+its search has no stop hook between two incumbents (a stopped solve keeps its
+last incumbent). Exit status: 0 when every solved instance is feasible and
+checker-valid, 1 when one is not, 2 on usage errors.
+
+### External solvers
+
+External executables are declared in a TOML file: `--solvers-config PATH`,
+else `$MAMUT_ROUTING_SOLVERS_CONFIG` (empty disables it), else
+`$XDG_CONFIG_HOME/mamut-routing/solvers.toml` (`~/.config/...`). It is never
+read from the working directory: it names programs that will be run.
+`mamut-routing solvers init` writes a commented starter there (one table per
+built-in solver, with its build notes), and `mamut-routing solvers list` shows
+what is available and how to enable the rest.
+
+```toml
+schema_version = 1
+
+[solvers.filo2]
+executable = "/opt/filo2/build/filo2"   # built with -DENABLE_TIMELIMIT=ON
+version = "43653e2"
+
+[solvers.hgs-cvrp]
+executable = "/opt/HGS-CVRP/build/hgs"   # with patches/hgs-cvrp-explicit-matrix.patch applied
+
+[solvers.ails2]
+jar = "/opt/ails2/AILSII.jar"           # the -seed/-out patched build
+java = "/opt/jdk-21/bin/java"
+
+[solvers.lkh3]
+executable = "/opt/LKH-3/LKH"
+
+[solvers.my-solver]                     # any solver reading/writing CVRPLIB files
+executable = "/opt/mine/solve"
+argv = ["{executable}", "{problem}", "{solution}", "{time_limit_s}", "{seed}"]
+input_format = "cvrplib-explicit"       # cvrplib-x | cvrplib-explicit | lkh
+output_format = "cvrplib-sol"           # cvrplib-sol | lkh-mtsp
+problem_types = ["CVRP"]
+# symmetric_only = false                # only if it really reads asymmetric FULL_MATRIX files
+```
+
+Relative paths are read from the config file's folder; a bare executable name is looked up on PATH. Unknown keys
+and mistyped values (`fleet_limit = "false"`) are errors, with a suggestion for near-miss keys; an error in one
+`[solvers.<name>]` table disables that solver only (`solvers list` shows why), and `extends` may name a table defined
+anywhere in the file.
+
+A solver declared in the config is `symmetric_only = true` unless it says otherwise, so the asymmetric
+road-network variants (`fastest`, `shortest`) are refused for it rather than handed over as a `TYPE : CVRP` file a
+symmetric solver would misread; `extends = "lkh3"` inherits LKH-3's asymmetric support.
+
+Each run writes the solver's input into a scratch directory
+(`--keep-artifacts DIR` keeps it), scaled to the integers the solver needs:
+exactly (x1000 for 3-decimal matrices; the solver's cost then unscales exactly
+and is cross-checked) when the solver's limits allow, otherwise approximately --
+conservatively for time windows, so a schedule the solver finds feasible is
+feasible on the published data. HGS-CVRP computes in doubles, so it reads the
+published matrix as is (divided by 10, exactly, where a distance exceeds its 1e5
+limit), with the coordinates only for SWAP*'s polar sectors. Coordinate solvers
+get coordinates in a unit that fits their limits (FILO2 millimetres). The
+solver runs in its own process group with a hard timeout (budget + grace) and is
+killed with its children on cancellation. A run that ends without a solution
+file reports the last lines the solver printed (an unpatched build rejecting the
+input, a missing library), since the scratch directory is gone by then.
+Provenance (command, executable and input sha256, scale, version, machine) goes
+into the run result and into a BKS stored from it.
+
+With `input_format = "lkh"`, `extra_args` are literal lines appended to the
+LKH-3 parameter file (`extra_args = ["RUNS = 10"]`), whatever the `argv` -- a
+command wrapped in `taskset` or a launcher script keeps them. For every other
+format they are extra command-line tokens.
+
+### Solutions found elsewhere
+
+```bash
+mamut-routing check path/to/inst.vrp.json found.sol         # exit 0 valid, 1 invalid, 2 unreadable
+mamut-routing bks submit path/to/inst.vrp.json found.sol \
+    --authors "Your Name (handle)" --method "LKH-3" --dry-run
+```
+
+Both read CVRPLIB `.sol` files (`Route #k: ...` and `Cost ...`, exponents
+accepted), JSON routes and LKH-3 MTSP solution files, and map 1-based,
+0-based or depot-marked stop ids onto the instance (`--ids` forces one). The
+objective defaults to the one the family publishes its BKS under. A file written
+by `solve --output-dir` brings its run's provenance into `bks submit`; `--meta`
+cannot set the fields the store writes itself (`authors`, `date`,
+`validated_cost`, ...). `--dry-run` also re-checks the stored BKS
+(`stored_invalid` when it fails the checker).
 
 ## Exporting to CVRPLIB `.vrp` (classic solvers)
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import time
 import tomllib
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
@@ -76,6 +77,17 @@ bks_app = typer.Typer(
 )
 app.add_typer(bks_app, name="bks")
 
+solvers_app = typer.Typer(
+    help="Registered solvers: PyVRP, KAYROS and external executables (solvers config).",
+    no_args_is_help=True,
+)
+app.add_typer(solvers_app, name="solvers")
+
+SOLVERS_CONFIG_HELP = (
+    "Solvers config TOML (default: $MAMUT_ROUTING_SOLVERS_CONFIG, then "
+    "$XDG_CONFIG_HOME/mamut-routing/solvers.toml). Never read from the working directory."
+)
+
 
 def _get_package_version() -> str:
     package_name = "mamut-routing-lib"
@@ -138,6 +150,11 @@ class SolveSummaryRow:
     wall_time: float
     bks_label: str
     detail: str = ""
+    #: Gap to the BKS stored before this solve, under the run's objective ("" when not computed).
+    gap: str = ""
+    #: Negative gap: the solution beats the stored BKS (or there is none to beat).
+    improves: bool = False
+    solution_path: Path | None = None
 
 
 T = TypeVar("T")
@@ -690,6 +707,7 @@ def _run_with_time_progress(
     time_limit_s: int,
     enabled: bool,
     operation: Callable[[], T],
+    on_interrupt: Callable[[], None] | None = None,
 ) -> T:
     if not enabled:
         return operation()
@@ -698,31 +716,40 @@ def _run_with_time_progress(
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(operation)
         started_at = time.monotonic()
-        with tqdm(
-            total=float(time_limit_s),
-            desc=f"{desc} ({time_limit_s}s left)",
-            unit="s",
-            leave=False,
-            dynamic_ncols=True,
-            mininterval=0.2,
-            bar_format="{desc}: {percentage:3.0f}%|{bar}|",
-            file=sys.stderr,
-        ) as bar:
-            while not future.done():
-                elapsed = time.monotonic() - started_at
-                target = min(elapsed, float(time_limit_s))
-                remaining = max(0.0, float(time_limit_s) - elapsed)
-                bar.n = target
-                bar.set_description_str(f"{desc} ({remaining:.0f}s left)", refresh=False)
-                bar.refresh()
-                time.sleep(0.2)
-
-            elapsed = min(time.monotonic() - started_at, float(time_limit_s))
-            if elapsed > bar.n:
-                bar.n = elapsed
-                bar.refresh()
-
+        try:
+            _show_time_progress(future, desc=desc, time_limit_s=time_limit_s, started_at=started_at)
+        except KeyboardInterrupt:
+            # Stop the solve before the executor's exit waits for it, or Ctrl-C hangs until the budget runs out.
+            if on_interrupt is not None:
+                on_interrupt()
+            raise
         return future.result()
+
+
+def _show_time_progress(future: Any, *, desc: str, time_limit_s: int, started_at: float) -> None:
+    with tqdm(
+        total=float(time_limit_s),
+        desc=f"{desc} ({time_limit_s}s left)",
+        unit="s",
+        leave=False,
+        dynamic_ncols=True,
+        mininterval=0.2,
+        bar_format="{desc}: {percentage:3.0f}%|{bar}|",
+        file=sys.stderr,
+    ) as bar:
+        while not future.done():
+            elapsed = time.monotonic() - started_at
+            target = min(elapsed, float(time_limit_s))
+            remaining = max(0.0, float(time_limit_s) - elapsed)
+            bar.n = target
+            bar.set_description_str(f"{desc} ({remaining:.0f}s left)", refresh=False)
+            bar.refresh()
+            time.sleep(0.2)
+
+        elapsed = min(time.monotonic() - started_at, float(time_limit_s))
+        if elapsed > bar.n:
+            bar.n = elapsed
+            bar.refresh()
 
 
 def _default_solve_jobs() -> int:
@@ -730,6 +757,86 @@ def _default_solve_jobs() -> int:
     if cpu_count is None:
         return 1
     return max(1, cpu_count - 2)
+
+
+def _unique_record_names(records: list[LocalInstanceRecord]) -> dict[int, str]:
+    """A file-name-safe name per selected instance, never shared by two of them.
+
+    Instance ids repeat when the layout cannot be read from the path (explicit files outside a
+    benchmarks tree, metric variants of one instance): those get a short hash of their path.
+    """
+    import hashlib
+
+    counts: dict[str, int] = {}
+    for record in records:
+        counts[record.instance_id] = counts.get(record.instance_id, 0) + 1
+    names: dict[int, str] = {}
+    for record in records:
+        name = record.instance_id.replace(os.sep, "_")
+        if counts[record.instance_id] > 1:
+            name = f"{name}-{hashlib.sha256(str(record.path.resolve()).encode()).hexdigest()[:8]}"
+        names[id(record)] = name
+    return names
+
+
+def _artifact_workdirs(records: list[LocalInstanceRecord], root: Path | None, leaf: str) -> dict[int, Path]:
+    """One ``--keep-artifacts`` folder per selected instance, never shared by two of them."""
+    if root is None:
+        return {}
+    base = root.resolve()
+    return {key: base / name / leaf for key, name in _unique_record_names(records).items()}
+
+
+def _stored_bks(record: LocalInstanceRecord, objective: ObjectiveFunction) -> tuple[float | None, int | None] | None:
+    """(cost, routes) of the BKS stored for ``objective``; ``None`` when there is none."""
+    from mamut_routing_lib.artifacts import get_bks_path_for_instance, load_bks
+
+    path = get_bks_path_for_instance(record.path, objective)
+    if not path.is_file():
+        return None
+    try:
+        bks = load_bks(path)
+    except Exception:  # noqa: BLE001 - an unreadable BKS only blanks the gap
+        return (None, None)
+    return (float(bks.cost) if bks.cost is not None else None, bks.num_routes)
+
+
+def _gap_to_bks(
+    cost: float, routes: int, reference: tuple[float | None, int | None] | None, objective: ObjectiveFunction
+) -> tuple[str, bool]:
+    """("+1.23%", improves) against the stored BKS; hierarchical objectives compare routes first."""
+    if reference is None:
+        return "no BKS", True
+    bks_cost, bks_routes = reference
+    if objective == ObjectiveFunction.HIERARCHICAL_VEHICLE_COST and bks_routes is not None and routes != bks_routes:
+        return f"{routes - bks_routes:+d} veh", routes < bks_routes
+    if bks_cost is None or bks_cost == 0:
+        return "?", False
+    if cost == bks_cost:
+        return "0.00%", False
+    gap = (float(cost) - bks_cost) / abs(bks_cost) * 100.0
+    text = f"{gap:+.2f}%" if abs(gap) >= 0.005 else ("-<0.01%" if gap < 0 else "+<0.01%")
+    return text, gap < 0
+
+
+def _write_solution_file(path: Path, record: LocalInstanceRecord, solved: Any, objective: ObjectiveFunction) -> None:
+    """The routes and their provenance, as a JSON solution `check` and `bks submit` read back."""
+    from mamut_routing_lib.json_utils import save_json_to_file
+
+    solution = solved.to_solution(
+        metadata={
+            "written_by": f"mamut-routing solve ({_get_package_version()})",
+            "instance_id": record.instance_id,
+            "instance_path": str(record.path.resolve()),
+            "objective_function": objective.value,
+            "validation": solved.validation_status,
+            "checker_cost": solved.cost,
+            "status": solved.result.status,
+            "bks_metadata": solved.bks_metadata(),
+        }
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    save_json_to_file(solution.model_dump(mode="json"), path)
 
 
 def _duplicate_resolved_paths(records: list[LocalInstanceRecord]) -> list[Path]:
@@ -882,6 +989,14 @@ def list_instances(
         typer.echo(f"  Customer sizes : {size_fmt}")
 
 
+SOLVER_HELP = (
+    "Solver to run: pyvrp (default; CVRP/VRPTW), kayros (TDVRP/TDVRPTW Duration), or an external "
+    "executable -- filo2, ails2 (CVRP, euclidean variants), hgs-cvrp (CVRP, any metric; patched reader), "
+    "lkh3 (CVRP/VRPTW) -- configured in the solvers config. `mamut-routing solvers list` shows what is "
+    "available here."
+)
+
+
 @app.command("solve")
 def solve_instances(
     ctx: typer.Context,
@@ -894,7 +1009,7 @@ def solve_instances(
     ] = None,
     problem_type: Annotated[
         Optional[ProblemType],
-        typer.Option("--problem-type", case_sensitive=False, help="Filter by CVRP or VRPTW."),
+        typer.Option("--problem-type", case_sensitive=False, help="Filter by problem type."),
     ] = None,
     benchmark_name: Annotated[
         Optional[BenchmarkName],
@@ -912,23 +1027,55 @@ def solve_instances(
         Optional[str],
         typer.Option("--instance-name", help="Filter by exact stored instance name."),
     ] = None,
+    solver: Annotated[str, typer.Option("--solver", help=SOLVER_HELP)] = "pyvrp",
+    solvers_config: Annotated[Optional[Path], typer.Option("--solvers-config", help=SOLVERS_CONFIG_HELP)] = None,
+    keep_artifacts: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--keep-artifacts",
+            help="Keep each external solver's input, output and log under DIR/<instance-id>/ (debugging, audits).",
+        ),
+    ] = None,
     objective: Annotated[
-        ObjectiveFunction,
+        Optional[ObjectiveFunction],
         typer.Option(
             "--objective",
             case_sensitive=False,
-            help="VRPTW objective. CVRP forces MonoCost regardless.",
+            help="Objective. Default: MonoCost for CVRP/VRPTW (CVRP is always MonoCost), Duration for TD instances.",
         ),
-    ] = ObjectiveFunction.MONO_COST,
+    ] = None,
     time_limit_s: Annotated[
         int,
-        typer.Option("--time-limit-s", min=1, help="Wall-clock budget per instance, in seconds."),
+        typer.Option(
+            "--time-limit-s", "--time-limit", min=1, help="Wall-clock budget per instance, in seconds."
+        ),
     ] = 15,
     seed: Annotated[int, typer.Option("--seed", help="Solver random seed.")] = 42,
+    output_dir: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--output-dir",
+            "-o",
+            help="Write each solution to DIR/<instance-id>.<solver>-seed<seed>.json (routes, checker verdict, provenance); "
+            "`mamut-routing check` and `bks submit` read these files.",
+        ),
+    ] = None,
     save_bks: Annotated[
         bool,
-        typer.Option("--save-bks/--no-save-bks", help="Write a BKS file next to the instance if improved."),
-    ] = True,
+        typer.Option(
+            "--save-bks/--no-save-bks",
+            "--update-bks/--no-update-bks",
+            help="Store the solution as the instance's BKS when it strictly improves it (needs --authors). Off by default.",
+        ),
+    ] = False,
+    authors: Annotated[
+        Optional[str],
+        typer.Option(
+            "--authors",
+            envvar="MAMUT_ROUTING_BKS_AUTHORS",
+            help="Who to credit in a stored BKS (required with --save-bks; or set $MAMUT_ROUTING_BKS_AUTHORS).",
+        ),
+    ] = None,
     display: Annotated[
         bool,
         typer.Option("--display/--no-display", help="Forward PyVRP's per-iteration display to stdout."),
@@ -945,18 +1092,48 @@ def solve_instances(
         ),
     ] = None,
 ) -> None:
-    """Solve one or more benchmark instances with custom PyVRP's HGS-based solver variants.
+    """Solve benchmark instances with a registered solver and check every result.
 
-    Requires the 'pyvrp' optional dependency:
-    pip install "mamut-routing-lib[pyvrp]"
+    Every solution is priced by the reference checker; COST is the checker's
+    cost and GAP its distance to the BKS stored before the solve. Nothing is
+    kept by default: --output-dir DIR saves every solution, and --save-bks
+    --authors NAME stores a solution that strictly beats the stored BKS (exact
+    decimal costs; ties keep the incumbent) next to the instance. PyVRP needs
+    the 'pyvrp' extra: pip install "mamut-routing-lib\\[pyvrp]".
     """
-    try:
-        from mamut_routing_lib.solvers.pyvrp import solve_and_update_bks, solve_instance
-    except ImportError as exc:
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(code=2)
+    from mamut_routing_lib.objectives import default_objective
+    from mamut_routing_lib.solutions import submit_bks
+    from mamut_routing_lib.solvers import (
+        InstanceNotSupportedError,
+        SolveMonitor,
+        SolverUnavailableError,
+        UnknownSolverError,
+        get_solver,
+        profile_instance,
+        run_solver,
+    )
+    from mamut_routing_lib.solvers.external.config import SolverConfigError
+    from mamut_routing_lib.solvers.external.process import terminate_all
 
     state: CLIState = ctx.obj
+
+    try:
+        solver_obj = get_solver(solver, config=solvers_config)
+    except UnknownSolverError as error:
+        raise typer.BadParameter(str(error), param_hint="--solver") from error
+    except SolverConfigError as error:
+        typer.echo(f"Error: solvers config: {error}", err=True)
+        raise typer.Exit(code=2) from error
+    availability = solver_obj.availability()
+    if not availability.available:
+        typer.echo(f"Error: solver {solver_obj.name} is not available: {availability.describe()}", err=True)
+        raise typer.Exit(code=2)
+    if save_bks and not (authors and authors.strip()):
+        typer.echo(
+            "Error: --save-bks needs --authors (who to credit in the BKS), or $MAMUT_ROUTING_BKS_AUTHORS.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
 
     candidate_paths = list(_iter_candidate_paths(state, list(instance_paths) if instance_paths else None))
 
@@ -978,31 +1155,35 @@ def solve_instances(
         raise typer.Exit(code=2)
 
     explicit_paths = bool(instance_paths)
-    time_dependent = [r for r in selected if r.problem_type in (ProblemType.TDVRP, ProblemType.TDVRPTW)]
+    td_types = (ProblemType.TDVRP, ProblemType.TDVRPTW)
+    time_dependent: list[LocalInstanceRecord] = []
+    if not solver_obj.capabilities.time_dependent:
+        time_dependent = [r for r in selected if r.problem_type in td_types]
     if time_dependent:
         if explicit_paths:
             typer.echo(
                 f"Error: {len(time_dependent)} time-dependent instance(s) selected (e.g. "
-                f"{time_dependent[0].instance_id}); `solve` covers CVRP and VRPTW only "
-                "(time-dependent instances are checked with mamut_routing_lib.td).",
+                f"{time_dependent[0].instance_id}); {solver_obj.name} covers "
+                f"{', '.join(sorted(p.value for p in solver_obj.capabilities.problem_types))} only "
+                "(time-dependent instances: --solver kayros, or check them with mamut_routing_lib.td).",
                 err=True,
             )
             raise typer.Exit(code=2)
         typer.secho(
             f"Warning: skipping {len(time_dependent)} time-dependent instance(s); "
-            "`solve` covers CVRP and VRPTW only.",
+            f"{solver_obj.name} covers static CVRP and VRPTW only.",
             fg=typer.colors.YELLOW,
             err=True,
         )
-        selected = [r for r in selected if r.problem_type not in (ProblemType.TDVRP, ProblemType.TDVRPTW)]
+        selected = [r for r in selected if r.problem_type not in td_types]
 
     unmaterialized = {id(r): path for r in selected if (path := _missing_arc_cost_sidecar(r)) is not None}
-    sidecar_error_rows: list[SolveSummaryRow] = []
+    error_rows: list[SolveSummaryRow] = []
     if unmaterialized:
         missing_records = [r for r in selected if id(r) in unmaterialized]
         selected = [r for r in selected if id(r) not in unmaterialized]
         if explicit_paths:
-            sidecar_error_rows = [
+            error_rows.extend(
                 SolveSummaryRow(
                     instance_id=r.instance_id,
                     instance_name=r.instance_name,
@@ -1014,7 +1195,7 @@ def solve_instances(
                     detail=f"distances sidecar not in the tree (sha256-pinned; materialize it first): {unmaterialized[id(r)]}",
                 )
                 for r in missing_records
-            ]
+            )
         else:
             typer.secho(
                 f"Warning: skipping {len(missing_records)} instance(s) whose distances sidecar is sha256-pinned "
@@ -1022,13 +1203,10 @@ def solve_instances(
                 fg=typer.colors.YELLOW,
                 err=True,
             )
-    if not selected and not sidecar_error_rows:
-        typer.echo("No solvable instances left after skipping.", err=True)
-        raise typer.Exit(code=2)
 
-    if objective != ObjectiveFunction.MONO_COST:
+    if objective is not None and objective != ObjectiveFunction.MONO_COST:
         cvrp_in_batch = [r for r in selected if r.problem_type is ProblemType.CVRP]
-        if cvrp_in_batch:
+        if cvrp_in_batch and objective == ObjectiveFunction.HIERARCHICAL_VEHICLE_COST:
             raise typer.BadParameter(
                 f"--objective {objective.value} is VRPTW-only but the selection includes "
                 f"{len(cvrp_in_batch)} CVRP instance(s) (e.g. {cvrp_in_batch[0].instance_id}). "
@@ -1036,7 +1214,43 @@ def solve_instances(
                 param_hint="--objective",
             )
 
-    _warn_on_non_base_objectives(selected, objective)
+    objectives = {id(r): objective or default_objective(r.instance) for r in selected}
+    for record in selected:
+        _warn_on_non_base_objectives([record], objectives[id(record)])
+
+    unsupported: list[tuple[LocalInstanceRecord, str]] = []
+    for record in selected:
+        support = solver_obj.supports(profile_instance(record.instance, record.path), objectives[id(record)])
+        if not support.supported:
+            unsupported.append((record, "; ".join(support.reasons)))
+    if unsupported:
+        skipped_ids = {id(record) for record, _ in unsupported}
+        selected = [r for r in selected if id(r) not in skipped_ids]
+        if explicit_paths:
+            error_rows.extend(
+                SolveSummaryRow(
+                    instance_id=record.instance_id,
+                    instance_name=record.instance_name,
+                    status="error",
+                    cost=None,
+                    route_count=0,
+                    wall_time=0.0,
+                    bks_label="-",
+                    detail=f"{solver_obj.name} cannot solve it: {reason}",
+                )
+                for record, reason in unsupported
+            )
+        else:
+            typer.secho(
+                f"Warning: skipping {len(unsupported)} instance(s) {solver_obj.name} cannot solve "
+                f"(e.g. {unsupported[0][0].instance_id}: {unsupported[0][1]}).",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
+
+    if not selected and not error_rows:
+        typer.echo("No solvable instances left after skipping.", err=True)
+        raise typer.Exit(code=2)
 
     multi_instance = len(selected) >= 2
     if multi_instance and display:
@@ -1058,65 +1272,137 @@ def solve_instances(
             raise typer.Exit(code=2)
 
     resolved_jobs = jobs if jobs is not None else _default_solve_jobs()
-    effective_jobs = min(resolved_jobs, len(selected))
+    effective_jobs = min(resolved_jobs, len(selected)) if selected else 1
 
-    solve_message = f"Solving {len(selected)} instance(s)  time_limit={time_limit_s}s  seed={seed}  save_bks={save_bks}"
+    solve_message = (
+        f"Solving {len(selected)} instance(s)  solver={solver_obj.name}  time_limit={time_limit_s}s  "
+        f"seed={seed}  save_bks={save_bks}"
+    )
     if multi_instance:
         solve_message = f"{solve_message}  jobs={effective_jobs}"
     typer.echo(solve_message)
     rows: list[SolveSummaryRow | None] = [None] * len(selected)
 
-    def _solve_record(record: LocalInstanceRecord) -> SolveSummaryRow:
-        path = record.path
-        instance = record.instance
-        run_objective = objective
+    monitors: list[Any] = []
+    interrupted = threading.Event()
+    workdirs = _artifact_workdirs(selected, keep_artifacts, f"{solver_obj.name}-seed{seed}")
+    solution_paths: dict[int, Path] = {}
+    if output_dir is not None:
+        solution_paths = {
+            key: output_dir.resolve() / f"{name}.{solver_obj.name}-seed{seed}.json"
+            for key, name in _unique_record_names(selected).items()
+        }
 
-        def _solve_selected_instance() -> tuple[Any, Any]:
-            if save_bks:
-                return solve_and_update_bks(
-                    instance,
-                    instance_path=path,
-                    time_limit_s=time_limit_s,
-                    seed=seed,
-                    objective_function=run_objective,
-                    display=display,
-                )
-            method_result = solve_instance(
-                instance,
-                instance_path=path,
+    def _stop_everything() -> None:
+        # Solvers in their own process group never see the terminal's Ctrl-C: stop them all now,
+        # before any executor waits for its running solves.
+        interrupted.set()
+        for monitor in list(monitors):
+            monitor.request_stop()
+        terminate_all()
+
+    def _solve_record(record: LocalInstanceRecord) -> SolveSummaryRow:
+        run_objective = objectives[id(record)]
+        monitor = SolveMonitor(None, interval_s=3600.0)
+        monitors.append(monitor)
+        if interrupted.is_set():
+            monitor.request_stop()
+        workdir = workdirs.get(id(record))
+
+        def _solve_selected_instance() -> Any:
+            return run_solver(
+                solver_obj,
+                record.path,
                 time_limit_s=time_limit_s,
                 seed=seed,
                 objective_function=run_objective,
+                instance=record.instance,
                 display=display,
+                monitor=monitor,
+                workdir=workdir,
+                keep_artifacts=workdir is not None,
+                config=solvers_config,
             )
-            return method_result, None
 
         if multi_instance:
-            method_result, bks_update = _solve_selected_instance()
+            solved = _solve_selected_instance()
         else:
-            method_result, bks_update = _run_with_time_progress(
+            solved = _run_with_time_progress(
                 record=record,
                 time_limit_s=time_limit_s,
                 enabled=not display,
                 operation=_solve_selected_instance,
+                on_interrupt=_stop_everything,
             )
 
-        if method_result.solver_is_feasible:
+        result = solved.result
+        if result.status == "cancelled" or interrupted.is_set():
+            return SolveSummaryRow(
+                instance_id=record.instance_id,
+                instance_name=record.instance_name,
+                status="error",
+                cost=None,
+                route_count=0,
+                wall_time=result.wall_time,
+                bks_label="-",
+                detail="interrupted",
+            )
+        if result.status == "failed":
+            return SolveSummaryRow(
+                instance_id=record.instance_id,
+                instance_name=record.instance_name,
+                status="error",
+                cost=None,
+                route_count=0,
+                wall_time=result.wall_time,
+                bks_label="-",
+                detail=result.error or "the solver failed",
+            )
+        detail = ""
+        gap, improves = "", False
+        if solved.valid:
             status = "feasible"
-            cost = method_result.solver_cost
+            detail = result.error or ""  # e.g. a nonzero exit after writing a solution
+            gap, improves = _gap_to_bks(solved.cost, len(result.routes), _stored_bks(record, run_objective), run_objective)
         else:
             status = "infeasible"
-            cost = None
-
-        bks_label = bks_update.action if bks_update is not None else ("-" if save_bks else "skipped")
+            if solved.check is not None:
+                detail = f"checker: {solved.validation_status}: {solved.check.error_message}"
+            elif result.status == "timeout":
+                detail = f"timeout: {result.error or 'the solver hit the hard timeout'} (no solution to check)"
+            elif result.error:
+                detail = result.error
+            else:
+                detail = "the solver returned no routes"
+        solution_path = solution_paths.get(id(record))
+        if solution_path is not None and result.routes:
+            _write_solution_file(solution_path, record, solved, run_objective)
+        else:
+            solution_path = None
+        bks_label = "-" if save_bks else "not saved"
+        if save_bks and solved.valid:
+            update = submit_bks(
+                record.path,
+                result.routes,
+                authors=str(authors),
+                objective_function=run_objective,
+                metadata=solved.bks_metadata(),
+                instance=record.instance,
+                checkable=solved.checkable,
+            )
+            bks_label = f"{update.action} (tie)" if update.tie else update.action
         return SolveSummaryRow(
             instance_id=record.instance_id,
             instance_name=record.instance_name,
             status=status,
-            cost=cost,
-            route_count=method_result.route_count,
-            wall_time=method_result.wall_time,
+            cost=solved.cost,
+            route_count=len(result.routes),
+            wall_time=result.wall_time,
             bks_label=bks_label,
+            detail=detail,
+            gap=gap,
+            improves=improves,
+            solution_path=solution_path,
         )
 
     def _solve_record_safe(record: LocalInstanceRecord) -> SolveSummaryRow:
@@ -1124,64 +1410,109 @@ def solve_instances(
         started = time.perf_counter()
         try:
             return _solve_record(record)
+        except (InstanceNotSupportedError, SolverUnavailableError) as exc:
+            detail = str(exc)
         except Exception as exc:  # noqa: BLE001 - reported as an error row
-            return SolveSummaryRow(
-                instance_id=record.instance_id,
-                instance_name=record.instance_name,
-                status="error",
-                cost=None,
-                route_count=0,
-                wall_time=time.perf_counter() - started,
-                bks_label="-",
-                detail=f"{type(exc).__name__}: {exc}",
-            )
+            detail = f"{type(exc).__name__}: {exc}"
+        return SolveSummaryRow(
+            instance_id=record.instance_id,
+            instance_name=record.instance_name,
+            status="error",
+            cost=None,
+            route_count=0,
+            wall_time=time.perf_counter() - started,
+            bks_label="-",
+            detail=detail,
+        )
 
-    if multi_instance:
-        future_indices = {}
-        with ThreadPoolExecutor(max_workers=effective_jobs) as executor:
-            for index, record in enumerate(selected):
-                future_indices[executor.submit(_solve_record_safe, record)] = index
-            with tqdm(
-                total=len(selected),
-                desc=f"Solving ({effective_jobs} jobs)",
-                unit="run",
-                leave=True,
-                dynamic_ncols=True,
-                file=sys.stderr,
-            ) as bar:
-                for future in as_completed(future_indices):
-                    index = future_indices[future]
-                    rows[index] = future.result()
-                    bar.update(1)
-    elif selected:
-        rows[0] = _solve_record_safe(selected[0])
+    try:
+        if multi_instance:
+            future_indices = {}
+            with ThreadPoolExecutor(max_workers=effective_jobs) as executor:
+                for index, record in enumerate(selected):
+                    future_indices[executor.submit(_solve_record_safe, record)] = index
+                try:
+                    with tqdm(
+                        total=len(selected),
+                        desc=f"Solving ({effective_jobs} jobs)",
+                        unit="run",
+                        leave=True,
+                        dynamic_ncols=True,
+                        file=sys.stderr,
+                    ) as bar:
+                        for future in as_completed(future_indices):
+                            index = future_indices[future]
+                            rows[index] = future.result()
+                            bar.update(1)
+                except KeyboardInterrupt:
+                    for future in future_indices:
+                        future.cancel()
+                    _stop_everything()
+                    raise
+        elif selected:
+            rows[0] = _solve_record_safe(selected[0])
+    except KeyboardInterrupt:
+        _stop_everything()
+        finished = [row for row in rows if row is not None and row.detail != "interrupted"]
+        message = "Interrupted: every running solve was stopped and wrote no BKS."
+        written = [row for row in finished if row.bks_label.startswith(("created", "replaced"))]
+        if written:
+            message += f" {len(written)} solve(s) that finished before the interrupt wrote their BKS."
+        typer.echo(message, err=True)
+        raise typer.Exit(code=130)
 
-    solved_rows = [row for row in rows if row is not None] + sidecar_error_rows
+    solved_rows = [row for row in rows if row is not None] + error_rows
     any_failure = any(row.status != "feasible" for row in solved_rows)
 
     header = (
         f"{'INSTANCE_ID':<64}  {'INSTANCE_NAME':<24}  {'STATUS':<10}  "
-        f"{'COST':>10}  {'ROUTES':>6}  {'WALL_S':>7}  {'BKS':<14}"
+        f"{'COST':>14}  {'GAP':>9}  {'ROUTES':>6}  {'WALL_S':>7}  {'BKS':<14}"
     )
     typer.echo(header)
     typer.echo("-" * len(header))
 
     for row in solved_rows:
-        cost_str = f"{row.cost:>10}" if row.cost is not None else f"{'-':>10}"
+        if row.cost is None:
+            cost_str = f"{'-':>14}"
+        elif isinstance(row.cost, float) and not row.cost.is_integer():
+            cost_str = f"{row.cost:>14.10g}"
+        else:
+            cost_str = f"{int(row.cost):>14}"
         typer.echo(
-            f"{row.instance_id:<64}  {row.instance_name:<24}  {row.status:<10}  {cost_str}  {row.route_count:>6}  "
-            f"{row.wall_time:>7.2f}  {row.bks_label:<14}"
+            f"{row.instance_id:<64}  {row.instance_name:<24}  {row.status:<10}  {cost_str}  {row.gap or '-':>9}  "
+            f"{row.route_count:>6}  {row.wall_time:>7.2f}  {row.bks_label:<14}"
         )
 
     for row in solved_rows:
         if row.status == "error":
             typer.echo(f"error: {row.instance_id}: {row.detail}", err=True)
+        elif row.detail:
+            typer.echo(f"{row.status}: {row.instance_id}: {row.detail}", err=True)
+    written = [row for row in solved_rows if row.solution_path is not None]
+    if written:
+        typer.echo(f"Solutions: {len(written)} written to {output_dir.resolve() if output_dir else ''}")
+    if not save_bks:
+        better = [row for row in solved_rows if row.status == "feasible" and row.improves]
+        if better:
+            how = (
+                "`mamut-routing bks submit INSTANCE SOLUTION --authors NAME` stores one from --output-dir"
+                if written
+                else "rerun with --save-bks --authors NAME to store them, or --output-dir DIR to keep the routes"
+            )
+            typer.secho(
+                f"Note: {len(better)} solution(s) beat the stored BKS (or have none) and were not stored; {how}.",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
+        elif not written:
+            typer.echo("The routes were not kept: pass --output-dir DIR to save them.", err=True)
     counts = {status: sum(1 for row in solved_rows if row.status == status) for status in ("feasible", "infeasible", "error")}
     skipped_td = len(time_dependent) if not explicit_paths else 0
     skipped_sidecar = len(unmaterialized) if not explicit_paths else 0
+    skipped_unsupported = len(unsupported) if not explicit_paths else 0
     typer.echo(
         f"Summary: feasible {counts['feasible']} · infeasible {counts['infeasible']} · errors {counts['error']} · "
-        f"skipped (TD) {skipped_td} · skipped (sidecar) {skipped_sidecar}"
+        f"skipped (TD) {skipped_td} · skipped (sidecar) {skipped_sidecar} · skipped (unsupported) {skipped_unsupported}"
     )
 
     if any_failure:
@@ -1552,6 +1883,431 @@ def reprice_td(
         report.write_text(json.dumps(results, indent=1) + "\n", encoding="utf-8")
     if failures or (missing and not allow_missing_sidecars):
         raise typer.Exit(code=1)
+
+
+@solvers_app.command("list")
+def solvers_list(
+    solvers_config: Annotated[Optional[Path], typer.Option("--solvers-config", help=SOLVERS_CONFIG_HELP)] = None,
+    as_json: Annotated[bool, typer.Option("--json", help="Print the solvers as JSON.")] = False,
+) -> None:
+    """List every registered solver: availability here, version, what it solves, and how to enable it."""
+    from mamut_routing_lib.solvers import list_solvers
+    from mamut_routing_lib.solvers.external.config import SolverConfigError, default_config_path, load_config
+
+    try:
+        solvers = list_solvers(config=solvers_config)
+        loaded = load_config(solvers_config)
+    except SolverConfigError as error:
+        typer.echo(f"Error: solvers config: {error}", err=True)
+        raise typer.Exit(code=2) from error
+    config_path = loaded.path
+    rows = []
+    for solver_obj in solvers:
+        availability = solver_obj.availability()
+        descriptor = getattr(solver_obj, "descriptor", None)
+        rows.append(
+            {
+                "name": solver_obj.name,
+                "label": solver_obj.label,
+                "available": availability.available,
+                "reason": availability.reason,
+                "hint": availability.hint,
+                "note": availability.note,
+                "version": availability.version,
+                "executable": availability.executable,
+                "source": getattr(descriptor, "source", "builtin"),
+                "capabilities": solver_obj.capabilities.to_json(),
+            }
+        )
+    listed = {row["name"] for row in rows}
+    orphan_errors = {name: error for name, error in loaded.errors.items() if name not in listed or name in ("pyvrp", "kayros")}
+    if as_json:
+        typer.echo(
+            json.dumps(
+                {"config": str(config_path) if config_path else None, "config_errors": loaded.errors, "solvers": rows},
+                indent=1,
+            )
+        )
+        return
+    if config_path is not None:
+        typer.echo(f"solvers config: {config_path}")
+    else:
+        typer.echo(f"solvers config: none ({default_config_path()} does not exist; `mamut-routing solvers init` writes a starter)")
+    width = max(12, *(len(row["name"]) for row in rows))
+    header = f"{'NAME':<{width}}  {'AVAILABLE':<9}  {'VERSION':<12}  {'SOLVES':<52}  NOTE"
+    typer.echo(header)
+    typer.echo("-" * len(header))
+    for row in rows:
+        solves = "; ".join(
+            f"{problem} {'/'.join(objectives)}" for problem, objectives in row["capabilities"]["objectives"].items()
+        ) or "-"
+        note = "" if row["available"] else row["reason"] or ""
+        typer.echo(
+            f"{row['name']:<{width}}  {'yes' if row['available'] else 'no':<9}  {str(row['version'] or '-'):<12}  "
+            f"{solves:<52}  {note}"
+        )
+    where = str(config_path or default_config_path())
+    to_enable = [row for row in rows if not row["available"] and (row["hint"] or row["note"])]
+    if to_enable:
+        typer.echo(f"\nTo enable (the solvers config is {where}):")
+        for row in to_enable:
+            lines = [line.replace(f" in {where}", " in the solvers config") for line in (row["hint"], row["note"]) if line]
+            typer.echo(f"  {row['name']:<{width}}  {lines[0]}")
+            for line in lines[1:]:
+                typer.echo(f"  {'':<{width}}  {line[0].upper()}{line[1:]}")
+    notes = [row for row in rows if row["available"] and row["note"]]
+    if notes:
+        typer.echo("\nNotes:")
+        for row in notes:
+            typer.echo(f"  {row['name']:<{width}}  {row['note'][0].upper()}{row['note'][1:]}")
+    for name, error in orphan_errors.items():
+        typer.secho(f"Warning: [solvers.{name}] ignored: {error}", fg=typer.colors.YELLOW, err=True)
+
+
+@solvers_app.command("init")
+def solvers_init(
+    path: Annotated[
+        Optional[Path],
+        typer.Argument(
+            help="Where to write the starter config. Default: $MAMUT_ROUTING_SOLVERS_CONFIG when set, "
+            "else the default config path (~/.config/mamut-routing/solvers.toml).",
+        ),
+    ] = None,
+    force: Annotated[bool, typer.Option("--force", help="Overwrite an existing file.")] = False,
+    to_stdout: Annotated[bool, typer.Option("--print", help="Print the starter config instead of writing it.")] = False,
+) -> None:
+    """Write a commented starter solvers config: one table per built-in external solver.
+
+    Every table is commented out; uncomment the solvers you have built, set
+    their paths, then check them with `mamut-routing solvers list`. Solvers
+    already on PATH are marked in the file.
+    """
+    from mamut_routing_lib.solvers.external.config import CONFIG_ENV, default_config_path, starter_config_text
+
+    text = starter_config_text()
+    if to_stdout:
+        typer.echo(text, nl=False)
+        return
+    env_value = os.environ.get(CONFIG_ENV)
+    target = (path or (Path(env_value) if env_value else default_config_path())).expanduser()
+    if target.exists() and not force:
+        typer.echo(f"Error: {target} already exists; pass --force to overwrite it, or --print to see the starter.", err=True)
+        raise typer.Exit(code=2)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
+    typer.echo(f"Wrote {target}.")
+    typer.echo("Uncomment the solvers you have built, set their paths, then run `mamut-routing solvers list`.")
+    resolved = target.resolve()
+    read_by_default = (Path(env_value).expanduser().resolve() == resolved) if env_value else resolved == default_config_path().resolve()
+    if not read_by_default:
+        typer.secho(
+            f"Note: this file is not read by default; pass --solvers-config {target} or set {CONFIG_ENV}={target}.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+
+
+# --------------------------------------------------------------------------- #
+# External solutions: check and submit
+# --------------------------------------------------------------------------- #
+
+BKS_AUTHORS_ENV = "MAMUT_ROUTING_BKS_AUTHORS"
+
+_IDS_HELP = (
+    "How stop ids are numbered in the solution file: 'auto' (1..n with 0 as a depot marker, "
+    "unless the file covers 0..n-1 exactly), 'one-based' or 'zero-based'."
+)
+
+
+def _load_external_solution(instance_path: Path, solution_path: Path, ids: str) -> tuple[Any, Any]:
+    """(instance, ParsedSolution) or exit 2 with the reason."""
+    from mamut_routing_lib.solutions import SolutionFormatError, read_solution_file
+
+    if ids not in ("auto", "one-based", "zero-based"):
+        raise typer.BadParameter("use auto, one-based or zero-based", param_hint="--ids")
+    try:
+        instance = load_benchmark_instance(instance_path)
+    except Exception as error:  # noqa: BLE001 - reported as a usage error
+        typer.echo(f"Error: cannot load {instance_path}: {error}", err=True)
+        raise typer.Exit(code=2) from error
+    try:
+        parsed = read_solution_file(solution_path, instance, convention=ids)  # type: ignore[arg-type]
+    except (SolutionFormatError, OSError) as error:
+        typer.echo(f"Error: {solution_path}: {error}", err=True)
+        raise typer.Exit(code=2) from error
+    if ids == "auto" and parsed.ids == "zero-based":
+        typer.secho(
+            f"Note: {solution_path.name} numbers its stops 0..{instance.num_customers - 1}: read as 0-based customer ids "
+            "(pass --ids one-based if 0 is the depot).",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+    return instance, parsed
+
+
+def _resolve_objective(instance: Any, objective: ObjectiveFunction | None) -> ObjectiveFunction:
+    """The family's published objective, or ``objective`` if it applies to the instance (else exit 2)."""
+    from mamut_routing_lib.objectives import base_objective, require_supported_objective
+
+    if objective is None:
+        return base_objective(instance)
+    try:
+        require_supported_objective(instance, objective)
+    except ValueError as error:
+        typer.echo(f"Error: --objective {error}.", err=True)
+        raise typer.Exit(code=2) from error
+    _warn_objective(instance, objective)
+    return objective
+
+
+def _warn_objective(instance: Any, objective: ObjectiveFunction) -> None:
+    from mamut_routing_lib.objectives import base_objective
+
+    published = base_objective(instance)
+    if published != objective:
+        typer.secho(
+            f"Warning: {instance.instance_name} publishes its BKS under {published.value}; "
+            f"using {objective.value}.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+
+
+def _exact_cost_text(instance: Any, instance_path: Path, routes: list[list[int]], checkable: Any = None) -> str | None:
+    """The static checker's exact decimal cost (``204030.827``, not the float sum ``204030.82699999996``).
+
+    ``checkable`` is the hydrated instance when the caller already has it (``solutions.load_checkable``).
+    """
+    from mamut_routing_lib.checker import compute_exact_solution_cost
+    from mamut_routing_lib.solutions import is_time_dependent, load_checkable
+
+    if is_time_dependent(instance):
+        return None
+    try:
+        if checkable is None:
+            checkable = load_checkable(instance, instance_path)
+        exact = compute_exact_solution_cost(checkable, routes)
+    except Exception:  # noqa: BLE001 - the float cost is still printed
+        return None
+    places = next((k for k in range(31) if (10**k) % exact.denominator == 0), None)
+    if places is None:  # not a finite decimal: cannot come from decimal arc costs
+        return None
+    scaled = abs(exact.numerator) * (10**places // exact.denominator)
+    whole, fraction = divmod(scaled, 10**places)
+    text = f"{whole}.{fraction:0{places}d}".rstrip("0").rstrip(".") if places else str(whole)
+    return f"-{text}" if exact < 0 else text
+
+
+def _power_of_ten_ratio(declared: float, checker: float) -> float | None:
+    """10^k (k != 0) when ``declared`` is ``checker`` scaled by it, to 0.1 %: a solver's integer units."""
+    import math
+
+    if declared <= 0 or checker <= 0:
+        return None
+    exponent = round(math.log10(declared / checker))
+    if exponent == 0 or abs(exponent) > 9:
+        return None
+    scale = 10.0**exponent
+    return scale if abs(declared / (checker * scale) - 1.0) <= 1e-3 else None
+
+
+def _number(value: float) -> str:
+    """A cost as written: integers without a decimal point, floats in full (shortest round-trip)."""
+    return str(int(value)) if float(value).is_integer() else repr(float(value))
+
+
+#: BKS metadata the stores write themselves; ``--meta`` cannot set them.
+_STORE_METADATA_KEYS = frozenset(
+    {"authors", "date", "validated_cost", "validated_num_routes", "route_durations", "route_departure_times", "optimality", "repriced"}
+)
+#: Provenance a solution file written by ``solve --output-dir`` carries into ``bks submit``.
+_CARRIED_PROVENANCE_KEYS = (
+    "method", "solver", "solver_version", "seed", "time_limit_s", "wall_time", "solver_cost", "cost_exact", "machine",
+    "vehicle_penalty", "executable_sha256", "input_sha256",
+)
+
+
+def _meta_pairs(pairs: list[str] | None) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    for pair in pairs or []:
+        key, sep, raw = pair.partition("=")
+        if not sep or not key.strip():
+            raise typer.BadParameter(f"expected KEY=VALUE, got {pair!r}", param_hint="--meta")
+        if key.strip() in _STORE_METADATA_KEYS:
+            hint = " (use --authors)" if key.strip() == "authors" else ""
+            raise typer.BadParameter(f"{key.strip()!r} is written by the BKS store itself{hint}", param_hint="--meta")
+        try:
+            values[key.strip()] = json.loads(raw)
+        except ValueError:
+            values[key.strip()] = raw
+    return values
+
+
+@app.command("check")
+def check_external_solution(
+    instance_path: Annotated[Path, typer.Argument(help="The instance (.vrp.json), static or time-dependent.")],
+    solution_path: Annotated[
+        Path,
+        typer.Argument(help="Solution file: CVRPLIB .sol (Route #k / Cost), JSON routes, or an LKH-3 MTSP solution."),
+    ],
+    objective: Annotated[
+        Optional[ObjectiveFunction],
+        typer.Option("--objective", case_sensitive=False, help="Objective (default: the family's published one)."),
+    ] = None,
+    ids: Annotated[str, typer.Option("--ids", help=_IDS_HELP)] = "auto",
+    as_json: Annotated[bool, typer.Option("--json", help="Print the verdict as JSON.")] = False,
+) -> None:
+    """Check an externally found solution with the reference checker.
+
+    The routes are mapped onto the instance's ids (depot 0, customers 1..n) and
+    priced by the same checker that validates every BKS, static or
+    time-dependent. A declared cost that differs from the checker's is reported,
+    not trusted. Exit status 0 when valid, 1 when the checker rejects the routes,
+    2 when the file cannot be read or does not fit the instance.
+    """
+    from mamut_routing_lib.solutions import check_routes, load_checkable
+
+    instance, parsed = _load_external_solution(instance_path, solution_path, ids)
+    resolved = _resolve_objective(instance, objective)
+    checkable = load_checkable(instance, instance_path)  # read once: the verdict, then the exact cost
+    result = check_routes(instance, instance_path, parsed.routes, resolved, checkable=checkable)
+    valid = result.is_valid()
+    mismatch = (
+        valid
+        and parsed.declared_cost is not None
+        and result.routing_cost is not None
+        and abs(float(parsed.declared_cost) - float(result.routing_cost)) > 1e-6 * max(1.0, abs(float(result.routing_cost)))
+    )
+    payload = {
+        "valid": valid,
+        "status": result.status.value,
+        "error": result.error_message or None,
+        "cost": result.routing_cost,
+        "exact_cost": _exact_cost_text(instance, instance_path, parsed.routes, checkable) if valid else None,
+        "num_routes": result.num_routes if valid else len(parsed.routes),
+        "declared_cost": parsed.declared_cost,
+        "declared_cost_matches": None if parsed.declared_cost is None or not valid else not mismatch,
+        "objective_function": resolved.value,
+        "format": parsed.format,
+        "ids": parsed.ids,
+        "instance_name": instance.instance_name,
+        "problem_type": _problem_type_from_instance(instance).value,
+        "routes": parsed.routes,
+    }
+    if as_json:
+        typer.echo(json.dumps(payload, indent=1))
+    else:
+        typer.echo(f"instance   {instance.instance_name} ({payload['problem_type']})")
+        typer.echo(f"solution   {solution_path} ({parsed.format}, {parsed.ids} ids, {len(parsed.routes)} routes)")
+        typer.echo(f"objective  {resolved.value}")
+        typer.echo(f"verdict    {result.status.value}" + (f": {result.error_message}" if result.error_message else ""))
+        if valid:
+            declared = "" if parsed.declared_cost is None else f" (declared {_number(parsed.declared_cost)})"
+            typer.echo(f"cost       {payload['exact_cost'] or result.routing_cost}{declared}")
+    if mismatch:
+        why = "another metric variant, rounding, or a different instance"
+        scale = _power_of_ten_ratio(float(parsed.declared_cost), float(result.routing_cost))
+        if scale is not None:
+            why = f"it is about the checker's cost x {scale:g}: probably the solver's scaled integer units"
+        typer.secho(
+            f"Warning: the file declares cost {_number(parsed.declared_cost)} but the checker gives {result.routing_cost} ({why}).",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+    if not valid:
+        raise typer.Exit(code=1)
+
+
+@bks_app.command("submit")
+def bks_submit(
+    instance_path: Annotated[Path, typer.Argument(help="The instance (.vrp.json) inside a benchmark tree.")],
+    solution_path: Annotated[
+        Path,
+        typer.Argument(help="Solution file: CVRPLIB .sol (Route #k / Cost), JSON routes, or an LKH-3 MTSP solution."),
+    ],
+    authors: Annotated[
+        Optional[str],
+        typer.Option(
+            "--authors",
+            envvar=BKS_AUTHORS_ENV,
+            help="Who found the solution, as it should be credited (required; or set $MAMUT_ROUTING_BKS_AUTHORS).",
+        ),
+    ] = None,
+    objective: Annotated[
+        Optional[ObjectiveFunction],
+        typer.Option("--objective", case_sensitive=False, help="Objective (default: the family's published one)."),
+    ] = None,
+    method: Annotated[Optional[str], typer.Option("--method", help="Method label, e.g. 'lkh3' or a paper reference.")] = None,
+    seed: Annotated[Optional[int], typer.Option("--seed", help="Seed of the run that found it.")] = None,
+    time_limit_s: Annotated[Optional[float], typer.Option("--time-limit-s", help="Budget of that run, in seconds.")] = None,
+    solver_version: Annotated[Optional[str], typer.Option("--solver-version", help="Solver version or commit.")] = None,
+    meta: Annotated[
+        Optional[list[str]],
+        typer.Option("--meta", help="Extra metadata as KEY=VALUE (JSON values are decoded); repeatable."),
+    ] = None,
+    ids: Annotated[str, typer.Option("--ids", help=_IDS_HELP)] = "auto",
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Report what the store would do without writing.")] = False,
+) -> None:
+    """Propose an externally found solution as the BKS of an instance.
+
+    The solution is checked, then stored next to the instance as
+    <base>.bks.<Objective>.json only if it strictly beats the stored BKS (exact
+    decimal costs for static instances; the TD checker for time-dependent ones).
+    A tie keeps the incumbent. A file written by `solve --output-dir` brings its
+    run's provenance (solver, version, seed, budget); the flags override it.
+    Exit status 0 for created / replaced / kept, 1 when the checker rejects the
+    solution, 2 on a usage error.
+    """
+    from mamut_routing_lib.solutions import preview_bks_update, submit_bks
+
+    instance, parsed = _load_external_solution(instance_path, solution_path, ids)
+    resolved = _resolve_objective(instance, objective)
+    if dry_run:
+        preview = preview_bks_update(instance_path, parsed.routes, objective_function=resolved, instance=instance)
+        typer.echo(json.dumps(preview, indent=1))
+        if preview["action"] in ("invalid", "stored_invalid"):
+            raise typer.Exit(code=1)
+        return
+    if not authors or not authors.strip():
+        typer.echo(f"Error: --authors is required (or set ${BKS_AUTHORS_ENV}).", err=True)
+        raise typer.Exit(code=2)
+    carried: dict[str, Any] = {}
+    recorded = (parsed.metadata or {}).get("bks_metadata")
+    if isinstance(recorded, dict):  # a file written by `mamut-routing solve --output-dir`
+        carried = {key: recorded[key] for key in _CARRIED_PROVENANCE_KEYS if recorded.get(key) is not None}
+    flags = {"method": method, "seed": seed, "time_limit_s": time_limit_s, "solver_version": solver_version}
+    metadata: dict[str, Any] = {
+        **carried,
+        **{key: value for key, value in flags.items() if value is not None},
+        "submitted_from": solution_path.name,
+        **_meta_pairs(meta),
+    }
+    try:
+        update = submit_bks(
+            instance_path,
+            parsed.routes,
+            authors=authors,
+            objective_function=resolved,
+            metadata=metadata,
+            instance=instance,
+        )
+    except ValueError as error:
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(code=1) from error
+    typer.echo(
+        json.dumps(
+            {
+                "action": update.action,
+                "tie": update.tie,
+                "path": str(update.path),
+                "previous_path": str(update.previous_path) if update.previous_path else None,
+                "candidate_cost": update.candidate_cost,
+                "candidate_num_routes": update.candidate_num_routes,
+                "objective_function": resolved.value,
+            },
+            indent=1,
+        )
+    )
 
 
 if __name__ == "__main__":
