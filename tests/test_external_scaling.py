@@ -51,6 +51,18 @@ def test_the_round_trip_matches_the_checkers_reading_on_published_data() -> None
     assert agrees_with_checker([values[:1000], values[1000:]], 3) and not agrees_with_checker(values, 2)
 
 
+def test_declared_decimals_are_checked_on_every_value() -> None:
+    """A matrix declared at 3 decimals with a single 4-decimal value, placed where a sample would not look."""
+    size = 100
+    matrix = [[0.0 if i == j else round(10.0 + i + j / 8, 3) for j in range(size)] for i in range(size)]
+    matrix[0][1] = 1.2345  # 10000 values, so a stride of 2 over the flattened matrix skips index 1
+    assert agrees_with_checker(matrix, 3)  # the sample alone does not see it
+    plan = plan_explicit_scale(matrix, decimals_hint=3)
+    assert plan.exact and plan.factor == 10.0**4  # measured, not taken from the declaration
+    scaled_matrix, _, _ = scale_explicit_data(plan, matrix)
+    assert scaled_matrix[0][1] == 12345
+
+
 def test_exactness_is_whatever_the_checker_says(monkeypatch: pytest.MonkeyPatch) -> None:
     """The scaler asks ``checker.exact_cost_value`` what a value is exactly; it never restates it."""
     from mamut_routing_lib import checker

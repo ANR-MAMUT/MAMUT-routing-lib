@@ -186,9 +186,17 @@ def agrees_with_checker(values: Any, places: int, *, sample: int = 4096) -> bool
 
 
 def _declared_or_measured(values: Any, declared: int | None) -> int | None:
-    """The declared decimals when the checker agrees with them, else ``max_decimals``."""
-    if declared is not None and agrees_with_checker(values, declared):
-        return declared
+    """The declared decimals when every value has them and the checker agrees, else ``max_decimals``.
+
+    A declaration is a claim about the data, not a fact: every value is read (a float round
+    trip, as ``max_decimals`` does) before the result is called exact, and the checker's exact
+    reading is then asked on a sample. One value with more decimals than declared makes the
+    data be measured instead, so an exact plan never rests on rounded input.
+    """
+    if declared is not None:
+        factor = 10.0**declared
+        if all(round(value * factor) / factor == value for value in _flatten(values)) and agrees_with_checker(values, declared):
+            return declared
     return max_decimals(values)
 
 
