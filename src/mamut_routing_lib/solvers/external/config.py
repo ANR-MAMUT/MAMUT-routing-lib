@@ -51,7 +51,8 @@ other solver keeps working (a file that is not valid TOML disables all of them).
 variants (``fastest``, ``shortest``) are asymmetric and are refused for it, and
 the generic explicit file says ``TYPE : CVRP`` whatever the matrix. A solver
 that ``extends`` a built-in inherits the built-in's value (LKH-3 takes
-asymmetric matrices; FILO2, HGS-CVRP and AILS-II do not).
+asymmetric matrices, and so does HGS-CVRP in a build with the shipped
+full-matrix reader patch. FILO2 and AILS-II do not).
 """
 
 from __future__ import annotations
@@ -368,6 +369,12 @@ def _descriptor(
             raise SolverConfigError(f"solvers.{name}.progress_pattern is not a valid regular expression: {error}") from error
     if "solution_file" in values:
         _check_template(name, "solution_file", values["solution_file"], frozenset({"seed"}))
+        template = Path(values["solution_file"])
+        if template.is_absolute() or ".." in template.parts:
+            # The adapter deletes this file before a run and reads it afterwards: it has to stay in the work directory.
+            raise SolverConfigError(
+                f"solvers.{name}.solution_file must name a file inside the work directory (a relative path without '..')"
+            )
 
     if parent is None:
         missing = [key for key in ("argv", "input_format", "output_format", "problem_types") if key not in table]

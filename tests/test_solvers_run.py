@@ -12,6 +12,7 @@ pytest.importorskip("pyvrp")
 from mamut_routing_lib.enums import ObjectiveFunction, ProblemType
 from mamut_routing_lib.objectives import base_objective, default_objective
 from mamut_routing_lib.solvers import run_solver
+from mamut_routing_lib.solvers.run import BKS_PROVENANCE_KEYS
 from mamut_routing_lib.solvers.base import (
     Availability,
     InstanceNotSupportedError,
@@ -42,6 +43,15 @@ def test_run_solver_pyvrp_checks_the_routes(toy_cvrp_instance, tmp_path: Path) -
     metadata = solved.bks_metadata(campaign="x")
     assert metadata["solver"] == "pyvrp" and metadata["campaign"] == "x"
     assert "host" not in metadata and metadata["machine"]
+    # Everything a solve can publish, named once: a new key has to be added to BKS_PROVENANCE_KEYS on purpose.
+    assert set(solved.bks_metadata()) <= set(BKS_PROVENANCE_KEYS)
+    assert set(BKS_PROVENANCE_KEYS) == {
+        "method", "solver", "solver_version", "seed", "time_limit_s", "wall_time", "solver_cost", "cost_exact",
+        "machine", "vehicle_penalty", "executable_sha256", "input_sha256",
+    }
+    for key in ("solver", "machine", "validated_cost", "optimality"):
+        with pytest.raises(ValueError, match=key):
+            solved.bks_metadata(**{key: "x"})
 
 
 def test_run_solver_vrptw_hierarchical_strips_the_vehicle_penalty(toy_vrptw_instance, tmp_path: Path) -> None:
@@ -139,3 +149,29 @@ def test_objective_defaults(toy_cvrp_instance, toy_vrptw_instance) -> None:
     # EURO Meets NeurIPS 2022 ranked total cost: every published Ortec2022 BKS is MonoCost.
     ortec = toy_vrptw_instance.model_copy(update={"benchmark_name": "Ortec2022"})
     assert base_objective(ortec) is ObjectiveFunction.MONO_COST
+
+
+def test_pyvrp_does_not_take_a_nearly_integral_matrix_for_an_integral_one() -> None:
+    """A long arc with a fractional part passed ``numpy.allclose`` and was truncated to an integer."""
+    from mamut_routing_lib.solvers.pyvrp import _is_integral, scale_is_exact
+
+    import numpy as np
+
+    assert _is_integral(np.asarray([[0, 14], [14, 0]]))
+    assert _is_integral(np.asarray([[0.0, 100000.0], [100000.0, 0.0]]))
+    nearly = [[0.0, 100000.4], [200000.7, 0.0]]
+    assert np.allclose(np.asarray(nearly), np.round(np.asarray(nearly)))  # what the old test saw
+    assert not _is_integral(np.asarray(nearly))
+    assert not scale_is_exact(nearly, 1)
+
+
+def test_pyvrp_says_that_it_needs_the_depot_at_index_0(toy_cvrp_instance, tmp_path: Path) -> None:
+    from mamut_routing_lib.solvers import get_solver
+    from mamut_routing_lib.solvers.base import profile_instance
+
+    path = _write(toy_cvrp_instance, tmp_path)
+    profile = profile_instance(toy_cvrp_instance, path)
+    solver = get_solver("pyvrp")
+    assert solver.supports(profile, ObjectiveFunction.MONO_COST).supported
+    moved = solver.supports(profile.__class__(**{**profile.__dict__, "depot": 1}), ObjectiveFunction.MONO_COST)
+    assert not moved.supported and "depot at index 0" in " ".join(moved.reasons)

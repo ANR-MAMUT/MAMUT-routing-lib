@@ -93,6 +93,8 @@ def test_extends_makes_a_named_variant(tmp_path: Path) -> None:
         ('[solvers.td]\nargv = ["x"]\ninput_format = "lkh"\noutput_format = "lkh-mtsp"\nproblem_types = ["TDVRP"]\n', "static"),
         ('[solvers.x]\nargv = ["x"]\ninput_format = "cvrplib-x"\noutput_format = "cvrplib-sol"\nproblem_types = ["VRPTW"]\n', "time windows"),
         ("[other]\nkey = 1\n", "top-level"),
+        ('[solvers.filo2]\nsolution_file = "/home/user/notes.txt"\n', "inside the work directory"),
+        ('[solvers.filo2]\nsolution_file = "../../x.sol"\n', "inside the work directory"),
     ],
 )
 def test_configuration_errors_are_loud(tmp_path: Path, text: str, message: str) -> None:

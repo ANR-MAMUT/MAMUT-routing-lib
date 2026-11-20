@@ -133,7 +133,7 @@ def to_vrplib_dict(
     if arc_costs is None:
         arc_costs = instance.arc_costs
     weights = np.asarray(arc_costs)
-    if np.allclose(weights, np.round(weights)):
+    if _is_integral(weights):
         weights = weights.astype(int)
     payload: dict[str, Any] = {
         "name": get_instance_identifier(instance),
@@ -229,8 +229,7 @@ def _conversion_plan(
     ``arc_costs`` is the instance's matrix when the caller already resolved it."""
     if arc_costs is None:
         arc_costs = _hydrated_arc_costs(instance, instance_path)
-    weights = np.asarray(arc_costs)
-    if np.allclose(weights, np.round(weights)):
+    if _is_integral(np.asarray(arc_costs)):
         return arc_costs, "none", 1
     return arc_costs, "exact", 1000
 
@@ -241,6 +240,15 @@ def conversion_plan(
 ) -> tuple[list[list[int]] | list[list[float]], str, int]:
     """Public name of ``_conversion_plan``: (arc costs, round_func, cost scale)."""
     return _conversion_plan(instance, instance_path)
+
+
+def _is_integral(weights: Any) -> bool:
+    """Whether every arc cost is an integer, exactly.
+
+    A tolerance has no place here: ``numpy.allclose`` scales its tolerance with the value,
+    so a long arc with a fractional part (100000.4) passed for an integer and was truncated.
+    """
+    return bool(np.all(weights == np.round(weights)))
 
 
 def scale_is_exact(arc_costs: list[list[int]] | list[list[float]], scale: int) -> bool:

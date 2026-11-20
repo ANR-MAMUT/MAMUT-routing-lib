@@ -103,7 +103,12 @@ class PyVRPSolver:
         return Availability(True, version=package_version("pyvrp"))
 
     def supports(self, profile: InstanceProfile, objective: ObjectiveFunction) -> Support:
-        return capability_support(self.capabilities, profile, objective, solver_label=self.label)
+        support = capability_support(self.capabilities, profile, objective, solver_label=self.label)
+        if profile.depot != 0:
+            # PyVRP's reader wants its depots in the first indices and refuses the instance otherwise.
+            reason = f"{self.label} needs the depot at index 0 (it is {profile.depot})"
+            return Support(False, (*support.reasons, reason), support.warnings)
+        return support
 
     def solve(self, request: SolveRequest, monitor: SolveMonitor | None = None) -> SolveResult:
         from mamut_routing_lib.solvers import pyvrp as pyvrp_module
