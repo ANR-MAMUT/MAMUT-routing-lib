@@ -510,11 +510,10 @@ def load_benchmark_instance(instance_path: str | Path) -> "AnyBenchmarkInstance 
         if "time_windows" in payload:
             return BenchmarkInstanceVRPTWCollection(**payload)
         return BenchmarkInstanceCVRPCollection(**payload)
-    if (
-        payload.get("benchmark_name") == BenchmarkName.PORYOS_2026.value
-        and "metadata" in payload
-        and "service_times" not in payload
-    ):
+    if "service_times" not in payload and "time_windows" not in payload:
+        # No time data: only the CVRP model can hold it. The family name does not decide this:
+        # workbench instances generated before the Mamut2026 -> Poryos2026 rename are embedded
+        # CVRP payloads that still say "Mamut2026".
         return BenchmarkInstanceCVRP(**payload)
     return BenchmarkInstance(**payload)
 

@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from typer.testing import CliRunner
 
-from mamut_routing_lib.bks import BKSUpdateResult
+from mamut_routing_lib.artifacts import get_bks_path_for_instance, load_bks
 from mamut_routing_lib.cli import app
+from mamut_routing_lib.enums import ObjectiveFunction
 from mamut_routing_lib.json_utils import save_json_to_file
 from mamut_routing_lib.models import BenchmarkInstance
 
 
 pytest.importorskip("pyvrp")
+
+from mamut_routing_lib.solvers.pyvrp import MethodResult  # noqa: E402
 
 
 def _runner() -> CliRunner:
@@ -60,38 +63,36 @@ def _make_historical_vrptw(*, benchmark_name: str) -> BenchmarkInstance:
 
 
 def _fake_method_result(*, instance_name: str, problem_type: str = "CVRP", routes=None):
-    fake = MagicMock()
-    fake.solver_is_feasible = True
-    fake.routes = routes or [[1, 2]]
-    fake.route_count = len(fake.routes)
-    fake.solver_cost = 14
-    fake.wall_time = 0.05
-    fake.vehicle_penalty = 0
-    fake.method = "pyvrp-ils-v1"
-    fake.problem_type = problem_type
-    fake.instance_id = instance_name
-    return fake
+    routes = routes or [[1, 2]]
+    return MethodResult(
+        method="pyvrp-ils-v1",
+        problem_type=problem_type,
+        objective_function="MonoCost",
+        instance_id=instance_name,
+        seed=7,
+        time_limit_s=1,
+        wall_time=0.05,
+        solver_is_feasible=True,
+        routes=routes,
+        solver_cost=14,
+        route_count=len(routes),
+        vehicle_penalty=0,
+        metadata={},
+    )
 
 
 def test_solve_with_positional_path_calls_solver(tmp_path: Path, toy_cvrp_instance) -> None:
     instance_path = _write_instance(tmp_path, toy_cvrp_instance)
 
     fake_method_result = _fake_method_result(instance_name=toy_cvrp_instance.instance_name)
-    fake_update = BKSUpdateResult(
-        action="created",
-        path=tmp_path / "fake.bks.MonoCost.json",
-        previous_path=None,
-        candidate_cost=14,
-        candidate_num_routes=1,
-    )
 
     with patch(
-        "mamut_routing_lib.solvers.pyvrp.solve_and_update_bks",
-        return_value=(fake_method_result, fake_update),
+        "mamut_routing_lib.solvers.pyvrp.solve_instance",
+        return_value=fake_method_result,
     ) as mock_solve:
         result = _runner().invoke(
             app,
-            ["solve", str(instance_path), "--time-limit-s", "1", "--seed", "7"],
+            ["solve", str(instance_path), "--time-limit-s", "1", "--seed", "7", "--save-bks", "--authors", "Tester"],
         )
 
     assert result.exit_code == 0, result.stdout + result.stderr
@@ -102,6 +103,9 @@ def test_solve_with_positional_path_calls_solver(tmp_path: Path, toy_cvrp_instan
     assert toy_cvrp_instance.instance_name in result.stdout
     assert "feasible" in result.stdout
     assert "created" in result.stdout
+    stored = load_bks(get_bks_path_for_instance(instance_path, ObjectiveFunction.MONO_COST))
+    assert stored.metadata["authors"] == "Tester"
+    assert stored.metadata["solver"] == "pyvrp" and stored.metadata["seed"] == 7
 
 
 def test_solve_with_filters_over_benchmarks_dir(tmp_path: Path, toy_cvrp_instance, toy_vrptw_instance) -> None:
@@ -109,17 +113,10 @@ def test_solve_with_filters_over_benchmarks_dir(tmp_path: Path, toy_cvrp_instanc
     _write_instance(tmp_path, toy_vrptw_instance)
 
     fake_method_result = _fake_method_result(instance_name=toy_cvrp_instance.instance_name)
-    fake_update = BKSUpdateResult(
-        action="created",
-        path=tmp_path / "fake.bks.MonoCost.json",
-        previous_path=None,
-        candidate_cost=14,
-        candidate_num_routes=1,
-    )
 
     with patch(
-        "mamut_routing_lib.solvers.pyvrp.solve_and_update_bks",
-        return_value=(fake_method_result, fake_update),
+        "mamut_routing_lib.solvers.pyvrp.solve_instance",
+        return_value=fake_method_result,
     ) as mock_solve:
         result = _runner().invoke(
             app,
@@ -128,6 +125,7 @@ def test_solve_with_filters_over_benchmarks_dir(tmp_path: Path, toy_cvrp_instanc
                 "solve",
                 "--problem-type", "CVRP",
                 "--time-limit-s", "1",
+                "--save-bks", "--authors", "Tester",
             ],
         )
 
@@ -142,17 +140,10 @@ def test_solve_filters_by_derived_instance_id(tmp_path: Path, toy_cvrp_instance,
     _write_instance(tmp_path, toy_vrptw_instance)
 
     fake_method_result = _fake_method_result(instance_name=toy_vrptw_instance.instance_name, problem_type="VRPTW")
-    fake_update = BKSUpdateResult(
-        action="created",
-        path=tmp_path / "fake.bks.MonoCost.json",
-        previous_path=None,
-        candidate_cost=14,
-        candidate_num_routes=1,
-    )
 
     with patch(
-        "mamut_routing_lib.solvers.pyvrp.solve_and_update_bks",
-        return_value=(fake_method_result, fake_update),
+        "mamut_routing_lib.solvers.pyvrp.solve_instance",
+        return_value=fake_method_result,
     ) as mock_solve:
         result = _runner().invoke(
             app,
@@ -164,6 +155,9 @@ def test_solve_filters_by_derived_instance_id(tmp_path: Path, toy_cvrp_instance,
                 "vrptw-poryos2026-fastest-testville-n2-poryos-n2-testvrptw",
                 "--time-limit-s",
                 "1",
+                "--save-bks",
+                "--authors",
+                "Tester",
             ],
         )
 
@@ -532,3 +526,57 @@ def test_solve_rejects_hierarchical_objective_on_collection_cvrp(tmp_path: Path)
     )
     assert result.exit_code == 2
     assert "VRPTW-only" in result.output
+
+
+def test_solve_writes_no_bks_by_default(tmp_path: Path, toy_cvrp_instance) -> None:
+    instance_path = _write_instance(tmp_path, toy_cvrp_instance)
+    with patch(
+        "mamut_routing_lib.solvers.pyvrp.solve_instance",
+        return_value=_fake_method_result(instance_name=toy_cvrp_instance.instance_name),
+    ):
+        result = _runner().invoke(app, ["solve", str(instance_path), "--time-limit-s", "1"])
+    assert result.exit_code == 0, result.stdout + result.stderr
+    assert "skipped" in result.stdout
+    assert not get_bks_path_for_instance(instance_path, ObjectiveFunction.MONO_COST).exists()
+
+
+def test_solve_save_bks_needs_authors(tmp_path: Path, toy_cvrp_instance, monkeypatch) -> None:
+    monkeypatch.delenv("MAMUT_ROUTING_BKS_AUTHORS", raising=False)
+    instance_path = _write_instance(tmp_path, toy_cvrp_instance)
+    with patch("mamut_routing_lib.solvers.pyvrp.solve_instance") as mock_solve:
+        result = _runner().invoke(app, ["solve", str(instance_path), "--time-limit-s", "1", "--save-bks"])
+    assert result.exit_code == 2
+    assert "--save-bks needs --authors" in result.stderr
+    mock_solve.assert_not_called()
+
+
+def test_solve_unknown_solver_is_a_usage_error(tmp_path: Path, toy_cvrp_instance) -> None:
+    instance_path = _write_instance(tmp_path, toy_cvrp_instance)
+    result = _runner().invoke(app, ["solve", str(instance_path), "--solver", "nope", "--time-limit-s", "1"])
+    assert result.exit_code == 2
+    assert "unknown solver 'nope'" in result.output
+
+
+def test_solve_reports_the_checker_cost_not_the_scaled_solver_objective(tmp_path: Path) -> None:
+    """Collection instances solve in milli-units; the COST column is the checker's cost."""
+    from collection_utils import write_toy_collection
+
+    root = write_toy_collection(tmp_path)
+    euclidean = next((root / "Poryos2026" / "CVRP" / "euclidean").rglob("*.vrp.json"))
+    result = _runner().invoke(app, ["solve", str(euclidean), "--time-limit-s", "1"])
+    assert result.exit_code == 0, result.stdout + result.stderr
+    row = next(line for line in result.stdout.splitlines() if "feasible" in line)
+    cost = float(row.split()[3])
+    assert cost < 1000, f"COST looks scaled x1000: {row}"
+
+
+def test_solve_rows_infeasible_when_the_checker_rejects(tmp_path: Path, toy_cvrp_instance) -> None:
+    instance_path = _write_instance(tmp_path, toy_cvrp_instance.model_copy(update={"vehicle_capacity": 5}))
+    with patch(
+        "mamut_routing_lib.solvers.pyvrp.solve_instance",
+        return_value=_fake_method_result(instance_name=toy_cvrp_instance.instance_name),
+    ):
+        result = _runner().invoke(app, ["solve", str(instance_path), "--time-limit-s", "1"])
+    assert result.exit_code == 1
+    assert "infeasible" in result.stdout
+    assert "vehicle_capacity_exceeded" in result.stderr

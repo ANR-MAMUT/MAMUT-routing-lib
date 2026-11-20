@@ -1,0 +1,424 @@
+"""ExternalSolver end to end with the fake executable: inputs, scaling, outputs, failures, provenance."""
+
+from __future__ import annotations
+
+import json
+import sys
+import threading
+from pathlib import Path
+
+import pytest
+
+from mamut_routing_lib.enums import ObjectiveFunction, ProblemType
+from mamut_routing_lib.solvers import InstanceNotSupportedError, get_solver, run_solver, solver_names
+from mamut_routing_lib.solvers.base import SolveMonitor, SolverCapabilities
+from mamut_routing_lib.solvers.external.adapter import ExternalSolver
+from mamut_routing_lib.solvers.external.catalog import BUILTIN_DESCRIPTORS
+from mamut_routing_lib.solvers.external.descriptor import ExternalSolverDescriptor
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+
+FAKE = ("{python}", "-m", "mamut_routing_lib.solvers.external._fake_solver")
+CVRP_MONO = {ProblemType.CVRP: frozenset({ObjectiveFunction.MONO_COST})}
+
+FAKE_X = ExternalSolverDescriptor(
+    name="fake-x",
+    label="FakeX",
+    method="fake-x",
+    argv=(*FAKE, "--problem", "{problem}", "--solution", "{solution}", "--seed", "{seed}", "--time-limit", "{time_limit_s}"),
+    input_format="cvrplib-x",
+    output_format="cvrplib-sol",
+    capabilities=SolverCapabilities(objectives=CVRP_MONO, input="coordinates", symmetric_only=True, fleet_limit=False),
+    runtime="python",
+    distance_model="float",
+    coordinate_scales=(1.0,),
+    progress_pattern=r"progress cost=(?P<cost>[0-9.]+)",
+    env={"FAKE_DISTANCE": "float"},
+    timeout_grace_s=0.3,
+    timeout_grace_fraction=0.0,
+    term_grace_s=0.3,
+)
+
+FAKE_LKH = ExternalSolverDescriptor(
+    name="fake-lkh",
+    label="FakeLKH",
+    method="fake-lkh",
+    argv=(*FAKE, "--params", "{params}"),
+    input_format="lkh",
+    output_format="lkh-mtsp",
+    capabilities=SolverCapabilities(
+        objectives={
+            ProblemType.CVRP: frozenset({ObjectiveFunction.MONO_COST}),
+            ProblemType.VRPTW: frozenset({ObjectiveFunction.MONO_COST}),
+        },
+        input="explicit",
+        integer_costs=True,
+    ),
+    runtime="python",
+    distance_model="integer",
+    timeout_grace_s=0.3,
+    timeout_grace_fraction=0.0,
+    term_grace_s=0.3,
+)
+
+
+def _env(monkeypatch, **values: str) -> None:
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
+
+
+def _write(instance, tmp_path: Path, name: str | None = None) -> Path:
+    path = tmp_path / f"{name or instance.instance_name}.vrp.json"
+    path.write_text(json.dumps(instance.model_dump(mode="json")), encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def collection(tmp_path: Path) -> Path:
+    from collection_utils import write_toy_collection
+
+    return write_toy_collection(tmp_path)
+
+
+def _variant(root: Path, problem: str, metric: str) -> Path:
+    return next((root / "Poryos2026" / problem / metric).rglob("*.vrp.json"))
+
+
+def test_coordinate_solver_on_a_euclidean_collection_instance(collection: Path) -> None:
+    solved = run_solver(ExternalSolver(FAKE_X), _variant(collection, "CVRP", "euclidean"), time_limit_s=5, seed=4)
+    result = solved.result
+    assert result.status == "feasible" and solved.valid
+    assert result.solver == "fake-x" and result.cost_exact is False
+    assert result.provenance["scale"]["mode"] == "coordinates"
+    assert result.solver_cost == pytest.approx(solved.cost, abs=1e-3)
+    assert result.provenance["input_sha256"] and result.provenance["argv"][0] == sys.executable
+    assert "host" not in result.provenance
+    assert solved.bks_metadata()["input_sha256"] == result.provenance["input_sha256"]
+
+
+def test_coordinate_solver_refuses_a_road_metric(collection: Path) -> None:
+    with pytest.raises(InstanceNotSupportedError, match="coordinates"):
+        run_solver(ExternalSolver(FAKE_X), _variant(collection, "CVRP", "fastest"), time_limit_s=1)
+
+
+def test_lkh_style_solver_scales_exactly_and_cross_checks_its_cost(collection: Path) -> None:
+    solved = run_solver(ExternalSolver(FAKE_LKH), _variant(collection, "CVRP", "fastest"), time_limit_s=5)
+    result = solved.result
+    assert solved.valid
+    assert result.cost_exact is True and result.cost_scale == 1000
+    assert result.provenance["problem_type_line"] == "CVRP"
+    assert result.provenance["reported_cost_matches_checker"] is True
+    assert result.solver_cost == pytest.approx(solved.cost)
+
+
+def test_lkh_style_solver_on_vrptw_writes_cvrptw(collection: Path) -> None:
+    solved = run_solver(ExternalSolver(FAKE_LKH), _variant(collection, "VRPTW", "fastest"), time_limit_s=5)
+    assert solved.valid
+    assert solved.result.provenance["problem_type_line"] == "CVRPTW"
+
+
+def test_asymmetric_matrix_goes_to_lkh_as_acvrp(toy_cvrp_instance, tmp_path: Path) -> None:
+    asym = toy_cvrp_instance.model_copy(update={"arc_costs": [[0, 5, 6], [7, 0, 3], [6, 4, 0]]})
+    solved = run_solver(ExternalSolver(FAKE_LKH), _write(asym, tmp_path), time_limit_s=5)
+    assert solved.valid and solved.result.provenance["problem_type_line"] == "ACVRP"
+    assert solved.result.provenance["vehicles"] >= 1
+
+
+def test_symmetric_only_solver_refuses_an_asymmetric_euclidean_claim(toy_cvrp_instance, tmp_path: Path) -> None:
+    """A matrix declared euclidean but asymmetric is caught at solve time."""
+    meta = {**toy_cvrp_instance.metadata.model_dump(mode="json"), "metric_variant": "euclidean"}
+    asym = toy_cvrp_instance.model_copy(update={"arc_costs": [[0, 1, 3], [2, 0, 1], [3, 1, 0]], "metadata": meta})
+    with pytest.raises(InstanceNotSupportedError):
+        run_solver(ExternalSolver(FAKE_X), _write(asym, tmp_path), time_limit_s=1)
+
+
+@pytest.mark.parametrize(
+    ("mode", "status", "message"),
+    [
+        ("crash", "failed", "no solution file"),
+        ("no-output", "failed", "no solution file"),
+        ("garbage", "failed", "unreadable solution file"),
+    ],
+)
+def test_solver_failures_are_results_not_exceptions(collection: Path, monkeypatch, mode, status, message) -> None:
+    _env(monkeypatch, FAKE_MODE=mode)
+    solved = run_solver(ExternalSolver(FAKE_LKH), _variant(collection, "CVRP", "fastest"), time_limit_s=5)
+    assert solved.result.status == status and message in solved.result.error
+    assert not solved.valid
+
+
+def test_a_run_without_a_solution_reports_what_the_solver_said(collection: Path, monkeypatch) -> None:
+    """The work directory and its log are gone by the time the error is read: the error carries the reason."""
+    _env(monkeypatch, FAKE_MODE="crash")
+    solved = run_solver(ExternalSolver(FAKE_LKH), _variant(collection, "CVRP", "fastest"), time_limit_s=5)
+    assert solved.result.status == "failed"
+    assert "no solution file (returncode 3)" in solved.result.error
+    assert "the solver's output ends with: fake solver: mode=crash" in solved.result.error
+
+
+def test_zero_based_ids_are_understood(collection: Path, monkeypatch) -> None:
+    _env(monkeypatch, FAKE_MODE="zero-based")
+    solved = run_solver(ExternalSolver(FAKE_X), _variant(collection, "CVRP", "euclidean"), time_limit_s=5)
+    assert solved.valid
+
+
+def test_a_wrong_reported_cost_is_flagged_and_ignored(collection: Path, monkeypatch) -> None:
+    _env(monkeypatch, FAKE_MODE="wrong-cost")
+    solved = run_solver(ExternalSolver(FAKE_LKH), _variant(collection, "CVRP", "fastest"), time_limit_s=5)
+    assert solved.valid
+    assert solved.result.provenance["reported_cost_matches_checker"] is False
+    assert solved.cost == pytest.approx(solved.result.solver_cost - 1.0)  # 1000 scaled units = 1.0
+
+
+def test_nonzero_exit_with_a_solution_keeps_the_solution(collection: Path, monkeypatch) -> None:
+    _env(monkeypatch, FAKE_MODE="nonzero-with-solution")
+    solved = run_solver(ExternalSolver(FAKE_X), _variant(collection, "CVRP", "euclidean"), time_limit_s=5)
+    assert solved.valid and "exited with code 7" in solved.result.error
+
+
+def test_timeout_and_cancellation(collection: Path, monkeypatch) -> None:
+    _env(monkeypatch, FAKE_MODE="sleep")
+    path = _variant(collection, "CVRP", "fastest")
+    timed_out = run_solver(ExternalSolver(FAKE_LKH), path, time_limit_s=0.3)
+    assert timed_out.result.status == "timeout" and not timed_out.valid
+
+    monitor = SolveMonitor(None, interval_s=0.0)
+    timer = threading.Timer(0.3, monitor.request_stop)
+    timer.start()
+    cancelled = run_solver(ExternalSolver(FAKE_LKH), path, time_limit_s=60, monitor=monitor)
+    timer.cancel()
+    assert cancelled.result.status == "cancelled" and cancelled.result.stopped_early
+
+
+def test_live_progress_is_reported_in_instance_units(collection: Path, monkeypatch) -> None:
+    _env(monkeypatch, FAKE_MODE="slow", FAKE_SLEEP="0.6")
+    ticks = []
+    monitor = SolveMonitor(lambda tick: ticks.append(tick) or False, interval_s=0.0)
+    solved = run_solver(ExternalSolver(FAKE_X), _variant(collection, "CVRP", "euclidean"), time_limit_s=5, monitor=monitor)
+    assert solved.valid
+    assert {tick.phase for tick in ticks} >= {"solving"}
+    incumbents = [tick.best_cost for tick in ticks if tick.best_cost is not None]
+    assert incumbents and min(incumbents) == pytest.approx(solved.cost, abs=1e-3)
+
+
+def test_keep_artifacts(collection: Path, tmp_path: Path) -> None:
+    workdir = tmp_path / "artifacts"
+    solved = run_solver(
+        ExternalSolver(FAKE_LKH), _variant(collection, "CVRP", "fastest"), time_limit_s=5, workdir=workdir, keep_artifacts=True
+    )
+    assert solved.valid
+    assert (workdir / "problem.vrp").is_file() and (workdir / "problem.par").is_file() and (workdir / "solver.log").is_file()
+    assert solved.result.provenance["artifacts_dir"] == str(workdir.resolve())
+
+
+@pytest.mark.parametrize("descriptor", [FAKE_LKH, FAKE_X], ids=["lkh", "x-format"])
+def test_a_reused_workdir_never_hands_back_an_earlier_solution(collection: Path, tmp_path: Path, monkeypatch, descriptor) -> None:
+    workdir = tmp_path / "reused"
+    path = _variant(collection, "CVRP", "fastest" if descriptor is FAKE_LKH else "euclidean")
+    first = run_solver(ExternalSolver(descriptor), path, time_limit_s=5, workdir=workdir, keep_artifacts=True)
+    assert first.valid
+    _env(monkeypatch, FAKE_MODE="crash")
+    crashed = run_solver(ExternalSolver(descriptor), path, time_limit_s=5, workdir=workdir, keep_artifacts=True)
+    assert crashed.result.status == "failed" and "no solution file" in crashed.result.error
+    assert not crashed.valid and not crashed.result.routes
+
+
+def test_a_temporary_workdir_is_removed(collection: Path) -> None:
+    solved = run_solver(ExternalSolver(FAKE_LKH), _variant(collection, "CVRP", "fastest"), time_limit_s=5)
+    assert "artifacts_dir" not in solved.result.provenance
+
+
+def test_builtins_are_registered_and_explain_missing_executables(monkeypatch) -> None:
+    monkeypatch.setenv("PATH", "/nonexistent")
+    names = solver_names()
+    for name in ("filo2", "hgs-cvrp", "ails2", "lkh3"):
+        assert name in names
+        availability = get_solver(name).availability()
+        assert not availability.available
+        assert "solvers.toml" in availability.hint
+    assert "patch" in BUILTIN_DESCRIPTORS["ails2"].requires_note
+
+
+def _executable(tmp_path: Path, name: str) -> Path:
+    path = tmp_path / name
+    path.write_text("#!/bin/sh\nexit 0\n")
+    path.chmod(0o755)
+    return path
+
+
+def test_a_configured_executable_never_falls_back_to_another_on_path(tmp_path: Path, monkeypatch) -> None:
+    import dataclasses
+
+    on_path = tmp_path / "bin"
+    on_path.mkdir()
+    _executable(on_path, "hgs")  # an unpatched build somebody left on PATH
+    monkeypatch.setenv("PATH", str(on_path))
+    builtin = BUILTIN_DESCRIPTORS["hgs-cvrp"]
+    assert ExternalSolver(builtin).resolve_executable()[0] == str((on_path / "hgs").resolve())
+    typo = ExternalSolver(dataclasses.replace(builtin, executable="hgs-patched"))
+    executable, reason = typo.resolve_executable()
+    assert executable is None and "'hgs-patched' is not on PATH" in reason
+    missing = ExternalSolver(dataclasses.replace(builtin, executable=str(tmp_path / "nowhere" / "hgs")))
+    assert missing.resolve_executable()[0] is None
+    _executable(on_path, "hgs-patched")
+    assert typo.resolve_executable()[0] == str((on_path / "hgs-patched").resolve())
+
+
+def test_builtin_argv_templates(collection: Path, tmp_path: Path, toy_cvrp_instance) -> None:
+    from mamut_routing_lib.artifacts import load_benchmark_instance
+    from mamut_routing_lib.solvers.base import SolveRequest
+
+    path = _variant(collection, "CVRP", "euclidean")
+    request = SolveRequest(
+        instance=load_benchmark_instance(path), instance_path=path, objective=ObjectiveFunction.MONO_COST,
+        time_limit_s=12.5, seed=3,
+    )
+    filo = ExternalSolver(BUILTIN_DESCRIPTORS["filo2"].with_overrides(executable=str(_executable(tmp_path, "filo2"))))
+    (tmp_path / "w1").mkdir()
+    prepared = filo.prepare(request, tmp_path / "w1")
+    argv = filo.build_argv(prepared, request)
+    assert argv[-2:] == ["--optimization-seconds", "12"]
+    assert prepared.solution.name == "problem.vrp_seed-3.vrp.sol"
+    assert prepared.plan.unit == "mm"
+    header = prepared.problem.read_text().splitlines()[:6]
+    assert header[5] == "CAPACITY : 10" and not any(line.startswith("VEHICLES") for line in header)
+
+    jar = tmp_path / "AILSII.jar"
+    jar.write_text("")
+    ails = ExternalSolver(BUILTIN_DESCRIPTORS["ails2"].with_overrides(jar=str(jar), java=sys.executable))
+    (tmp_path / "w2").mkdir()
+    prepared = ails.prepare(request, tmp_path / "w2")
+    argv = ails.build_argv(prepared, request)
+    assert argv[:4] == [sys.executable, "-Xmx4g", "-XX:+UseSerialGC", "-XX:ActiveProcessorCount=1"]
+    assert argv[argv.index("-limit") + 1] == "12.5" and argv[argv.index("-out") + 1] == str(prepared.solution)
+
+    fleet = toy_cvrp_instance.model_copy(update={"num_vehicles": 2})
+    fixed = _write(fleet, tmp_path)
+    meta = json.loads(fixed.read_text())
+    hgs = ExternalSolver(BUILTIN_DESCRIPTORS["hgs-cvrp"].with_overrides(executable=str(_executable(tmp_path, "hgs"))))
+    fleet_request = SolveRequest(
+        instance=load_benchmark_instance(fixed), instance_path=fixed, objective=ObjectiveFunction.MONO_COST,
+        time_limit_s=5, seed=1,
+    )
+    (tmp_path / "w3").mkdir()
+    prepared = hgs.prepare(fleet_request, tmp_path / "w3")
+    assert hgs.build_argv(prepared, fleet_request)[-2:] == ["-veh", "2"]
+    assert meta["num_vehicles"] == 2
+
+
+FAKE_MATRIX = FAKE_X.with_overrides(
+    name="fake-matrix",
+    label="FakeMatrix",
+    method="fake-matrix",
+    input_format="cvrplib-matrix",
+    capabilities=SolverCapabilities(objectives=CVRP_MONO, input="explicit", symmetric_only=False),
+    matrix_scales=(1.0, 0.1),
+)
+
+
+def test_full_matrix_solver_takes_asymmetric_road_metrics(collection: Path, toy_cvrp_instance, tmp_path: Path) -> None:
+    asym = toy_cvrp_instance.model_copy(update={"arc_costs": [[0, 5, 6], [7, 0, 3], [6, 4, 0]]})
+    for path in (_variant(collection, "CVRP", "fastest"), _write(asym, tmp_path)):
+        solved = run_solver(ExternalSolver(FAKE_MATRIX), path, time_limit_s=5)
+        assert solved.valid, solved.result.error
+        assert solved.result.cost_exact is True and solved.result.provenance["scale"]["rounding"] == "float"
+        assert solved.result.solver_cost == pytest.approx(solved.cost)
+        assert "reported_cost_matches_checker" not in solved.result.provenance  # float solver: no exact cross-check
+
+
+def test_builtin_hgs_reads_the_full_matrix(collection: Path, tmp_path: Path, monkeypatch) -> None:
+    from mamut_routing_lib.artifacts import load_benchmark_instance
+    from mamut_routing_lib.solvers.base import SolveRequest, profile_instance
+
+    hgs = ExternalSolver(BUILTIN_DESCRIPTORS["hgs-cvrp"].with_overrides(executable=str(_executable(tmp_path, "hgs"))))
+    path = _variant(collection, "CVRP", "fastest")
+    instance = load_benchmark_instance(path)
+    assert hgs.supports(profile_instance(instance, path), ObjectiveFunction.MONO_COST).supported
+    request = SolveRequest(instance=instance, instance_path=path, objective=ObjectiveFunction.MONO_COST, time_limit_s=5)
+    (tmp_path / "w").mkdir()
+    prepared = hgs.prepare(request, tmp_path / "w")
+    lines = prepared.problem.read_text().splitlines()
+    assert "EDGE_WEIGHT_FORMAT : FULL_MATRIX" in lines and lines[lines.index("EDGE_WEIGHT_SECTION") + 1] == "0 120.5 240.25"
+    assert prepared.plan.factor == 1.0 and prepared.plan.exact
+    argv = hgs.build_argv(prepared, request)
+    assert argv[1:3] == [str(prepared.problem), str(prepared.solution)] and "-round" in argv
+    monkeypatch.setenv("PATH", "/nonexistent")
+    missing = ExternalSolver(BUILTIN_DESCRIPTORS["hgs-cvrp"]).availability()
+    assert not missing.available and "hgs-cvrp-explicit-matrix.patch" in missing.note
+    assert "hgs-cvrp-explicit-matrix.patch" in missing.describe()  # what `solve` prints
+
+
+def test_a_cancel_poll_is_seen_between_steps_not_only_at_ticks(collection: Path, tmp_path: Path, monkeypatch) -> None:
+    """The GUI cancels through a flag: a cancel while a large input is written must not launch the solver."""
+    path = _variant(collection, "CVRP", "fastest")
+    flag = {"cancelled": True}
+    early = tmp_path / "early"
+    solved = run_solver(
+        ExternalSolver(FAKE_LKH), path, time_limit_s=60, workdir=early, keep_artifacts=True,
+        monitor=SolveMonitor(None, interval_s=3600.0, cancelled=lambda: flag["cancelled"]),
+    )
+    assert solved.result.status == "cancelled" and not (early / "problem.vrp").exists()
+
+    flag["cancelled"] = False
+    original = ExternalSolver.prepare
+
+    def prepare(self, request, workdir):  # the user cancels while the input is being written
+        prepared = original(self, request, workdir)
+        flag["cancelled"] = True
+        return prepared
+
+    monkeypatch.setattr(ExternalSolver, "prepare", prepare)
+    late = tmp_path / "late"
+    solved = run_solver(
+        ExternalSolver(FAKE_LKH), path, time_limit_s=60, workdir=late, keep_artifacts=True,
+        monitor=SolveMonitor(None, interval_s=3600.0, cancelled=lambda: flag["cancelled"]),
+    )
+    assert solved.result.status == "cancelled" and (late / "problem.vrp").exists()
+    assert not (late / "solver.log").exists()  # the solver never started
+
+
+def test_lkh_extra_args_go_to_the_parameter_file_whatever_the_argv(collection: Path, tmp_path: Path) -> None:
+    """A wrapped command (taskset, a launcher script) still gets its extra parameter lines."""
+    from mamut_routing_lib.artifacts import load_benchmark_instance
+    from mamut_routing_lib.solvers.base import SolveRequest
+
+    path = _variant(collection, "CVRP", "fastest")
+    request = SolveRequest(
+        instance=load_benchmark_instance(path), instance_path=path, objective=ObjectiveFunction.MONO_COST, time_limit_s=5,
+    )
+    for argv in (("{executable}", "{params}"), ("taskset", "-c", "0", "{executable}", "{params}")):
+        solver = ExternalSolver(
+            BUILTIN_DESCRIPTORS["lkh3"].with_overrides(
+                executable=str(_executable(tmp_path, "LKH")), argv=argv, extra_args=("RUNS = 10", "POPULATION_SIZE = {5}")
+            )
+        )
+        workdir = tmp_path / f"w{len(argv)}"
+        workdir.mkdir()
+        prepared = solver.prepare(request, workdir)
+        assert prepared.params.read_text().splitlines()[-2:] == ["RUNS = 10", "POPULATION_SIZE = {5}"]
+        assert solver.build_argv(prepared, request)[-1] == str(prepared.params)  # no stray command-line token
+
+
+def test_one_solve_reads_the_distance_matrix_once(collection: Path, monkeypatch) -> None:
+    """The adapter's input, the check and the store share the hydrated instance."""
+    from mamut_routing_lib import distances
+    from mamut_routing_lib.solutions import submit_bks
+
+    reads: list[Path] = []
+    original = distances.load_instance_distances
+
+    def counting(path, *args, **kwargs):
+        reads.append(Path(path))
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(distances, "load_instance_distances", counting)
+    path = _variant(collection, "CVRP", "fastest")
+    solved = run_solver(ExternalSolver(FAKE_LKH), path, time_limit_s=5)
+    assert solved.valid and solved.checkable is not None
+    update = submit_bks(path, solved.result.routes, authors="Ada", checkable=solved.checkable)
+    assert update.action == "created" and len(reads) == 1
+
+    reads.clear()
+    pytest.importorskip("pyvrp")
+    assert run_solver("pyvrp", path, time_limit_s=1).valid
+    assert len(reads) == 1

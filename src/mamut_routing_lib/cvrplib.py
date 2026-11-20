@@ -65,7 +65,6 @@ from mamut_routing_lib.enums import BenchmarkName, MetricVariant, ProblemType
 from mamut_routing_lib.models import (
     ArcCostsEuclidean,
     BenchmarkInstance,
-    BenchmarkInstanceCVRP,
     BenchmarkInstanceCVRPCollection,
     BenchmarkInstanceVRPTWCollection,
 )
@@ -391,6 +390,28 @@ def coordinates_define_arc_costs(
     return True
 
 
+def is_symmetric_matrix(arc_costs: Sequence[Sequence[Any]]) -> bool:
+    """True when ``arc_costs[i][j] == arc_costs[j][i]`` for every pair (exact comparison).
+
+    Road-network metrics (``fastest``, ``shortest``) are asymmetric; a solver that
+    assumes symmetry would optimise a different instance on them without error.
+    """
+    try:
+        import numpy as np
+    except ImportError:  # pragma: no cover - numpy ships with the pyvrp extra
+        np = None
+    if np is not None:
+        matrix = np.asarray(arc_costs, dtype=np.float64)
+        return bool(matrix.shape[0] == matrix.shape[1] and np.array_equal(matrix, matrix.T))
+    size = len(arc_costs)
+    for i in range(size):
+        row = arc_costs[i]
+        for j in range(i + 1, size):
+            if row[j] != arc_costs[j][i]:
+                return False
+    return True
+
+
 def _require_coordinate_costs(
     instance: AnyBenchmarkInstance,
     what: str,
@@ -590,6 +611,7 @@ __all__ = [
     "format_vrp_comment",
     "instance_metric_variant",
     "instance_to_vrp_text",
+    "is_symmetric_matrix",
     "render_cvrplib",
     "render_solomon",
     "vector_formatter",

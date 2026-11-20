@@ -97,6 +97,7 @@ from mamut_routing_lib.enums import (
     ProblemType,
 )
 from mamut_routing_lib.json_utils import get_custom_json_string, load_json_from_file, save_json_to_file
+from mamut_routing_lib.objectives import base_objective, default_objective
 from mamut_routing_lib.models import (
     ArcCostsDistancesRef,
     ArcCostsEuclidean,
@@ -125,8 +126,40 @@ from mamut_routing_lib.remote import (
     load_release_manifest,
     verify_sha256,
 )
+from mamut_routing_lib.solutions import (
+    SolutionFormatError,
+    check_routes,
+    load_checkable,
+    parse_solution_text,
+    preview_bks_update,
+    read_solution_file,
+    submit_bks,
+    write_cvrplib_solution,
+)
+from mamut_routing_lib.solvers import (
+    CheckedSolve,
+    get_solver,
+    list_solvers,
+    run_solver,
+    solver_names,
+)
 
 __all__ = [
+    "CheckedSolve",
+    "SolutionFormatError",
+    "base_objective",
+    "check_routes",
+    "load_checkable",
+    "parse_solution_text",
+    "preview_bks_update",
+    "read_solution_file",
+    "submit_bks",
+    "write_cvrplib_solution",
+    "default_objective",
+    "get_solver",
+    "list_solvers",
+    "run_solver",
+    "solver_names",
     "BenchmarkLayoutResolver",
     "__version__",
     "ArcCostsDistancesRef",

@@ -1,0 +1,78 @@
+MAMUT-routing: let HGS-CVRP read an explicit (possibly asymmetric) distance matrix.
+
+HGS-CVRP's search handles asymmetric distances (its README; the 2-opt moves keep reversal
+costs), and Params takes a full matrix: only the CVRPLIB reader is coordinate-only. With
+this patch the reader also accepts EDGE_WEIGHT_FORMAT : FULL_MATRIX and an
+EDGE_WEIGHT_SECTION (row i = costs from node i), keeps NODE_COORD_SECTION for the polar
+sectors of SWAP*, and computes Euclidean distances only when no matrix was given.
+
+Against github.com/vidalt/HGS-CVRP 1a92795. Apply and build:
+
+    git -C HGS-CVRP apply /path/to/hgs-cvrp-explicit-matrix.patch
+    cmake -S HGS-CVRP -B HGS-CVRP/build -DCMAKE_BUILD_TYPE=Release && cmake --build HGS-CVRP/build
+
+`mamut-routing solvers list` prints this file's installed path in the hgs-cvrp hint.
+
+--- a/Program/InstanceCVRPLIB.cpp
++++ b/Program/InstanceCVRPLIB.cpp
+@@ -10,6 +10,8 @@
+ {
+ 	std::string content, content2, content3;
+ 	double serviceTimeData = 0.;
++	bool isExplicitMatrix = false;	// MAMUT-routing patch: distances read from an EDGE_WEIGHT_SECTION
++	int dimension = -1;				// MAMUT-routing patch: number of nodes, depot included
+ 
+ 	// Read INPUT dataset
+ 	std::ifstream inputFile(pathToInstance);
+@@ -20,8 +22,24 @@
+ 		getline(inputFile, content);
+ 		for (inputFile >> content ; content != "NODE_COORD_SECTION" ; inputFile >> content)
+ 		{
+-			if (content == "DIMENSION") { inputFile >> content2 >> nbClients; nbClients--; } // Need to substract the depot from the number of nodes
++			if (content == "DIMENSION") { inputFile >> content2 >> nbClients; dimension = nbClients; nbClients--; } // Need to substract the depot from the number of nodes
+ 			else if (content == "EDGE_WEIGHT_TYPE")	inputFile >> content2 >> content3;
++			else if (content == "EDGE_WEIGHT_FORMAT")
++			{
++				// MAMUT-routing patch: only a full matrix (rows i, columns j, so asymmetric costs are kept)
++				inputFile >> content2 >> content3;
++				if (content3 != "FULL_MATRIX") throw std::string("Only EDGE_WEIGHT_FORMAT FULL_MATRIX is supported, not " + content3);
++			}
++			else if (content == "EDGE_WEIGHT_SECTION")
++			{
++				// MAMUT-routing patch: dist_mtx[i][j] is the cost of travelling from node i+1 to node j+1
++				if (dimension <= 0) throw std::string("EDGE_WEIGHT_SECTION must come after DIMENSION");
++				dist_mtx = std::vector < std::vector< double > >(dimension, std::vector <double>(dimension));
++				for (int i = 0; i < dimension; i++)
++					for (int j = 0; j < dimension; j++)
++						if (!(inputFile >> dist_mtx[i][j])) throw std::string("Incomplete EDGE_WEIGHT_SECTION");
++				isExplicitMatrix = true;
++			}
+ 			else if (content == "CAPACITY")	inputFile >> content2 >> vehicleCapacity;
+ 			else if (content == "DISTANCE") { inputFile >> content2 >> durationLimit; isDurationConstraint = true; }
+ 			else if (content == "SERVICE_TIME")	inputFile >> content2 >> serviceTimeData;
+@@ -58,6 +76,17 @@
+ 			service_time[i] = (i == 0) ? 0. : serviceTimeData ;
+ 		}
+ 
++		if (isExplicitMatrix)
++		{
++			// MAMUT-routing patch: keep the given (possibly asymmetric) matrix; the coordinates read
++			// above only serve the polar sectors of SWAP*
++			if (isRoundingInteger)
++				for (int i = 0; i <= nbClients; i++)
++					for (int j = 0; j <= nbClients; j++)
++						dist_mtx[i][j] = round(dist_mtx[i][j]);
++		}
++		else
++		{
+ 		// Calculating 2D Euclidean Distance
+ 		dist_mtx = std::vector < std::vector< double > >(nbClients + 1, std::vector <double>(nbClients + 1));
+ 		for (int i = 0; i <= nbClients; i++)
+@@ -72,6 +101,7 @@
+ 				if (isRoundingInteger) dist_mtx[i][j] = round(dist_mtx[i][j]);
+ 			}
+ 		}
++		}
+ 
+ 		// Reading depot information (in all current instances the depot is represented as node 1, the program will return an error otherwise)
+ 		inputFile >> content >> content2 >> content3 >> content3;
