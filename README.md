@@ -97,11 +97,11 @@ mamut-routing --benchmarks-dir ./benchmarks remote verify
 mamut-routing remote manifest | jq .snapshot_id
 ```
 
-A release ships one archive per classic (problem type, family), e.g.
-`VRPTW-Sintef2008-snapshot-<id>.zip`, and one per family-first collection,
-e.g. `Poryos2026-snapshot-<id>.zip`. `fetch` keeps each zip at
+A release ships one archive per family, e.g. `Sintef2008-snapshot-<id>.zip`
+and `Poryos2026-snapshot-<id>.zip`, each holding every problem type of the
+family and its shared sidecars. `fetch` keeps each zip at
 `<benchmarks-dir>/<filename>` and extracts it into the canonical tree
-(`<benchmarks-dir>/VRPTW/Sintef2008`, `<benchmarks-dir>/Poryos2026`), the same
+(`<benchmarks-dir>/Sintef2008`, `<benchmarks-dir>/Poryos2026`), the same
 layout as a repository checkout, so `list` and
 `discover_benchmark_instances(<benchmarks-dir>)` work on a fetched tree. An
 extracted directory carries a `.mamut-release.json` stamp and is replaced by
@@ -109,7 +109,9 @@ the next fetch of that family (including files written into it since, such as
 BKS saved by `solve`); an existing directory without a stamp (a git checkout,
 local data) is only replaced with `fetch --force`. Trees extracted by lib <
 0.12 (`<benchmarks-dir>/<archive stem>/benchmarks/...`) are not discoverable:
-re-fetch, then delete them.
+re-fetch, then delete them. Snapshots published for lib <= 0.12 hold the
+former layout (`benchmarks/<problem>/<family>/...`), which this version does
+not read: `fetch` refuses to extract their archives.
 
 The `--benchmarks-dir` flag is also read from `MAMUT_ROUTING_BENCHMARKS_ROOT`
 or `MAMUT_ROUTING_ROOT`. Remote flags `--repo`, `--token`, and `--tag` are read
@@ -355,8 +357,8 @@ re-priced once, routes untouched:
 
 ```bash
 # Dry run with a JSON report, then write
-mamut-routing bks reprice-td benchmarks/TDVRPTW benchmarks/TDVRP --dry-run --jobs 8 --report reprice.json
-mamut-routing bks reprice-td benchmarks/TDVRPTW benchmarks/TDVRP --jobs 8
+mamut-routing bks reprice-td benchmarks --dry-run --jobs 8 --report reprice.json
+mamut-routing bks reprice-td benchmarks --jobs 8
 ```
 
 A file is rewritten only when a checker output changed (`cost`,

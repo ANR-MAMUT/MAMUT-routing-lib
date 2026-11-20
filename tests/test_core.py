@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from mamut_routing_lib.sidecars import CollectionMarker, save_collection_marker
+
 from mamut_routing_lib import (
     BenchmarkInstance,
     BenchmarkInstanceCVRP,
@@ -94,8 +96,10 @@ def make_vrptw_instance() -> BenchmarkInstance:
 
 def test_discover_benchmark_instances_and_problem_specific_layout(tmp_path: Path) -> None:
     benchmark_root = tmp_path / "benchmarks"
-    cvrp_path = benchmark_root / "CVRP" / "Poryos2026" / "fastest" / "testville" / "n=2" / "poryos-n2-testcvrp" / "poryos-n2-testcvrp.vrp.json"
-    vrptw_path = benchmark_root / "VRPTW" / "Poryos2026" / "euclidean" / "testville" / "n=2" / "poryos-n2-testvrptw" / "poryos-n2-testvrptw.vrp.json"
+    collection = benchmark_root / "Poryos2026"
+    save_collection_marker(CollectionMarker(family="Poryos2026"), collection)
+    cvrp_path = collection / "CVRP" / "fastest" / "testville" / "n=2" / "poryos-n2-testcvrp" / "poryos-n2-testcvrp.vrp.json"
+    vrptw_path = collection / "VRPTW" / "euclidean" / "testville" / "n=2" / "poryos-n2-testvrptw" / "poryos-n2-testvrptw.vrp.json"
     save_json_to_file(make_cvrp_instance().model_dump(mode="json"), cvrp_path)
     save_json_to_file(make_vrptw_instance().model_dump(mode="json"), vrptw_path)
 

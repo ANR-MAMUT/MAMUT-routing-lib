@@ -1,7 +1,7 @@
-"""Tests for the Ortec2022 5-part path layout and license metadata fields.
+"""Tests for the Ortec2022 subset layout and license metadata fields.
 
-The Ortec2022 family introduces a new on-disk layout
-``<problem>/<benchmark>/<subset>/n=<N>/<file>.vrp.json`` (the ``subset`` segment
+The Ortec2022 family is a collection of layout 2 with a ``subset`` directory,
+``Ortec2022/<problem>/<subset>/n=<N>/<file>.vrp.json`` (the ``subset`` segment
 partitions the dataset into ``final``/``public``). It also requires
 ``license``/``license_url`` to be carried on the typed ``InstanceMetadata`` (so
 that Poryos2026-style instances can advertise a license too), while preserving
@@ -32,10 +32,18 @@ from mamut_routing_lib import (
     save_bks,
     save_json_to_file,
 )
-from mamut_routing_lib.artifacts import build_instance_id, parse_layout
+from mamut_routing_lib.artifacts import build_instance_id, parse_collection_layout
 from mamut_routing_lib.cli import _local_instance_record
 from mamut_routing_lib.enums import InstanceOrigin
 from mamut_routing_lib.models import InstanceMetadata
+from mamut_routing_lib.sidecars import CollectionMarker, save_collection_marker
+
+
+def _ortec_collection(benchmarks_root: Path) -> Path:
+    """An empty Ortec2022 collection (layout 2) under ``benchmarks_root``; returns its root."""
+    collection = benchmarks_root / "Ortec2022"
+    save_collection_marker(CollectionMarker(family="Ortec2022", layout_version=2), collection)
+    return collection
 
 
 # --- enum round-trips -------------------------------------------------------
@@ -51,12 +59,12 @@ def test_instance_origin_ortec_2022_enum_value() -> None:
     assert InstanceOrigin("Ortec2022") is InstanceOrigin.ORTEC_2022
 
 
-# --- parse_layout & build_instance_id --------------------------------------
+# --- parse_collection_layout & build_instance_id ----------------------------
 
 
-def test_parse_layout_accepts_5_part_subset_layout() -> None:
-    relative = Path("VRPTW/Ortec2022/final/n=200/ORTEC-VRPTW-ASYM-x-d1-n212-k20.vrp.json")
-    layout = parse_layout(relative, Path("/tmp/benchmarks") / relative)
+def test_parse_layout_accepts_subset_layout() -> None:
+    relative = Path("VRPTW/final/n=200/ORTEC-VRPTW-ASYM-x-d1-n212-k20.vrp.json")
+    layout = parse_collection_layout(relative, Path("/tmp/benchmarks/Ortec2022") / relative, "Ortec2022", 2)
 
     assert layout.problem_type.value == "VRPTW"
     assert layout.benchmark_name == "Ortec2022"
@@ -67,9 +75,9 @@ def test_parse_layout_accepts_5_part_subset_layout() -> None:
     assert layout.place_slug is None
 
 
-def test_parse_layout_5_part_public_subset() -> None:
-    relative = Path("VRPTW/Ortec2022/public/n=300/ORTEC-VRPTW-ASYM-y-d1-n324-k22.vrp.json")
-    layout = parse_layout(relative, Path("/tmp") / relative)
+def test_parse_layout_public_subset() -> None:
+    relative = Path("VRPTW/public/n=300/ORTEC-VRPTW-ASYM-y-d1-n324-k22.vrp.json")
+    layout = parse_collection_layout(relative, Path("/tmp/Ortec2022") / relative, "Ortec2022", 2)
 
     assert layout.subset == "public"
     assert layout.num_customers == 300
@@ -237,13 +245,12 @@ def test_ortec_shaped_bks_validates_and_round_trips_via_load_bks(tmp_path: Path)
     assert reloaded.objective_function == ObjectiveFunction.MONO_COST
 
 
-def test_discover_benchmark_instances_finds_5_part_layout(tmp_path: Path) -> None:
+def test_discover_benchmark_instances_finds_subset_layout(tmp_path: Path) -> None:
     instance = _ortec_shaped_instance()
     benchmarks_root = tmp_path / "benchmarks"
     instance_path = (
-        benchmarks_root
+        _ortec_collection(benchmarks_root)
         / "VRPTW"
-        / "Ortec2022"
         / "final"
         / "n=200"
         / f"{instance.instance_name}.vrp.json"
@@ -264,12 +271,9 @@ def test_discover_benchmark_instances_distinguishes_final_and_public_subsets(tmp
     instance = _ortec_shaped_instance()
     benchmarks_root = tmp_path / "benchmarks"
 
-    final_path = (
-        benchmarks_root / "VRPTW" / "Ortec2022" / "final" / "n=200" / f"{instance.instance_name}.vrp.json"
-    )
-    public_path = (
-        benchmarks_root / "VRPTW" / "Ortec2022" / "public" / "n=200" / f"{instance.instance_name}.vrp.json"
-    )
+    collection = _ortec_collection(benchmarks_root)
+    final_path = collection / "VRPTW" / "final" / "n=200" / f"{instance.instance_name}.vrp.json"
+    public_path = collection / "VRPTW" / "public" / "n=200" / f"{instance.instance_name}.vrp.json"
     save_json_to_file(instance.model_dump(mode="json"), final_path)
     save_json_to_file(instance.model_dump(mode="json"), public_path)
 
@@ -281,13 +285,12 @@ def test_discover_benchmark_instances_distinguishes_final_and_public_subsets(tmp
     assert len(ids) == 2
 
 
-def test_local_instance_record_picks_up_subset_from_5_part_path(tmp_path: Path) -> None:
+def test_local_instance_record_picks_up_subset_from_path(tmp_path: Path) -> None:
     instance = _ortec_shaped_instance()
     benchmarks_root = tmp_path / "benchmarks"
     instance_path = (
-        benchmarks_root
+        _ortec_collection(benchmarks_root)
         / "VRPTW"
-        / "Ortec2022"
         / "public"
         / "n=200"
         / f"{instance.instance_name}.vrp.json"
@@ -302,7 +305,7 @@ def test_local_instance_record_picks_up_subset_from_5_part_path(tmp_path: Path) 
 def test_load_benchmark_instance_round_trips_ortec_dict_metadata(tmp_path: Path) -> None:
     instance = _ortec_shaped_instance()
     instance_path = (
-        tmp_path / "benchmarks" / "VRPTW" / "Ortec2022" / "final" / "n=200" / f"{instance.instance_name}.vrp.json"
+        tmp_path / "benchmarks" / "Ortec2022" / "VRPTW" / "final" / "n=200" / f"{instance.instance_name}.vrp.json"
     )
     save_json_to_file(instance.model_dump(mode="json"), instance_path)
 
@@ -315,6 +318,6 @@ def test_load_benchmark_instance_round_trips_ortec_dict_metadata(tmp_path: Path)
 
 
 def test_unsupported_layout_still_raises() -> None:
-    # 3-part path (problem/benchmark/file) was never supported and remains rejected.
-    with pytest.raises(ValueError, match="Unsupported benchmark instance layout"):
-        parse_layout(Path("VRPTW/Ortec2022/file.vrp.json"), Path("/tmp/VRPTW/Ortec2022/file.vrp.json"))
+    # A file directly under the problem type (no size directory) is rejected.
+    with pytest.raises(ValueError, match="Unsupported collection instance layout"):
+        parse_collection_layout(Path("VRPTW/file.vrp.json"), Path("/tmp/Ortec2022/VRPTW/file.vrp.json"), "Ortec2022", 2)

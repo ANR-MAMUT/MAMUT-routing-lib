@@ -401,8 +401,8 @@
  ],
  "routes": [
   {
-   "tree": "TDVRP/Dabia2013",
-   "instance": "TDVRP/Dabia2013/n=25/C101.vrp.json",
+   "tree": "Dabia2013/TDVRP",
+   "instance": "Dabia2013/TDVRP/n=25/C101.vrp.json",
    "route": [
     16,
     14,
@@ -423,8 +423,8 @@
    }
   },
   {
-   "tree": "TDVRP/Dabia2013",
-   "instance": "TDVRP/Dabia2013/n=25/C102.vrp.json",
+   "tree": "Dabia2013/TDVRP",
+   "instance": "Dabia2013/TDVRP/n=25/C102.vrp.json",
    "route": [
     16,
     14,
@@ -445,8 +445,8 @@
    }
   },
   {
-   "tree": "TDVRP/Dabia2013",
-   "instance": "TDVRP/Dabia2013/n=25/C103.vrp.json",
+   "tree": "Dabia2013/TDVRP",
+   "instance": "Dabia2013/TDVRP/n=25/C103.vrp.json",
    "route": [
     16,
     14,
@@ -467,8 +467,8 @@
    }
   },
   {
-   "tree": "TDVRP/Dabia2013",
-   "instance": "TDVRP/Dabia2013/n=25/C104.vrp.json",
+   "tree": "Dabia2013/TDVRP",
+   "instance": "Dabia2013/TDVRP/n=25/C104.vrp.json",
    "route": [
     16,
     14,
@@ -489,8 +489,8 @@
    }
   },
   {
-   "tree": "TDVRP/Dabia2013",
-   "instance": "TDVRP/Dabia2013/n=25/C105.vrp.json",
+   "tree": "Dabia2013/TDVRP",
+   "instance": "Dabia2013/TDVRP/n=25/C105.vrp.json",
    "route": [
     16,
     14,
@@ -511,8 +511,8 @@
    }
   },
   {
-   "tree": "TDVRPTW/Dabia2013",
-   "instance": "TDVRPTW/Dabia2013/n=25/C101.vrp.json",
+   "tree": "Dabia2013/TDVRPTW",
+   "instance": "Dabia2013/TDVRPTW/n=25/C101.vrp.json",
    "route": [
     13,
     17,
@@ -533,8 +533,8 @@
    }
   },
   {
-   "tree": "TDVRPTW/Dabia2013",
-   "instance": "TDVRPTW/Dabia2013/n=25/C102.vrp.json",
+   "tree": "Dabia2013/TDVRPTW",
+   "instance": "Dabia2013/TDVRPTW/n=25/C102.vrp.json",
    "route": [
     13,
     17,
@@ -555,8 +555,8 @@
    }
   },
   {
-   "tree": "TDVRPTW/Dabia2013",
-   "instance": "TDVRPTW/Dabia2013/n=25/C103.vrp.json",
+   "tree": "Dabia2013/TDVRPTW",
+   "instance": "Dabia2013/TDVRPTW/n=25/C103.vrp.json",
    "route": [
     13,
     17,
@@ -577,8 +577,8 @@
    }
   },
   {
-   "tree": "TDVRPTW/Dabia2013",
-   "instance": "TDVRPTW/Dabia2013/n=25/C104.vrp.json",
+   "tree": "Dabia2013/TDVRPTW",
+   "instance": "Dabia2013/TDVRPTW/n=25/C104.vrp.json",
    "route": [
     13,
     18,
@@ -599,8 +599,8 @@
    }
   },
   {
-   "tree": "TDVRPTW/Dabia2013",
-   "instance": "TDVRPTW/Dabia2013/n=25/C105.vrp.json",
+   "tree": "Dabia2013/TDVRPTW",
+   "instance": "Dabia2013/TDVRPTW/n=25/C105.vrp.json",
    "route": [
     13,
     17,
@@ -621,8 +621,8 @@
    }
   },
   {
-   "tree": "TDVRP/Ari2018",
-   "instance": "TDVRP/Ari2018/n=30/Ari-C3-pB-d80-w25.vrp.json",
+   "tree": "Ari2018/TDVRP",
+   "instance": "Ari2018/TDVRP/n=30/Ari-C3-pB-d80-w25.vrp.json",
    "route": [
     19,
     17,
@@ -644,8 +644,8 @@
    }
   },
   {
-   "tree": "TDVRP/Ari2018",
-   "instance": "TDVRP/Ari2018/n=30/Ari-C6-pA-d80-w100.vrp.json",
+   "tree": "Ari2018/TDVRP",
+   "instance": "Ari2018/TDVRP/n=30/Ari-C6-pA-d80-w100.vrp.json",
    "route": [
     2,
     23,
@@ -669,8 +669,8 @@
    }
   },
   {
-   "tree": "TDVRP/Ari2018",
-   "instance": "TDVRP/Ari2018/n=30/Ari-C6-pA-d80-w25.vrp.json",
+   "tree": "Ari2018/TDVRP",
+   "instance": "Ari2018/TDVRP/n=30/Ari-C6-pA-d80-w25.vrp.json",
    "route": [
     2
    ],
@@ -684,8 +684,8 @@
    }
   },
   {
-   "tree": "TDVRP/Ari2018",
-   "instance": "TDVRP/Ari2018/n=40/Ari-B1-pB-d98-w25.vrp.json",
+   "tree": "Ari2018/TDVRP",
+   "instance": "Ari2018/TDVRP/n=40/Ari-B1-pB-d98-w25.vrp.json",
    "route": [
     29,
     11,
@@ -704,8 +704,8 @@
    }
   },
   {
-   "tree": "TDVRP/Ari2018",
-   "instance": "TDVRP/Ari2018/n=40/Ari-B10-pA-d90-w50.vrp.json",
+   "tree": "Ari2018/TDVRP",
+   "instance": "Ari2018/TDVRP/n=40/Ari-B10-pA-d90-w50.vrp.json",
    "route": [
     15,
     1,
@@ -725,8 +725,8 @@
    }
   },
   {
-   "tree": "TDVRPTW/Ari2018",
-   "instance": "TDVRPTW/Ari2018/n=15/Ari-A10-pB-d70-w50.vrp.json",
+   "tree": "Ari2018/TDVRPTW",
+   "instance": "Ari2018/TDVRPTW/n=15/Ari-A10-pB-d70-w50.vrp.json",
    "route": [
     2,
     6,
@@ -747,8 +747,8 @@
    }
   },
   {
-   "tree": "TDVRPTW/Ari2018",
-   "instance": "TDVRPTW/Ari2018/n=15/Ari-A3-pB-d95-w0.vrp.json",
+   "tree": "Ari2018/TDVRPTW",
+   "instance": "Ari2018/TDVRPTW/n=15/Ari-A3-pB-d95-w0.vrp.json",
    "route": [
     3,
     1,
@@ -768,8 +768,8 @@
    }
   },
   {
-   "tree": "TDVRPTW/Ari2018",
-   "instance": "TDVRPTW/Ari2018/n=15/Ari-A7-pA-d70-w0.vrp.json",
+   "tree": "Ari2018/TDVRPTW",
+   "instance": "Ari2018/TDVRPTW/n=15/Ari-A7-pA-d70-w0.vrp.json",
    "route": [
     5,
     3,
@@ -788,8 +788,8 @@
    }
   },
   {
-   "tree": "TDVRPTW/Ari2018",
-   "instance": "TDVRPTW/Ari2018/n=15/Ari-A7-pB-d80-w50.vrp.json",
+   "tree": "Ari2018/TDVRPTW",
+   "instance": "Ari2018/TDVRPTW/n=15/Ari-A7-pB-d80-w50.vrp.json",
    "route": [
     1,
     3,
@@ -812,8 +812,8 @@
    }
   },
   {
-   "tree": "TDVRPTW/Ari2018",
-   "instance": "TDVRPTW/Ari2018/n=15/Ari-A7-pB-d90-w100.vrp.json",
+   "tree": "Ari2018/TDVRPTW",
+   "instance": "Ari2018/TDVRPTW/n=15/Ari-A7-pB-d90-w100.vrp.json",
    "route": [
     1,
     3,
@@ -834,8 +834,8 @@
    }
   },
   {
-   "tree": "TDVRP/Rifki2020",
-   "instance": "TDVRP/Rifki2020/n=10/Rifki-1.vrp.json",
+   "tree": "Rifki2020/TDVRP",
+   "instance": "Rifki2020/TDVRP/n=10/Rifki-1.vrp.json",
    "route": [
     6,
     3,
@@ -852,8 +852,8 @@
    }
   },
   {
-   "tree": "TDVRP/Rifki2020",
-   "instance": "TDVRP/Rifki2020/n=10/Rifki-10.vrp.json",
+   "tree": "Rifki2020/TDVRP",
+   "instance": "Rifki2020/TDVRP/n=10/Rifki-10.vrp.json",
    "route": [
     4,
     5,
@@ -869,8 +869,8 @@
    }
   },
   {
-   "tree": "TDVRP/Rifki2020",
-   "instance": "TDVRP/Rifki2020/n=10/Rifki-12.vrp.json",
+   "tree": "Rifki2020/TDVRP",
+   "instance": "Rifki2020/TDVRP/n=10/Rifki-12.vrp.json",
    "route": [
     7,
     6
@@ -885,8 +885,8 @@
    }
   },
   {
-   "tree": "TDVRP/Rifki2020",
-   "instance": "TDVRP/Rifki2020/n=10/Rifki-14.vrp.json",
+   "tree": "Rifki2020/TDVRP",
+   "instance": "Rifki2020/TDVRP/n=10/Rifki-14.vrp.json",
    "route": [
     6,
     10,
@@ -903,8 +903,8 @@
    }
   },
   {
-   "tree": "TDVRP/Rifki2020",
-   "instance": "TDVRP/Rifki2020/n=10/Rifki-16.vrp.json",
+   "tree": "Rifki2020/TDVRP",
+   "instance": "Rifki2020/TDVRP/n=10/Rifki-16.vrp.json",
    "route": [
     4,
     6,
@@ -921,8 +921,8 @@
    }
   },
   {
-   "tree": "TDVRPTW/Rifki2020",
-   "instance": "TDVRPTW/Rifki2020/n=10/Rifki-1.vrp.json",
+   "tree": "Rifki2020/TDVRPTW",
+   "instance": "Rifki2020/TDVRPTW/n=10/Rifki-1.vrp.json",
    "route": [
     9,
     10,
@@ -938,8 +938,8 @@
    }
   },
   {
-   "tree": "TDVRPTW/Rifki2020",
-   "instance": "TDVRPTW/Rifki2020/n=10/Rifki-11.vrp.json",
+   "tree": "Rifki2020/TDVRPTW",
+   "instance": "Rifki2020/TDVRPTW/n=10/Rifki-11.vrp.json",
    "route": [
     2,
     3
@@ -954,8 +954,8 @@
    }
   },
   {
-   "tree": "TDVRPTW/Rifki2020",
-   "instance": "TDVRPTW/Rifki2020/n=10/Rifki-12.vrp.json",
+   "tree": "Rifki2020/TDVRPTW",
+   "instance": "Rifki2020/TDVRPTW/n=10/Rifki-12.vrp.json",
    "route": [
     5,
     10,
@@ -972,8 +972,8 @@
    }
   },
   {
-   "tree": "TDVRPTW/Rifki2020",
-   "instance": "TDVRPTW/Rifki2020/n=10/Rifki-13.vrp.json",
+   "tree": "Rifki2020/TDVRPTW",
+   "instance": "Rifki2020/TDVRPTW/n=10/Rifki-13.vrp.json",
    "route": [
     1,
     7,
@@ -989,8 +989,8 @@
    }
   },
   {
-   "tree": "TDVRPTW/Rifki2020",
-   "instance": "TDVRPTW/Rifki2020/n=10/Rifki-15.vrp.json",
+   "tree": "Rifki2020/TDVRPTW",
+   "instance": "Rifki2020/TDVRPTW/n=10/Rifki-15.vrp.json",
    "route": [
     9,
     7,
@@ -1006,8 +1006,8 @@
    }
   },
   {
-   "tree": "TDVRP/Vu2020",
-   "instance": "TDVRP/Vu2020/n=59/Vu-A5-pA-d70-w40.vrp.json",
+   "tree": "Vu2020/TDVRP",
+   "instance": "Vu2020/TDVRP/n=59/Vu-A5-pA-d70-w40.vrp.json",
    "route": [
     10,
     23,
@@ -1024,8 +1024,8 @@
    }
   },
   {
-   "tree": "TDVRP/Vu2020",
-   "instance": "TDVRP/Vu2020/n=99/Vu-A1-pA-d98-w40.vrp.json",
+   "tree": "Vu2020/TDVRP",
+   "instance": "Vu2020/TDVRP/n=99/Vu-A1-pA-d98-w40.vrp.json",
    "route": [
     46,
     65,
@@ -1044,8 +1044,8 @@
    }
   },
   {
-   "tree": "TDVRPTW/Vu2020",
-   "instance": "TDVRPTW/Vu2020/n=59/Vu-A1-pA-d70-w150.vrp.json",
+   "tree": "Vu2020/TDVRPTW",
+   "instance": "Vu2020/TDVRPTW/n=59/Vu-A1-pA-d70-w150.vrp.json",
    "route": [
     4,
     44,
@@ -1063,8 +1063,8 @@
    }
   },
   {
-   "tree": "TDVRPTW/Vu2020",
-   "instance": "TDVRPTW/Vu2020/n=59/Vu-A1-pA-d80-w100.vrp.json",
+   "tree": "Vu2020/TDVRPTW",
+   "instance": "Vu2020/TDVRPTW/n=59/Vu-A1-pA-d80-w100.vrp.json",
    "route": [
     7,
     39,
@@ -1080,8 +1080,8 @@
    }
   },
   {
-   "tree": "TDVRPTW/Vu2020",
-   "instance": "TDVRPTW/Vu2020/n=59/Vu-A1-pA-d80-w180.vrp.json",
+   "tree": "Vu2020/TDVRPTW",
+   "instance": "Vu2020/TDVRPTW/n=59/Vu-A1-pA-d80-w180.vrp.json",
    "route": [
     9,
     54,
@@ -1102,8 +1102,8 @@
    }
   },
   {
-   "tree": "TDVRPTW/Vu2020",
-   "instance": "TDVRPTW/Vu2020/n=59/Vu-A1-pA-d90-w100.vrp.json",
+   "tree": "Vu2020/TDVRPTW",
+   "instance": "Vu2020/TDVRPTW/n=59/Vu-A1-pA-d90-w100.vrp.json",
    "route": [
     9,
     41,
@@ -1119,8 +1119,8 @@
    }
   },
   {
-   "tree": "TDVRPTW/Vu2020",
-   "instance": "TDVRPTW/Vu2020/n=59/Vu-A1-pA-d90-w60.vrp.json",
+   "tree": "Vu2020/TDVRPTW",
+   "instance": "Vu2020/TDVRPTW/n=59/Vu-A1-pA-d90-w60.vrp.json",
    "route": [
     29,
     22,
@@ -1136,8 +1136,8 @@
    }
   },
   {
-   "tree": "TDVRP/Lera2026",
-   "instance": "TDVRP/Lera2026/S1/n=200/Lera-C1_2_1-S1.vrp.json",
+   "tree": "Lera2026/TDVRP",
+   "instance": "Lera2026/TDVRP/S1/n=200/Lera-C1_2_1-S1.vrp.json",
    "route": [
     17,
     183,
@@ -1158,8 +1158,8 @@
    }
   },
   {
-   "tree": "TDVRP/Lera2026",
-   "instance": "TDVRP/Lera2026/S1/n=200/Lera-C1_2_10-S1.vrp.json",
+   "tree": "Lera2026/TDVRP",
+   "instance": "Lera2026/TDVRP/S1/n=200/Lera-C1_2_10-S1.vrp.json",
    "route": [
     11,
     147,
@@ -1180,8 +1180,8 @@
    }
   },
   {
-   "tree": "TDVRP/Lera2026",
-   "instance": "TDVRP/Lera2026/S1/n=200/Lera-C1_2_5-S1.vrp.json",
+   "tree": "Lera2026/TDVRP",
+   "instance": "Lera2026/TDVRP/S1/n=200/Lera-C1_2_5-S1.vrp.json",
    "route": [
     2,
     190,
@@ -1206,8 +1206,8 @@
    }
   },
   {
-   "tree": "TDVRP/Lera2026",
-   "instance": "TDVRP/Lera2026/S1/n=200/Lera-C2_2_1-S1.vrp.json",
+   "tree": "Lera2026/TDVRP",
+   "instance": "Lera2026/TDVRP/S1/n=200/Lera-C2_2_1-S1.vrp.json",
    "route": [
     92,
     60,
@@ -1257,8 +1257,8 @@
    }
   },
   {
-   "tree": "TDVRP/Lera2026",
-   "instance": "TDVRP/Lera2026/S1/n=200/Lera-C2_2_10-S1.vrp.json",
+   "tree": "Lera2026/TDVRP",
+   "instance": "Lera2026/TDVRP/S1/n=200/Lera-C2_2_10-S1.vrp.json",
    "route": [
     52,
     160,
@@ -1297,8 +1297,8 @@
    }
   },
   {
-   "tree": "TDVRPTW/Lera2026",
-   "instance": "TDVRPTW/Lera2026/S1/n=200/Lera-C1_2_1-S1.vrp.json",
+   "tree": "Lera2026/TDVRPTW",
+   "instance": "Lera2026/TDVRPTW/S1/n=200/Lera-C1_2_1-S1.vrp.json",
    "route": [
     20,
     41,
@@ -1321,8 +1321,8 @@
    }
   },
   {
-   "tree": "TDVRPTW/Lera2026",
-   "instance": "TDVRPTW/Lera2026/S1/n=200/Lera-C1_2_10-S1.vrp.json",
+   "tree": "Lera2026/TDVRPTW",
+   "instance": "Lera2026/TDVRPTW/S1/n=200/Lera-C1_2_10-S1.vrp.json",
    "route": [
     3,
     88,
@@ -1346,8 +1346,8 @@
    }
   },
   {
-   "tree": "TDVRPTW/Lera2026",
-   "instance": "TDVRPTW/Lera2026/S1/n=200/Lera-C1_2_5-S1.vrp.json",
+   "tree": "Lera2026/TDVRPTW",
+   "instance": "Lera2026/TDVRPTW/S1/n=200/Lera-C1_2_5-S1.vrp.json",
    "route": [
     20,
     41,
@@ -1370,8 +1370,8 @@
    }
   },
   {
-   "tree": "TDVRPTW/Lera2026",
-   "instance": "TDVRPTW/Lera2026/S1/n=200/Lera-C2_2_1-S1.vrp.json",
+   "tree": "Lera2026/TDVRPTW",
+   "instance": "Lera2026/TDVRPTW/S1/n=200/Lera-C2_2_1-S1.vrp.json",
    "route": [
     136,
     104,
@@ -1420,8 +1420,8 @@
    }
   },
   {
-   "tree": "TDVRPTW/Lera2026",
-   "instance": "TDVRPTW/Lera2026/S1/n=200/Lera-C2_2_10-S1.vrp.json",
+   "tree": "Lera2026/TDVRPTW",
+   "instance": "Lera2026/TDVRPTW/S1/n=200/Lera-C2_2_10-S1.vrp.json",
    "route": [
     41,
     200,
@@ -1466,8 +1466,8 @@
    }
   },
   {
-   "tree": "TDVRPTW/Blauth2024",
-   "instance": "TDVRPTW/Blauth2024/n=10/Blauth-berlin.vrp.json",
+   "tree": "Blauth2024/TDVRPTW",
+   "instance": "Blauth2024/TDVRPTW/n=10/Blauth-berlin.vrp.json",
    "route": [
     6,
     5,
@@ -1486,8 +1486,8 @@
    }
   },
   {
-   "tree": "TDVRPTW/Blauth2024",
-   "instance": "TDVRPTW/Blauth2024/n=10/Blauth-cincinnati.vrp.json",
+   "tree": "Blauth2024/TDVRPTW",
+   "instance": "Blauth2024/TDVRPTW/n=10/Blauth-cincinnati.vrp.json",
    "route": [
     6,
     7,
@@ -1506,8 +1506,8 @@
    }
   },
   {
-   "tree": "TDVRPTW/Blauth2024",
-   "instance": "TDVRPTW/Blauth2024/n=10/Blauth-kyiv.vrp.json",
+   "tree": "Blauth2024/TDVRPTW",
+   "instance": "Blauth2024/TDVRPTW/n=10/Blauth-kyiv.vrp.json",
    "route": [
     5,
     1,
@@ -1526,8 +1526,8 @@
    }
   },
   {
-   "tree": "TDVRPTW/Blauth2024",
-   "instance": "TDVRPTW/Blauth2024/n=10/Blauth-london.vrp.json",
+   "tree": "Blauth2024/TDVRPTW",
+   "instance": "Blauth2024/TDVRPTW/n=10/Blauth-london.vrp.json",
    "route": [
     4,
     5,
@@ -1546,8 +1546,8 @@
    }
   },
   {
-   "tree": "TDVRPTW/Blauth2024",
-   "instance": "TDVRPTW/Blauth2024/n=10/Blauth-madrid.vrp.json",
+   "tree": "Blauth2024/TDVRPTW",
+   "instance": "Blauth2024/TDVRPTW/n=10/Blauth-madrid.vrp.json",
    "route": [
     8,
     7,

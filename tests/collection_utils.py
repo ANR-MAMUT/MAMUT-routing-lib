@@ -1,4 +1,4 @@
-"""A toy family-first collection (Poryos2026-shaped) next to a historic family, for tests."""
+"""Two toy family collections for tests: Poryos2026 (layout 1) and a classic family, Sintef2008 (layout 2)."""
 
 from __future__ import annotations
 
@@ -116,7 +116,7 @@ def write_toy_collection(tmp_path: Path) -> Path:
         collection / "TDVRPTW" / CITY / "n=2" / BASE / "bpr-heavy" / f"{BASE}-bpr-heavy.vrp.json",
     )
 
-    # Historic 4-part layout family next to the collection (regression).
+    # A classic family next to it: a collection of layout 2 (<problem>/n=<N>/<file>).
     historic = {
         "instance_name": "toy-h1",
         "instance_origin": "Solomon1987",
@@ -132,5 +132,7 @@ def write_toy_collection(tmp_path: Path) -> Path:
         "time_windows": [[0, 100], [0, 100], [0, 100]],
         "metadata": {},
     }
-    save_json_to_file(historic, root / "VRPTW" / "Sintef2008" / "n=2" / "toy-h1.vrp.json")
+    classic = root / "Sintef2008"
+    save_collection_marker(CollectionMarker(family="Sintef2008", layout_version=2), classic)
+    save_json_to_file(historic, classic / "VRPTW" / "n=2" / "toy-h1.vrp.json")
     return root

@@ -162,9 +162,22 @@ class TestInstanceLoading:
 
 class TestDiscoveryIntegration:
     def test_discover_and_load_tdvrptw_layout(self, tmp_path):
-        family_dir = tmp_path / "TDVRPTW" / "Dabia2013" / "n=2"
+        from mamut_routing_lib.sidecars import CollectionMarker, save_collection_marker
+
+        collection = tmp_path / "Dabia2013"
+        save_collection_marker(CollectionMarker(family="Dabia2013", layout_version=2), collection)
+        family_dir = collection / "TDVRPTW" / "n=2"
         family_dir.mkdir(parents=True)
-        write_toy_instance_files(family_dir)
+        instance_path = write_toy_instance_files(family_dir)
+        # Inside a collection the sidecar path is relative to the collection root.
+        shared = collection / "sidecars" / "n=2"
+        shared.mkdir(parents=True)
+        (family_dir / "TOY1.atf.json").rename(shared / "TOY1.atf.json")
+        payload = json.loads(instance_path.read_text())
+        payload["td"]["atf_path"] = "sidecars/n=2/TOY1.atf.json"
+        instance_path.write_text(json.dumps(payload))
+        loaded = load_td_instance(instance_path)
+        assert loaded.atf_path == shared / "TOY1.atf.json"
         discovered = discover_benchmark_instances(tmp_path)
         assert len(discovered) == 1
         item = discovered[0]

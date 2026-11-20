@@ -228,16 +228,25 @@ def load_instance_atfs(
     return _atfs_from_payload(payload, validate_complete=validate_complete)
 
 
-def get_atf_path_for_instance(instance_path: str | Path, atf_path: str | None = None) -> Path:
-    """Resolve the sidecar path next to the instance file.
+def get_atf_path_for_instance(
+    instance_path: str | Path,
+    atf_path: str | None = None,
+    *,
+    collection_root: str | Path | None = None,
+) -> Path:
+    """Resolve the ATF sidecar of an instance file.
 
     When ``atf_path`` (from the instance's ``td`` block) is given it is
-    resolved relative to the instance directory; otherwise the conventional
-    sibling names are probed (plain first, then gzip).
+    resolved against the collection root for an instance inside a collection,
+    and against the instance directory for a loose file
+    (``sidecars.sidecar_base_dir``); otherwise the conventional sibling names
+    are probed (plain first, then gzip).
     """
     base = Path(instance_path)
     if atf_path is not None:
-        return base.parent / atf_path
+        from mamut_routing_lib.sidecars import sidecar_base_dir
+
+        return sidecar_base_dir(base, collection_root) / atf_path
     stem = base.name.removesuffix(".vrp.json")
     plain = base.parent / f"{stem}{ATF_PLAIN_SUFFIX}"
     if plain.exists():
@@ -284,8 +293,10 @@ def _load_td_instance_igp(
     instance: AnyTDBenchmarkInstance,
     *,
     verify_sha256: bool,
+    collection_root: Path | None = None,
 ) -> LoadedTDInstance:
     """igp-profile branch: load categories, materialize the canonical ATFs."""
+    from mamut_routing_lib.sidecars import sidecar_base_dir
     from mamut_routing_lib.td.igp import (
         compute_categories_sha256,
         load_instance_categories,
@@ -293,7 +304,7 @@ def _load_td_instance_igp(
     )
 
     td = instance.td
-    categories_path = source.parent / td.categories_path
+    categories_path = sidecar_base_dir(source, collection_root) / td.categories_path
     categories = load_instance_categories(categories_path)
     if categories.num_customers != instance.num_customers:
         raise ATFFormatError(
@@ -413,15 +424,18 @@ def load_td_instance(
     sidecar(s); ``verify_sha256`` then covers both the sidecar hashes (cheap)
     and ``atf_sha256`` (a full canonical serialization of the materialized
     ATFs -- minutes at n=1000; pass ``verify_sha256=False`` in solver hot
-    paths, materialization is deterministic either way). ``road-graph``
-    sidecar paths are collection-root-relative: the root is found by walking
-    up to the ``mamut-collection.json`` marker, or passed explicitly via
-    ``collection_root``.
+    paths, materialization is deterministic either way). Inside a collection,
+    every sidecar path is collection-root-relative: the root is found by
+    walking up to the ``mamut-collection.json`` marker, or passed explicitly
+    via ``collection_root``. A loose ``atf-ndcpwlf`` or ``igp-profile``
+    instance (no marker above it) reads its sidecar next to the instance
+    file; ``road-graph`` instances always need a collection.
     """
     source = Path(instance_path)
     instance = load_td_benchmark_instance(source)
+    root_override = Path(collection_root) if collection_root is not None else None
     if isinstance(instance.td, TDIGPProfileRef):
-        return _load_td_instance_igp(source, instance, verify_sha256=verify_sha256)
+        return _load_td_instance_igp(source, instance, verify_sha256=verify_sha256, collection_root=root_override)
     if isinstance(instance.td, TDRoadGraphRef):
         return _load_td_instance_roadgraph(
             source,
@@ -429,7 +443,7 @@ def load_td_instance(
             verify_sha256=verify_sha256,
             collection_root=Path(collection_root) if collection_root is not None else None,
         )
-    atf_path = get_atf_path_for_instance(source, instance.td.atf_path)
+    atf_path = get_atf_path_for_instance(source, instance.td.atf_path, collection_root=root_override)
     atfs = load_instance_atfs(atf_path, validate_complete=validate_complete)
 
     if atfs.instance_name != instance.instance_name:

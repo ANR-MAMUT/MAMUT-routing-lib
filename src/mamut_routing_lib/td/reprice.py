@@ -122,7 +122,9 @@ def load_td_instance_for_routes(
             materialize_selected_atfs_igp,
         )
 
-        categories_path = source.parent / td.categories_path
+        from mamut_routing_lib.sidecars import sidecar_base_dir
+
+        categories_path = sidecar_base_dir(source, collection_root) / td.categories_path
         categories = load_instance_categories(categories_path)
         if verify_sidecar_sha256 and td.categories_sha256 is not None:
             if compute_categories_sha256(categories) != td.categories_sha256:
@@ -167,7 +169,7 @@ def load_td_instance_for_routes(
             collection_root=root,
         )
 
-    atf_path = get_atf_path_for_instance(source, td.atf_path)
+    atf_path = get_atf_path_for_instance(source, td.atf_path, collection_root=collection_root)
     if not atf_path.is_file() and atf_dir is not None:
         atf_path = Path(atf_dir) / Path(td.atf_path).name
     if not atf_path.is_file():

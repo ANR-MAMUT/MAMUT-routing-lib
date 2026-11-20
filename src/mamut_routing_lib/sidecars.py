@@ -5,9 +5,13 @@ one benchmark family plus their shared ``sidecars/`` tree) marked by a
 ``mamut-collection.json`` file at its root. Instance files inside a collection
 reference their sidecars with paths **relative to the collection root**, each
 paired with the sha256 of the sidecar's uncompressed canonical JSON bytes.
-The Poryos2026 family (mounted at ``benchmarks/Poryos2026/``) is the first
-collection; historic families keep the problem-type-first layout and
-instance-relative sidecar paths.
+Every published family is a collection (mounted at ``benchmarks/<Family>/``).
+The marker's ``layout_version`` says how instance paths are shaped below the
+root: 1 is the Poryos2026 shape (place, size, base instance), 2 is the shape of
+the classic families (``<problem>/[<subset>/]n=<N>/<file>.vrp.json``).
+
+An instance file that has no marker above it is a loose file: its sidecar
+paths are relative to its own directory (:func:`sidecar_base_dir`).
 """
 
 from __future__ import annotations
@@ -20,6 +24,8 @@ from pydantic import BaseModel, ConfigDict, field_validator
 COLLECTION_MARKER_FILENAME = "mamut-collection.json"
 COLLECTION_MARKER_FORMAT = "mamut-collection"
 COLLECTION_MARKER_FORMAT_VERSION = 1
+#: ``layout_version`` values of the marker: 1 = Poryos2026 shape, 2 = classic-family shape.
+COLLECTION_LAYOUT_VERSIONS = (1, 2)
 
 #: Safety bound for the marker walk-up (a benchmarks tree is never this deep).
 _MAX_WALK_UP_LEVELS = 32
@@ -84,6 +90,13 @@ class CollectionMarker(BaseModel):
             raise ValueError(f"unsupported collection marker format_version: {value!r}")
         return value
 
+    @field_validator("layout_version")
+    @classmethod
+    def validate_layout_version(cls, value: int) -> int:
+        if value not in COLLECTION_LAYOUT_VERSIONS:
+            raise ValueError(f"unsupported collection layout_version: {value!r} (known: {COLLECTION_LAYOUT_VERSIONS})")
+        return value
+
 
 def load_collection_marker(marker_path: str | Path) -> CollectionMarker:
     path = Path(marker_path)
@@ -133,6 +146,19 @@ def require_collection_root(
             "pass collection_root= explicitly"
         )
     return root
+
+
+def sidecar_base_dir(instance_path: str | Path, collection_root: str | Path | None = None) -> Path:
+    """The directory that the sidecar paths written in an instance are relative to.
+
+    Inside a collection this is the collection root (explicit ``collection_root``, else the
+    nearest ``mamut-collection.json`` walking up). A loose instance file, with no marker above
+    it, resolves its sidecars against its own directory.
+    """
+    if collection_root is not None:
+        return require_collection_root(instance_path, collection_root)
+    root = find_collection_root(instance_path)
+    return root if root is not None else Path(instance_path).parent
 
 
 def resolve_sidecar_ref(

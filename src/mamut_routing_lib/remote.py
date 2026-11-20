@@ -61,7 +61,10 @@ ProgressCallback: TypeAlias = Callable[[int, int | None], None]
 
 
 class ReleaseArchiveScope(str, Enum):
-    """What an archive covers: one problem type of one classic family, or a whole collection."""
+    """What an archive covers: a whole family collection, or (snapshots up to 2026-09) one problem type of one family."""
+    #: One problem type of one family in the problem-type-first layout. Found only in
+    #: snapshots published for mamut-routing-lib <= 0.12, whose trees this version does
+    #: not read: the manifest is still parsed, the archive is refused at extraction.
     PROBLEM_FAMILY = "problem_family"
     #: One archive covering a whole family-first collection (all problem-type
     #: variants + the shared sidecars tree), e.g. Poryos2026. ``benchmark_name``
@@ -340,8 +343,17 @@ class GitHubReleaseClient:
         ``extract`` the canonical target directory (``extract_release_archive``,
         stamped with the snapshot of ``manifest`` when given; ``force``
         replaces an unstamped existing subtree). ``progress_callback``
-        receives ``(bytes_so_far, total_or_None)``.
+        receives ``(bytes_so_far, total_or_None)``. Extracting a
+        ``problem_family`` archive (problem-type-first layout) raises
+        ``ReleaseExtractionError``: this version reads family collections only.
         """
+        if extract and asset.scope == ReleaseArchiveScope.PROBLEM_FAMILY:
+            raise ReleaseExtractionError(
+                f"{asset.filename} holds the problem-type-first layout "
+                f"(benchmarks/<problem>/<family>/...), published for mamut-routing-lib <= 0.12. "
+                "This version reads family collections (benchmarks/<Family>/) only: fetch a snapshot "
+                "published for mamut-routing-lib >= 0.13, or use mamut-routing-lib 0.12 with this one."
+            )
         destination_root = Path(destination_dir)
         destination_root.mkdir(parents=True, exist_ok=True)
         destination_path = destination_root / asset.filename

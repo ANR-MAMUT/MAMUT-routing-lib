@@ -552,12 +552,12 @@ def _local_instance_record(
     if layout is not None:
         # The layout is the one discovery uses (family-first collections
         # included), so the ID below equals the discovered/website ID.
-        # Path overrides metadata for fields the path actually carries. Historical
-        # 4-part layouts have neither metric_variant nor place_slug — fall back to
-        # whatever metadata supplies (e.g. enriched Dimacs/Sintef instances now
-        # carry `metric_variant: "euclidean"` in their metadata). 5-part subset
-        # layouts (e.g. Ortec2022) carry ``subset`` and override the metadata's
-        # value for ID purposes.
+        # Path overrides metadata for fields the path actually carries. Classic
+        # families (layout 2) have neither metric_variant nor place_slug in their
+        # path: fall back to whatever metadata supplies (e.g. enriched Dimacs/Sintef
+        # instances carry `metric_variant: "euclidean"` in their metadata). Their
+        # subset directory (e.g. Ortec2022) overrides the metadata's value for ID
+        # purposes.
         problem_type = layout.problem_type
         benchmark_name = layout.benchmark_name
         if layout.metric_variant is not None:

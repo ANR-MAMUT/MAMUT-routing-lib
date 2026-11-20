@@ -103,7 +103,7 @@ def build_instance_id(
 ) -> str:
     """Build a stable path-derived instance id for CLI/API selection.
 
-    Historical layouts use problem/benchmark/size/name. Variant layouts include
+    Classic families use problem/benchmark/size/name. Variant layouts include
     metric and place to keep IDs unique across sibling Poryos2026 variants.
     Ortec2022-style layouts insert a ``subset`` segment between benchmark and
     size to keep IDs unique across the ``final``/``public`` partitions.
@@ -159,26 +159,28 @@ def _parse_num_customers(part: str) -> int | None:
 class LayoutInfo:
     """Path-layout-derived view of a benchmark instance.
 
-    Four on-disk layouts are supported under ``benchmarks/``:
+    Every family is a marker-rooted **collection** (``benchmarks/<Family>/``
+    with a ``mamut-collection.json``). Paths are relative to the collection
+    root and parsed by ``parse_collection_layout`` according to the marker's
+    ``layout_version``:
 
-    - 4-part historical:
-      ``<problem>/<benchmark>/n=<N>/<file>.vrp.json``
-    - 5-part subset-partitioned (e.g. Ortec2022):
-      ``<problem>/<benchmark>/<subset>/n=<N>/<file>.vrp.json``
-    - 7-part Poryos2026 v1 (retired with the v1 family, still parsed):
-      ``<problem>/<benchmark>/<metric>/<place>/n=<N>/<instance_name>/<file>.vrp.json``
-    - family-first **collection** (marker-rooted, e.g. ``Poryos2026/``), paths
-      relative to the collection root, parsed by ``parse_collection_layout``:
+    - layout 1 (Poryos2026 shape):
       ``<problem>/<metric>/<city>/n=<N>/<base>/<file>.vrp.json`` (CVRP/VRPTW)
       ``<problem>/<city>/n=<N>/<base>/<subinstance>/<file>.vrp.json`` (TD)
+    - layout 2 (classic families):
+      ``<problem>/n=<N>/<file>.vrp.json``
+      ``<problem>/<subset>/n=<N>/<file>.vrp.json`` (e.g. Ortec2022, Lera2026)
 
-    The historical layout has neither ``metric_variant`` nor ``place_slug``.
-    The subset-partitioned layout has neither ``metric_variant`` nor
-    ``place_slug`` either, but adds ``subset`` (e.g. ``final``/``public``).
-    Collection layouts expose ``base_instance_name`` and (TD) ``subinstance``.
-    Collection VRPTW instances additionally expose ``tw_set``: ``td-shared``
-    for the bare base name (windows shared with the TDVRPTW twins), or the
-    set tag of a static-only ``<base>-tw-<set>`` instance.
+    Layout 2 has neither ``metric_variant`` nor ``place_slug``; its optional
+    ``subset`` is the directory between the problem type and the size
+    (``final``/``public``, ``S1``..). Layout 1 exposes ``base_instance_name``
+    and (TD) ``subinstance``; its VRPTW instances additionally expose
+    ``tw_set``: ``td-shared`` for the bare base name (windows shared with the
+    TDVRPTW twins), or the set tag of a static-only ``<base>-tw-<set>``
+    instance.
+
+    The problem-type-first layout (``<problem>/<family>/...`` directly under
+    ``benchmarks/``) was read up to version 0.12 and is no longer supported.
     """
 
     problem_type: ProblemType
@@ -193,69 +195,35 @@ class LayoutInfo:
     tw_set: str | None = None
 
 
-def parse_layout(relative_path: Path, instance_path: Path) -> LayoutInfo:
-    """Derive ``LayoutInfo`` from a path relative to the benchmarks root (4-, 5- or 7-part layouts); raises ``ValueError`` otherwise."""
+def _parse_classic_collection_layout(relative_path: Path, instance_path: Path, family: str) -> LayoutInfo:
+    """Layout 2: ``<problem>/[<subset>/]n=<N>/<file>.vrp.json`` relative to the collection root."""
     parts = relative_path.parts
-    if len(parts) == 4:
-        problem_type = ProblemType(parts[0])
-        benchmark_name = parts[1]
-        num_customers = _parse_num_customers(parts[2])
-        if num_customers is None:
-            raise ValueError(f"Unsupported size bucket in benchmark instance layout: {relative_path}")
-        instance_name = instance_path.stem.removesuffix(".vrp")
-        return LayoutInfo(
-            problem_type=problem_type,
-            benchmark_name=benchmark_name,
-            metric_variant=None,
-            place_slug=None,
-            num_customers=num_customers,
-            instance_name=instance_name,
-        )
-
-    if len(parts) == 5:
-        # Subset-partitioned historical-like layout, e.g. Ortec2022:
-        # <problem>/<benchmark>/<subset>/n=<N>/<file>.vrp.json
-        problem_type = ProblemType(parts[0])
-        benchmark_name = parts[1]
-        subset = parts[2]
-        num_customers = _parse_num_customers(parts[3])
-        if num_customers is None:
-            raise ValueError(f"Unsupported size bucket in benchmark instance layout: {relative_path}")
-        instance_name = instance_path.stem.removesuffix(".vrp")
-        return LayoutInfo(
-            problem_type=problem_type,
-            benchmark_name=benchmark_name,
-            metric_variant=None,
-            place_slug=None,
-            num_customers=num_customers,
-            instance_name=instance_name,
-            subset=subset,
-        )
-
-    if len(parts) == 7:
-        num_customers = _parse_num_customers(parts[4])
-        if num_customers is None:
-            raise ValueError(f"Unsupported size bucket in benchmark instance layout: {relative_path}")
-        return LayoutInfo(
-            problem_type=ProblemType(parts[0]),
-            benchmark_name=parts[1],
-            metric_variant=MetricVariant(parts[2]),
-            place_slug=parts[3],
-            num_customers=num_customers,
-            instance_name=parts[5],
-        )
-
-    raise ValueError(f"Unsupported benchmark instance layout: {relative_path}")
+    if len(parts) not in (3, 4):
+        raise ValueError(f"Unsupported collection instance layout: {relative_path}")
+    num_customers = _parse_num_customers(parts[-2])
+    if num_customers is None:
+        raise ValueError(f"Unsupported size bucket in collection instance layout: {relative_path}")
+    return LayoutInfo(
+        problem_type=ProblemType(parts[0]),
+        benchmark_name=family,
+        metric_variant=None,
+        place_slug=None,
+        num_customers=num_customers,
+        instance_name=instance_path.stem.removesuffix(".vrp"),
+        subset=parts[1] if len(parts) == 4 else None,
+    )
 
 
 def parse_collection_layout(
     relative_path: Path,
     instance_path: Path,
     family: str,
+    layout_version: int = 1,
 ) -> LayoutInfo:
-    """Parse a family-first collection path (relative to the collection root).
+    """Parse a collection path (relative to the collection root) under the marker's ``layout_version``.
 
-    Two shapes, both 6 parts:
+    Layout 2 is the classic-family shape, ``<problem>/[<subset>/]n=<N>/<file>.vrp.json``.
+    Layout 1 has two shapes, both 6 parts:
 
     - static: ``<problem>/<metric>/<city>/n=<N>/<base>/<file>.vrp.json``
     - TD: ``<problem>/<city>/n=<N>/<base>/<subinstance>/<file>.vrp.json``
@@ -266,6 +234,10 @@ def parse_collection_layout(
     TW-set instances (``<base>-tw-<set>.vrp.json``) sit next to the TD-paired
     ``<base>.vrp.json`` and expose their tag via ``LayoutInfo.tw_set``.
     """
+    if layout_version == 2:
+        return _parse_classic_collection_layout(relative_path, instance_path, family)
+    if layout_version != 1:
+        raise ValueError(f"Unsupported collection layout_version {layout_version!r} for {relative_path}")
     parts = relative_path.parts
     if len(parts) != 6:
         raise ValueError(f"Unsupported collection instance layout: {relative_path}")
@@ -352,10 +324,6 @@ def _discovered_from_layout(layout: LayoutInfo, instance_path: Path) -> Discover
     )
 
 
-def _discover_from_relative_path(relative_path: Path, instance_path: Path) -> DiscoveredBenchmarkInstance:
-    return _discovered_from_layout(parse_layout(relative_path, instance_path), instance_path)
-
-
 def find_collection_roots(benchmarks_root: Path) -> dict[Path, str]:
     """Marker-rooted collections at or directly under ``benchmarks_root``: root -> family.
 
@@ -376,15 +344,22 @@ class BenchmarkLayoutResolver:
     """Map instance paths to ``LayoutInfo`` exactly as discovery does.
 
     Paths inside a marker-rooted collection at or directly under
-    ``benchmarks_root`` are parsed with ``parse_collection_layout``, other paths
-    under the root with ``parse_layout``. A path outside the root is looked up
-    by marker walk-up (a collection instance passed explicitly), else refused.
+    ``benchmarks_root`` are parsed with ``parse_collection_layout`` under the
+    layout version of their marker. A path outside the root is looked up by
+    marker walk-up (a collection instance passed explicitly). A path that
+    belongs to no collection is refused.
     """
 
     def __init__(self, benchmarks_root: Path) -> None:
         self.benchmarks_root = Path(benchmarks_root).resolve()
         self.collection_roots = find_collection_roots(self.benchmarks_root)
+        self._layout_versions: dict[Path, int] = {}
         self._walked_up: dict[Path, tuple[Path, str] | None] = {}
+
+    def _layout_version(self, root: Path) -> int:
+        if root not in self._layout_versions:
+            self._layout_versions[root] = load_collection_marker(root / COLLECTION_MARKER_FILENAME).layout_version
+        return self._layout_versions[root]
 
     def _known_collection(self, path: Path) -> tuple[Path, str] | None:
         for root, family in self.collection_roots.items():
@@ -402,7 +377,7 @@ class BenchmarkLayoutResolver:
         return self._walked_up[directory]
 
     def layout_for(self, instance_path: str | Path) -> LayoutInfo:
-        """``LayoutInfo`` of ``instance_path``; ``ValueError`` when no layout applies."""
+        """``LayoutInfo`` of ``instance_path``; ``ValueError`` when it belongs to no collection."""
         path = Path(instance_path).absolute()
         candidates = [path]
         resolved = path.resolve()
@@ -412,34 +387,38 @@ class BenchmarkLayoutResolver:
             collection = self._known_collection(candidate)
             if collection is not None:
                 root, family = collection
-                return parse_collection_layout(candidate.relative_to(root), candidate, family)
-        for candidate in candidates:
-            if candidate.is_relative_to(self.benchmarks_root):
-                relative_path = candidate.relative_to(self.benchmarks_root)
-                try:
-                    return parse_layout(relative_path, candidate)
-                except ValueError as exc:
-                    raise ValueError(_layout_error_hint(relative_path, exc)) from exc
+                return parse_collection_layout(candidate.relative_to(root), candidate, family, self._layout_version(root))
         collection = self._walked_up_collection(resolved)
         if collection is not None:
             root, family = collection
-            return parse_collection_layout(resolved.relative_to(root), resolved, family)
+            return parse_collection_layout(resolved.relative_to(root), resolved, family, self._layout_version(root))
+        for candidate in candidates:
+            if candidate.is_relative_to(self.benchmarks_root):
+                raise ValueError(_layout_error_hint(candidate.relative_to(self.benchmarks_root)))
         raise ValueError(
             f"{instance_path} is neither under the benchmarks root {self.benchmarks_root} nor inside a collection"
         )
 
 
-def _layout_error_hint(relative_path: Path, exc: ValueError) -> str:
-    """Name the legacy release extraction (``<archive stem>/benchmarks/...``) when that is the cause."""
+def _layout_error_hint(relative_path: Path) -> str:
+    """Why a path under the benchmarks root belongs to no collection, naming the two usual causes."""
     parts = relative_path.parts
+    message = (
+        f"{relative_path} is not inside a family collection: no {COLLECTION_MARKER_FILENAME} "
+        f"at benchmarks/{parts[0] if parts else '<Family>'}/"
+    )
     if "benchmarks" in parts[1:] and "-snapshot-" in parts[parts.index("benchmarks", 1) - 1]:
         stem = Path(*parts[: parts.index("benchmarks", 1)])
         return (
-            f"{exc}. {stem}/ looks like a release archive extracted by mamut-routing-lib < 0.12 "
-            f"(<archive stem>/benchmarks/...): re-run `mamut-routing remote fetch` (lib >= 0.12 extracts "
-            f"into the canonical tree) or discover {stem}/benchmarks instead"
+            f"{message}. {stem}/ looks like a release archive extracted by mamut-routing-lib < 0.12 "
+            f"(<archive stem>/benchmarks/...): re-run `mamut-routing remote fetch` or discover {stem}/benchmarks instead"
         )
-    return str(exc)
+    if parts and parts[0] in {item.value for item in ProblemType}:
+        return (
+            f"{message}. The problem-type-first layout (benchmarks/<problem>/<family>/...) was read up to "
+            "mamut-routing-lib 0.12; since 0.13 every family is a collection at benchmarks/<Family>/"
+        )
+    return message
 
 
 def discover_benchmark_instances(
@@ -454,9 +433,9 @@ def discover_benchmark_instances(
     """Every ``*.vrp.json`` under ``benchmarks_root`` (or the environment root), sorted by path.
 
     Filters are exact-match sets on problem type, family name, metric variant,
-    place slug and instance id. Instances inside a marker-rooted collection are
-    parsed with ``parse_collection_layout``; all others with ``parse_layout``.
-    An unsupported layout raises ``ValueError``.
+    place slug and instance id. Every instance must sit inside a marker-rooted
+    collection and is parsed with ``parse_collection_layout``. A file outside
+    any collection, or an unsupported layout, raises ``ValueError``.
     """
     benchmark_root = (benchmarks_root or get_default_benchmarks_root()).resolve()
     allowed_problem_types = {item.value if isinstance(item, ProblemType) else str(item) for item in (problem_types or [])}

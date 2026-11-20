@@ -245,10 +245,10 @@ def _local_release(tmp_path: Path) -> tuple[ReleaseArchiveManifest, type]:
 
     source_dir = tmp_path / "release"
     source_dir.mkdir()
-    zip_path = source_dir / "CVRP-Poryos2026-snapshot-x.zip"
+    zip_path = source_dir / "Poryos2026-snapshot-x.zip"
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
-        archive.writestr("benchmarks/CVRP/Poryos2026/n=2/a.vrp.json", b"{}")
+        archive.writestr("benchmarks/Poryos2026/CVRP/n=2/a.vrp.json", b"{}")
     zip_path.write_bytes(buffer.getvalue())
     manifest = ReleaseArchiveManifest(
         snapshot_id="snap-x",
@@ -257,14 +257,13 @@ def _local_release(tmp_path: Path) -> tuple[ReleaseArchiveManifest, type]:
         release_tag="snapshot-x",
         assets=[
             {
-                "scope": "problem_family",
+                "scope": "family_collection",
                 "filename": zip_path.name,
                 "download_url": f"file://{zip_path}",
-                "problem_type": "CVRP",
                 "benchmark_name": "Poryos2026",
                 "checksum_sha256": hashlib.sha256(zip_path.read_bytes()).hexdigest(),
                 "size_bytes": zip_path.stat().st_size,
-                "archive_root": "benchmarks/CVRP/Poryos2026",
+                "archive_root": "benchmarks/Poryos2026",
             }
         ],
     )
@@ -289,10 +288,10 @@ def test_cli_fetch_extracts_into_the_canonical_tree_and_verify_follows(tmp_path:
     with patch("mamut_routing_lib.cli.GitHubReleaseClient", client_cls):
         fetched = _runner().invoke(app, [*base, "fetch", "--all"])
         assert fetched.exit_code == 0, fetched.stdout + fetched.stderr
-        assert (bench / "CVRP" / "Poryos2026" / "n=2" / "a.vrp.json").is_file()
+        assert (bench / "Poryos2026" / "CVRP" / "n=2" / "a.vrp.json").is_file()
         assert "archive kept at" in fetched.stdout
         assert "OK" in _runner().invoke(app, [*base, "verify"]).stdout
-        (bench / "CVRP-Poryos2026-snapshot-x.zip").unlink()
+        (bench / "Poryos2026-snapshot-x.zip").unlink()
         verified = _runner().invoke(app, [*base, "verify"])
         assert verified.exit_code == 0 and "EXTRACTED" in verified.stdout
         assert _runner().invoke(app, [*base, "fetch", "--all"]).exit_code == 0  # a stamped tree is replaced
@@ -301,13 +300,13 @@ def test_cli_fetch_extracts_into_the_canonical_tree_and_verify_follows(tmp_path:
 def test_cli_fetch_refuses_to_replace_an_unstamped_directory(tmp_path: Path) -> None:
     _, client_cls = _local_release(tmp_path)
     bench = tmp_path / "benchmarks"
-    (bench / "CVRP" / "Poryos2026").mkdir(parents=True)
-    (bench / "CVRP" / "Poryos2026" / "mine.json").write_text("{}", encoding="utf-8")
+    (bench / "Poryos2026").mkdir(parents=True)
+    (bench / "Poryos2026" / "mine.json").write_text("{}", encoding="utf-8")
     base = ["--benchmarks-dir", str(bench), "remote", "--repo", "acme/repo", "--tag", "snapshot-x", "fetch", "--all"]
     with patch("mamut_routing_lib.cli.GitHubReleaseClient", client_cls):
         refused = _runner().invoke(app, base)
         assert refused.exit_code == 2 and "--force" in refused.stderr
-        assert (bench / "CVRP" / "Poryos2026" / "mine.json").is_file()
+        assert (bench / "Poryos2026" / "mine.json").is_file()
         forced = _runner().invoke(app, [*base, "--force"])
     assert forced.exit_code == 0, forced.stdout + forced.stderr
-    assert not (bench / "CVRP" / "Poryos2026" / "mine.json").exists()
+    assert not (bench / "Poryos2026" / "mine.json").exists()

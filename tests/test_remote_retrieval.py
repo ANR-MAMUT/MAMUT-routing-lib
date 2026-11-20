@@ -192,21 +192,28 @@ def test_fetch_manifest_wraps_repeated_disconnect() -> None:
             client.fetch_manifest(tag="snapshot-2026-05-22")
 
 
-def _make_archive_asset(*, filename: str, sha256: str, size_bytes: int, download_url: str) -> ReleaseArchiveAsset:
+def _make_archive_asset(
+    *,
+    filename: str,
+    sha256: str,
+    size_bytes: int,
+    download_url: str,
+    scope: ReleaseArchiveScope = ReleaseArchiveScope.FAMILY_COLLECTION,
+) -> ReleaseArchiveAsset:
     return ReleaseArchiveAsset(
-        scope=ReleaseArchiveScope.PROBLEM_FAMILY,
+        scope=scope,
         filename=filename,
         download_url=download_url,
         problem_type=None,
         benchmark_name=None,
         checksum_sha256=sha256,
         size_bytes=size_bytes,
-        archive_root="benchmarks/CVRP/Poryos2026",
+        archive_root="benchmarks/Poryos2026",
     )
 
 
 def test_download_asset_writes_file_and_verifies_sha256(tmp_path: Path) -> None:
-    zip_bytes = _build_zip_bytes({"benchmarks/CVRP/Poryos2026/instance_0001.vrp.json": b"{\"id\": 1}"})
+    zip_bytes = _build_zip_bytes({"benchmarks/Poryos2026/instance_0001.vrp.json": b"{\"id\": 1}"})
     fake_path = tmp_path / "src" / "asset.zip"
     fake_path.parent.mkdir(parents=True)
     fake_path.write_bytes(zip_bytes)
@@ -248,7 +255,7 @@ def test_download_asset_sha256_mismatch_raises_value_error(tmp_path: Path) -> No
             GitHubReleaseClient(GitHubReleaseSource("acme/repo")).download_asset(asset, tmp_path)
 
 
-def _download_extract(tmp_path: Path, zip_files: dict[str, bytes], *, filename: str = "CVRP-Poryos2026-snapshot-x.zip", destination: Path | None = None, **kwargs):
+def _download_extract(tmp_path: Path, zip_files: dict[str, bytes], *, filename: str = "Poryos2026-snapshot-x.zip", destination: Path | None = None, **kwargs):
     zip_bytes = _build_zip_bytes(zip_files)
     sha256 = __import__("hashlib").sha256(zip_bytes).hexdigest()
     download_url = f"https://example.invalid/{filename}"
@@ -262,51 +269,51 @@ def _download_extract(tmp_path: Path, zip_files: dict[str, bytes], *, filename: 
 
 def test_download_asset_extracts_into_the_canonical_tree(tmp_path: Path) -> None:
     zip_files = {
-        "benchmarks/CVRP/Poryos2026/n=2/instance_0001.vrp.json": b"{\"id\": 1}",
-        "benchmarks/CVRP/Poryos2026/n=2/instance_0002.vrp.json": b"{\"id\": 2}",
+        "benchmarks/Poryos2026/n=2/instance_0001.vrp.json": b"{\"id\": 1}",
+        "benchmarks/Poryos2026/n=2/instance_0002.vrp.json": b"{\"id\": 2}",
     }
     manifest = ReleaseArchiveManifest(snapshot_id="snap-1", published_at="2026-01-01T00:00:00Z", source_commit="abc", release_tag="snapshot-1")
     result = _download_extract(tmp_path, zip_files, manifest=manifest)
 
-    assert result == tmp_path / "CVRP" / "Poryos2026"
+    assert result == tmp_path / "Poryos2026"
     for path_in_zip in zip_files:
         assert (tmp_path / path_in_zip.removeprefix("benchmarks/")).is_file()
-    assert (tmp_path / "CVRP-Poryos2026-snapshot-x.zip").is_file()  # the archive is kept for `remote verify`
+    assert (tmp_path / "Poryos2026-snapshot-x.zip").is_file()  # the archive is kept for `remote verify`
     stamp = read_release_stamp(result)
-    assert stamp["archive_root"] == "benchmarks/CVRP/Poryos2026"
+    assert stamp["archive_root"] == "benchmarks/Poryos2026"
     assert stamp["snapshot_id"] == "snap-1"
     assert not (tmp_path / ".mamut-staging").exists()
 
 
 def test_re_fetch_replaces_a_stamped_tree(tmp_path: Path) -> None:
-    _download_extract(tmp_path, {"benchmarks/CVRP/Poryos2026/old.txt": b"old"})
-    result = _download_extract(tmp_path, {"benchmarks/CVRP/Poryos2026/new.txt": b"new"})
+    _download_extract(tmp_path, {"benchmarks/Poryos2026/old.txt": b"old"})
+    result = _download_extract(tmp_path, {"benchmarks/Poryos2026/new.txt": b"new"})
     assert (result / "new.txt").read_bytes() == b"new"
     assert not (result / "old.txt").exists()
 
 
 def test_an_unstamped_existing_tree_is_only_replaced_with_force(tmp_path: Path) -> None:
-    checkout = tmp_path / "CVRP" / "Poryos2026"
+    checkout = tmp_path / "Poryos2026"
     checkout.mkdir(parents=True)
     (checkout / "tracked.json").write_text("{}", encoding="utf-8")
     with pytest.raises(ReleaseExtractionError, match="--force"):
-        _download_extract(tmp_path, {"benchmarks/CVRP/Poryos2026/a.txt": b"a"})
+        _download_extract(tmp_path, {"benchmarks/Poryos2026/a.txt": b"a"})
     assert (checkout / "tracked.json").is_file()
     assert not (tmp_path / ".mamut-staging").exists()
-    result = _download_extract(tmp_path, {"benchmarks/CVRP/Poryos2026/a.txt": b"a"}, force=True)
+    result = _download_extract(tmp_path, {"benchmarks/Poryos2026/a.txt": b"a"}, force=True)
     assert (result / "a.txt").is_file() and not (result / "tracked.json").exists()
 
 
 @pytest.mark.parametrize(
     "member",
-    ["benchmarks/CVRP/Poryos2026/../../../escape.txt", "/etc/passwd", "benchmarks/VRPTW/Other/x.txt", "benchmarks\\CVRP\\x"],
+    ["benchmarks/Poryos2026/../../../escape.txt", "/etc/passwd", "benchmarks/Other/x.txt", "benchmarks\\CVRP\\x"],
 )
 def test_unsafe_or_out_of_root_members_are_refused(tmp_path: Path, member: str) -> None:
     archive = tmp_path / "evil.zip"
-    archive.write_bytes(_build_zip_bytes({"benchmarks/CVRP/Poryos2026/ok.txt": b"ok", member: b"x"}))
+    archive.write_bytes(_build_zip_bytes({"benchmarks/Poryos2026/ok.txt": b"ok", member: b"x"}))
     with pytest.raises(ReleaseExtractionError):
-        extract_release_archive(archive, tmp_path / "bench", archive_root="benchmarks/CVRP/Poryos2026")
-    assert not (tmp_path / "bench" / "CVRP").exists()
+        extract_release_archive(archive, tmp_path / "bench", archive_root="benchmarks/Poryos2026")
+    assert not (tmp_path / "bench" / "Poryos2026").exists()
     assert not (tmp_path / "escape.txt").exists()
 
 
@@ -327,17 +334,17 @@ def test_archive_root_is_inferred_when_the_manifest_lacks_it(tmp_path: Path) -> 
 
 
 def test_a_failed_extraction_keeps_the_previous_tree(tmp_path: Path, monkeypatch) -> None:
-    _download_extract(tmp_path, {"benchmarks/CVRP/Poryos2026/keep.txt": b"keep"})
+    _download_extract(tmp_path, {"benchmarks/Poryos2026/keep.txt": b"keep"})
     archive = tmp_path / "next.zip"
-    archive.write_bytes(_build_zip_bytes({"benchmarks/CVRP/Poryos2026/new.txt": b"new"}))
+    archive.write_bytes(_build_zip_bytes({"benchmarks/Poryos2026/new.txt": b"new"}))
 
     def _boom(*_args, **_kwargs):
         raise OSError("disk full")
 
     monkeypatch.setattr("mamut_routing_lib.remote.shutil.copyfileobj", _boom)
     with pytest.raises(OSError, match="disk full"):
-        extract_release_archive(archive, tmp_path, archive_root="benchmarks/CVRP/Poryos2026")
-    assert (tmp_path / "CVRP" / "Poryos2026" / "keep.txt").read_bytes() == b"keep"
+        extract_release_archive(archive, tmp_path, archive_root="benchmarks/Poryos2026")
+    assert (tmp_path / "Poryos2026" / "keep.txt").read_bytes() == b"keep"
     assert not (tmp_path / ".mamut-staging").exists()
 
 
@@ -368,3 +375,20 @@ def test_progress_callback_receives_increasing_byte_counts(tmp_path: Path) -> No
     assert progress_events[-1] == (len(payload), len(payload))
     assert all(total == len(payload) for _, total in progress_events)
     assert progress_events == sorted(progress_events, key=lambda evt: evt[0])
+
+
+def test_extracting_a_problem_first_archive_is_refused(tmp_path: Path) -> None:
+    """Snapshots published for mamut-routing-lib <= 0.12 hold trees this version does not read."""
+    zip_bytes = _build_zip_bytes({"benchmarks/VRPTW/Sintef2008/n=100/C101.vrp.json": b"{}"})
+    download_url = "https://example.invalid/VRPTW-Sintef2008-snapshot-x.zip"
+    asset = _make_archive_asset(
+        filename="VRPTW-Sintef2008-snapshot-x.zip",
+        sha256=__import__("hashlib").sha256(zip_bytes).hexdigest(),
+        size_bytes=len(zip_bytes),
+        download_url=download_url,
+        scope=ReleaseArchiveScope.PROBLEM_FAMILY,
+    )
+    client = GitHubReleaseClient(GitHubReleaseSource("acme/repo"))
+    with pytest.raises(ReleaseExtractionError, match="problem-type-first layout"):
+        client.download_asset(asset, tmp_path, extract=True)
+    assert not any(tmp_path.iterdir())  # refused before any download

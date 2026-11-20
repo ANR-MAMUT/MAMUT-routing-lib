@@ -34,14 +34,15 @@ def _validate_sidecar_path(value: str, field_name: str) -> str:
     if not value:
         raise ValueError(f"{field_name} must be non-empty")
     if value.startswith("/") or ".." in value.split("/"):
-        raise ValueError(f"{field_name} must be a plain relative path next to the instance file")
+        raise ValueError(f"{field_name} must be a plain relative path (no leading '/', no '..')")
     return value
 
 
 class TDArrivalFunctionsRef(BaseModel):
     """Reference to the ATF sidecar file of a TD instance.
 
-    ``atf_path`` is relative to the directory containing the instance file.
+    ``atf_path`` is relative to the collection root for an instance inside a
+    collection, and to the directory containing the instance file otherwise.
     ``atf_sha256`` is computed over the uncompressed canonical JSON bytes of
     the sidecar, so it is stable across ``.json`` and ``.json.gz`` storage.
     """
