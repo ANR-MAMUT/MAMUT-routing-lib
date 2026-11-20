@@ -36,6 +36,23 @@ from mamut_routing_lib.solvers.base import (
 __all__ = ["CheckedSolve", "prepare_solve", "run_solver"]
 
 
+#: Every key ``CheckedSolve.bks_metadata`` can write into a published BKS file.
+BKS_PROVENANCE_KEYS = (
+    "method",
+    "solver",
+    "solver_version",
+    "seed",
+    "time_limit_s",
+    "wall_time",
+    "solver_cost",
+    "cost_exact",
+    "machine",
+    "vehicle_penalty",
+    "executable_sha256",
+    "input_sha256",
+)
+
+
 @dataclass(frozen=True)
 class CheckedSolve:
     """A solver result plus the reference checker's verdict on its routes."""
@@ -83,7 +100,16 @@ class CheckedSolve:
         )
 
     def bks_metadata(self, **extra: Any) -> dict[str, Any]:
-        """Provenance for a BKS built from this solve (no hostname: BKS files are published)."""
+        """Provenance for a BKS built from this solve (no hostname: BKS files are published).
+
+        The keys are :data:`BKS_PROVENANCE_KEYS`. ``extra`` adds keys of the caller (a campaign
+        name, a run key); it cannot replace a provenance key or set a key of the BKS store.
+        """
+        from mamut_routing_lib.solutions import STORE_METADATA_KEYS
+
+        clash = sorted(key for key in extra if key in BKS_PROVENANCE_KEYS or key in STORE_METADATA_KEYS)
+        if clash:
+            raise ValueError(f"bks_metadata cannot override {', '.join(clash)}")
         result = self.result
         values: dict[str, Any] = {
             "method": result.method,

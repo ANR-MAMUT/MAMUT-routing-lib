@@ -182,6 +182,47 @@ def test_submit_and_preview(toy_cvrp_instance, tmp_path: Path) -> None:
     assert preview_bks_update(path, [[1, 1]])["action"] == "invalid"
 
 
+@pytest.mark.parametrize(
+    "key", ["validated_cost", "validated_num_routes", "optimality", "date", "authors", "repriced", "validated_by", "checker_contract"]
+)
+def test_submit_refuses_the_keys_of_the_store(toy_cvrp_instance, tmp_path: Path, key: str) -> None:
+    path = _write(toy_cvrp_instance, tmp_path)
+    with pytest.raises(ValueError, match=key):
+        submit_bks(path, [[1, 2]], authors="Tester", metadata={"method": "manual", key: 1})
+    assert not list(tmp_path.glob("*.bks.*.json"))
+
+
+def test_submit_td_refuses_a_caller_validated_cost(tmp_path: Path) -> None:
+    """The TD store keeps a caller's ``validated_cost`` when it receives one, so it must never receive one."""
+    from td_utils import write_toy_instance_files
+
+    path = write_toy_instance_files(tmp_path, with_time_windows=True)
+    with pytest.raises(ValueError, match="validated_cost"):
+        submit_bks(path, [[1], [2]], authors="Tester", metadata={"validated_cost": 1.0})
+    assert not list(tmp_path.glob("*.bks.*.json"))
+
+
+def test_preview_sees_a_stored_cost_the_checker_disagrees_with(toy_cvrp_instance, tmp_path: Path) -> None:
+    """``submit_bks`` refuses such an incumbent; the preview must say so rather than compare against it."""
+    path = _write(toy_cvrp_instance, tmp_path)
+    submit_bks(path, [[1, 2]], authors="Tester")
+    stored_path = get_bks_path_for_instance(path, ObjectiveFunction.MONO_COST)
+    payload = json.loads(stored_path.read_text())
+    payload["cost"] += 1
+    stored_path.write_text(json.dumps(payload))
+    assert preview_bks_update(path, [[1, 2]])["action"] == "stored_invalid"
+    with pytest.raises(ValueError, match="Stored BKS is invalid"):
+        submit_bks(path, [[1, 2]], authors="Tester")
+
+
+def test_submit_refuses_a_checkable_of_another_instance(toy_cvrp_instance, tmp_path: Path) -> None:
+    path = _write(toy_cvrp_instance, tmp_path)
+    other = toy_cvrp_instance.model_copy(update={"instance_name": "another-instance"})
+    with pytest.raises(ValueError, match="another-instance"):
+        submit_bks(path, [[1, 2]], authors="Tester", checkable=other)
+    assert not list(tmp_path.glob("*.bks.*.json"))
+
+
 def test_submit_td(tmp_path: Path) -> None:
     from td_utils import write_toy_instance_files
 

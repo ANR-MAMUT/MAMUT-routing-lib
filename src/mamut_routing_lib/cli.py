@@ -2116,10 +2116,6 @@ def _number(value: float) -> str:
     return str(int(value)) if float(value).is_integer() else repr(float(value))
 
 
-#: BKS metadata the stores write themselves; ``--meta`` cannot set them.
-_STORE_METADATA_KEYS = frozenset(
-    {"authors", "date", "validated_cost", "validated_num_routes", "route_durations", "route_departure_times", "optimality", "repriced"}
-)
 #: Provenance a solution file written by ``solve --output-dir`` carries into ``bks submit``.
 _CARRIED_PROVENANCE_KEYS = (
     "method", "solver", "solver_version", "seed", "time_limit_s", "wall_time", "solver_cost", "cost_exact", "machine",
@@ -2128,12 +2124,14 @@ _CARRIED_PROVENANCE_KEYS = (
 
 
 def _meta_pairs(pairs: list[str] | None) -> dict[str, Any]:
+    from mamut_routing_lib.solutions import STORE_METADATA_KEYS
+
     values: dict[str, Any] = {}
     for pair in pairs or []:
         key, sep, raw = pair.partition("=")
         if not sep or not key.strip():
             raise typer.BadParameter(f"expected KEY=VALUE, got {pair!r}", param_hint="--meta")
-        if key.strip() in _STORE_METADATA_KEYS:
+        if key.strip() in STORE_METADATA_KEYS:
             hint = " (use --authors)" if key.strip() == "authors" else ""
             raise typer.BadParameter(f"{key.strip()!r} is written by the BKS store itself{hint}", param_hint="--meta")
         try:

@@ -38,6 +38,7 @@ from typing import Any, Literal, Mapping
 from mamut_routing_lib.enums import ObjectiveFunction, ProblemType
 
 __all__ = [
+    "STORE_METADATA_KEYS",
     "IdConvention",
     "ParsedSolution",
     "SolutionFormatError",
@@ -56,6 +57,27 @@ __all__ = [
 ]
 
 IdConvention = Literal["auto", "one-based", "zero-based"]
+
+#: BKS metadata that a submitter cannot supply: what the stores write (``authors`` comes from the
+#: ``authors`` argument), what the checker tools write (``optimality``, ``repriced``, the route
+#: timing fields), and the statements about validation that only a maintainer's tooling makes.
+STORE_METADATA_KEYS = frozenset(
+    {
+        "authors",
+        "date",
+        "validated_cost",
+        "validated_num_routes",
+        "route_durations",
+        "route_departure_times",
+        "optimality",
+        "repriced",
+        "validated_by",
+        "checker",
+        "checker_commit",
+        "checker_contract",
+        "verification_report",
+    }
+)
 
 _ROUTE_LINE = re.compile(r"^\s*Route\s*#?\s*\d+\s*:\s*(.*)$", re.IGNORECASE)
 _NUMBER = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
@@ -428,7 +450,8 @@ def submit_bks(
     comparison), TD instances through ``td.save_td_solution_as_bks_if_improved``. The
     objective defaults to the family's published one (``objectives.base_objective``).
     Returns the store's ``BKSUpdateResult``; raises ``ValueError`` for an invalid solution,
-    an objective that does not apply to the instance, or empty ``authors``. ``checkable``
+    an objective that does not apply to the instance, empty ``authors``, a ``metadata`` key
+    of :data:`STORE_METADATA_KEYS`, or a ``checkable`` that is not this instance. ``checkable``
     (:func:`load_checkable`, or ``CheckedSolve.checkable`` after a solve) spares the store
     its own load of the matrix or the travel-time functions.
     """
@@ -438,8 +461,13 @@ def submit_bks(
 
     if not isinstance(authors, str) or not authors.strip():
         raise ValueError("authors must be a non-empty string (who found the solution)")
+    reserved = sorted(STORE_METADATA_KEYS.intersection(metadata or {}))
+    if reserved:
+        raise ValueError(f"metadata cannot set what the BKS store and the checker tools write: {', '.join(reserved)}")
     path = Path(instance_path)
     loaded = instance if instance is not None else load_benchmark_instance(path)
+    if checkable is not None:
+        _require_same_instance(loaded, checkable, path)
     objective = require_supported_objective(loaded, objective_function or base_objective(loaded))
     solution = BenchmarkSolution(
         instance_name=get_instance_identifier(loaded),
@@ -464,6 +492,21 @@ def submit_bks(
     # The same two steps as save_solution_as_bks_if_improved, on the instance already in hand.
     bks = create_bks_from_solution(checkable, solution, objective, authors=authors, metadata=dict(metadata or {}))
     return save_bks_if_improved(checkable, bks, path)
+
+
+def _require_same_instance(loaded: Any, checkable: Any, path: Path) -> None:
+    """Refuse a ``checkable`` that was built from another instance than the one being stored."""
+    from mamut_routing_lib.artifacts import get_instance_identifier
+
+    expected = get_instance_identifier(loaded)
+    if is_time_dependent(loaded):
+        held = get_instance_identifier(checkable.instance)
+        if Path(checkable.instance_path).resolve() != path.resolve():
+            raise ValueError(f"checkable was loaded from {checkable.instance_path}, not from {path}")
+    else:
+        held = get_instance_identifier(checkable)
+    if held != expected:
+        raise ValueError(f"checkable holds instance {held!r}, not {expected!r}")
 
 
 def preview_bks_update(
@@ -509,7 +552,8 @@ def preview_bks_update(
     existing = load_bks(bks_path)
     summary["existing_cost"] = existing.cost
     summary["existing_num_routes"] = existing.num_routes
-    stored_check = check_routes(loaded, path, existing.routes, objective, checkable=checkable)
+    # With its stored cost, as the stores check it: a stored cost the checker disagrees with is an invalid BKS.
+    stored_check = check_routes(loaded, path, existing.routes, objective, declared_cost=existing.cost, checkable=checkable)
     if not stored_check.is_valid():
         # submit_bks refuses to compare against it ("Stored BKS is invalid"): say so instead of guessing.
         return {**summary, "action": "stored_invalid", "error": stored_check.error_message or str(stored_check.status)}
