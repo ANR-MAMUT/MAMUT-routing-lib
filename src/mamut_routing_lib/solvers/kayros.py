@@ -38,7 +38,7 @@ from mamut_routing_lib.solvers.base import (
     Support,
     capability_support,
 )
-from mamut_routing_lib.solvers.provenance import environment, package_version
+from mamut_routing_lib.solvers.provenance import declared_requirement, environment, lib_version, package_version, satisfies
 
 __all__ = ["KayrosSolver"]
 
@@ -94,9 +94,9 @@ class KayrosSolver:
             return Availability(
                 False,
                 reason="the kayros package is not installed",
-                hint="pip install 'kayros>=1.1.2' (or mamut-routing-tools[kayros])",
+                hint="pip install kayros (a release whose mamut-routing-lib requirement admits this version)",
             )
-        return Availability(True, version=package_version("kayros"))
+        return Availability(True, version=package_version("kayros"), note=_requirement_note())
 
     def supports(self, profile: InstanceProfile, objective: ObjectiveFunction) -> Support:
         return capability_support(self.capabilities, profile, objective, solver_label=self.label)
@@ -107,6 +107,10 @@ class KayrosSolver:
         started = time.perf_counter()
         version = package_version("kayros")
         provenance: dict[str, Any] = {**environment(), "kayros_version": version}
+        requirement = declared_requirement("kayros", "mamut-routing-lib")
+        if requirement is not None:
+            provenance["kayros_requires_lib"] = requirement
+            provenance["kayros_requirement_met"] = satisfies(lib_version(), requirement)
         base = dict(
             solver=self.name,
             method="kayros",
@@ -222,6 +226,18 @@ class KayrosSolver:
         if outcome.termination == "cancelled":
             return SolveResult(**common, status="cancelled", stopped_early=True)
         return SolveResult(**common, status="timeout", error="KAYROS did not return by its time limit and was stopped at the hard timeout")
+
+
+def _requirement_note() -> str | None:
+    """A warning when the installed KAYROS declares a mamut-routing-lib range that excludes this version."""
+    requirement = declared_requirement("kayros", "mamut-routing-lib")
+    if requirement is None or satisfies(lib_version(), requirement) is not False:
+        return None
+    return (
+        f"the installed kayros declares mamut-routing-lib{requirement}, and this is mamut-routing-lib "
+        f"{lib_version()}: the two were forced together, and KAYROS may price routes under another checker "
+        "contract than this library (results are still re-checked here)"
+    )
 
 
 #: The package directory of the library this process runs.

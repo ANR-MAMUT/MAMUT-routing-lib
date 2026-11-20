@@ -116,6 +116,39 @@ def test_the_worker_runs_the_library_of_the_parent(fake_kayros, td_instance: Pat
     assert solved.result.provenance["worker_lib_version"] == mamut_routing_lib.__version__
 
 
+@pytest.mark.parametrize(
+    ("version", "clauses", "expected"),
+    [
+        ("0.12.0", ">=0.6.0,<0.12", False),
+        ("0.11.3", ">=0.6.0,<0.12", True),
+        ("0.13.0.dev0", ">=0.6.0,<0.13", False),
+        ("0.13.0.dev0", ">=0.6.0", True),
+        ("0.12.0", "~=0.12.0", True),
+        ("0.13.0", "~=0.12.0", False),
+        ("0.12.0", "==0.12.*", None),
+    ],
+)
+def test_version_clauses(version: str, clauses: str, expected) -> None:
+    from mamut_routing_lib.solvers.provenance import satisfies
+
+    assert satisfies(version, clauses) is expected
+
+
+def test_a_kayros_that_excludes_this_library_is_flagged(fake_kayros, td_instance: Path, monkeypatch) -> None:
+    """KAYROS releases cap the library version. Forced together, the mismatch is said and recorded."""
+    from mamut_routing_lib.solvers import kayros as kayros_module
+
+    monkeypatch.setattr(kayros_module, "declared_requirement", lambda package, on: ">=0.6.0,<0.1")
+    note = get_solver("kayros").availability().note
+    assert note is not None and "mamut-routing-lib>=0.6.0,<0.1" in note
+    solved = run_solver("kayros", td_instance, time_limit_s=1, seed=5)
+    assert solved.valid  # the routes are still priced by this library's checker
+    assert solved.result.provenance["kayros_requires_lib"] == ">=0.6.0,<0.1"
+    assert solved.result.provenance["kayros_requirement_met"] is False
+    monkeypatch.setattr(kayros_module, "declared_requirement", lambda package, on: ">=0.6.0")
+    assert get_solver("kayros").availability().note is None
+
+
 def test_a_stop_request_ends_a_search_that_no_longer_improves(fake_kayros, td_instance: Path) -> None:
     """KAYROS only returns to Python on a new incumbent: the stop must not wait for one."""
     fake_kayros("stall")
