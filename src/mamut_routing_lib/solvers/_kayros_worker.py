@@ -86,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
         solution = kayros.solve(loaded, time_limit=args.time_limit, seed=args.seed, on_incumbent=on_incumbent)
     except Exception as error:  # noqa: BLE001 - reported to the parent, which makes it a failed result
         print(f"error: {type(error).__name__}: {error}", flush=True)
-        write_json_atomic(result_path, {"ok": False, "error": f"{type(error).__name__}: {error}"})
+        write_json_atomic(result_path, {"ok": False, "error": f"{type(error).__name__}: {error}", **_library_identity()})
         return 1
     finally:
         finished.set()
@@ -100,9 +100,17 @@ def main(argv: list[str] | None = None) -> int:
             "status": getattr(solution, "status", None),
             "iterations": getattr(solution, "iterations", None),
             "route_durations": [float(value) for value in (getattr(solution, "route_durations", None) or [])],
+            **_library_identity(),
         },
     )
     return 0
+
+
+def _library_identity() -> dict[str, str]:
+    """Which copy of the library this worker runs, for the parent to compare with its own."""
+    import mamut_routing_lib
+
+    return {"lib_path": str(Path(mamut_routing_lib.__file__).resolve().parent), "lib_version": mamut_routing_lib.__version__}
 
 
 if __name__ == "__main__":

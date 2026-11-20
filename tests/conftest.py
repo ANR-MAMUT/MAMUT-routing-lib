@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import pytest
 
 from mamut_routing_lib.models import BenchmarkInstance, BenchmarkInstanceCVRP
@@ -76,6 +79,18 @@ def toy_vrptw_instance() -> BenchmarkInstance:
         time_windows=[(0, 100), (0, 50), (0, 50)],
         metadata=_TOY_METADATA_VRPTW,
     )
+
+
+def pytest_configure(config):
+    """Make ``PYTHONPATH`` absolute for the whole session.
+
+    Several tests start stand-in solvers as child Python processes in a temporary work
+    directory. A relative entry such as ``PYTHONPATH=src`` would not resolve from there,
+    and the children would import another installed copy of the library, or none.
+    """
+    entries = [str(Path(entry).resolve()) for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep) if entry]
+    if entries:
+        os.environ["PYTHONPATH"] = os.pathsep.join(entries)
 
 
 @pytest.fixture(autouse=True)

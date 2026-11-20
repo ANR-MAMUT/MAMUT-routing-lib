@@ -102,6 +102,20 @@ def test_kayros_results_are_checked_by_the_td_checker(fake_kayros, td_instance: 
     assert "artifacts_dir" not in solved.result.provenance  # the temporary workdir is removed
 
 
+def test_the_worker_runs_the_library_of_the_parent(fake_kayros, td_instance: Path, monkeypatch) -> None:
+    """A relative PYTHONPATH must not make the worker, which runs in the work directory, import another copy."""
+    import mamut_routing_lib
+
+    package_dir = Path(mamut_routing_lib.__file__).resolve().parent
+    monkeypatch.chdir(package_dir.parent)
+    site = os.environ["PYTHONPATH"].split(os.pathsep)[0]  # the stand-in kayros package
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([site, "."]))
+    solved = run_solver("kayros", td_instance, time_limit_s=1, seed=5)
+    assert solved.result.status == "feasible", solved.result.error
+    assert solved.result.provenance["worker_lib_is_parent_lib"] is True
+    assert solved.result.provenance["worker_lib_version"] == mamut_routing_lib.__version__
+
+
 def test_a_stop_request_ends_a_search_that_no_longer_improves(fake_kayros, td_instance: Path) -> None:
     """KAYROS only returns to Python on a new incumbent: the stop must not wait for one."""
     fake_kayros("stall")

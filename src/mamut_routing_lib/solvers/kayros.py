@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -135,6 +136,7 @@ class KayrosSolver:
             outcome = run_process(
                 [
                     sys.executable,
+                    "-P",  # the work directory must not shadow the library or kayros
                     "-m",
                     WORKER_MODULE,
                     str(Path(request.instance_path).resolve()),
@@ -151,6 +153,7 @@ class KayrosSolver:
                 log_path=workdir / LOG_FILE,
                 time_limit_s=float(request.time_limit_s),
                 grace_s=grace,
+                env=_worker_environment(),
                 monitor=monitor,
                 progress_pattern=PROGRESS_PATTERN,
             )
@@ -159,7 +162,12 @@ class KayrosSolver:
                 termination=outcome.termination,
                 hard_timeout_s=float(request.time_limit_s) + grace,
             )
-            return self._result(base, outcome, _read_json(result_file), _read_json(checkpoint), time.perf_counter() - started)
+            result = _read_json(result_file)
+            if result is not None and result.get("lib_path"):
+                # The worker is another interpreter: record which library it ran, and whether it is this one.
+                provenance["worker_lib_version"] = result.get("lib_version")
+                provenance["worker_lib_is_parent_lib"] = Path(str(result["lib_path"])) == _LIB_PACKAGE_DIR
+            return self._result(base, outcome, result, _read_json(checkpoint), time.perf_counter() - started)
         finally:
             if own_workdir and not request.keep_artifacts:
                 shutil.rmtree(workdir, ignore_errors=True)
@@ -214,3 +222,25 @@ class KayrosSolver:
         if outcome.termination == "cancelled":
             return SolveResult(**common, status="cancelled", stopped_early=True)
         return SolveResult(**common, status="timeout", error="KAYROS did not return by its time limit and was stopped at the hard timeout")
+
+
+#: The package directory of the library this process runs.
+_LIB_PACKAGE_DIR = Path(__file__).resolve().parents[1]
+
+
+def _worker_environment() -> dict[str, str]:
+    """The environment of the worker: the parent's, with an import path that gives it the parent's library.
+
+    The worker runs in the work directory. Relative ``PYTHONPATH`` entries are made absolute against
+    the parent's working directory, and the directory that holds this library comes first, so the
+    worker cannot pick another installed copy.
+    """
+    env = dict(os.environ)
+    entries = [str(_LIB_PACKAGE_DIR.parent)]
+    for entry in env.get("PYTHONPATH", "").split(os.pathsep):
+        if entry:
+            absolute = str(Path(entry).resolve())
+            if absolute not in entries:
+                entries.append(absolute)
+    env["PYTHONPATH"] = os.pathsep.join(entries)
+    return env
