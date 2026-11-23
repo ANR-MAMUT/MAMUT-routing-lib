@@ -277,7 +277,12 @@ integer solver on an exact scale reports another cost than the checker's for its
 own routes, the result says so next to the instance: the routes and the checker's
 cost are kept, and the solver worked on other costs than the instance's.
 Provenance (command, executable and input sha256, scale, version, machine) goes
-into the run result and into a BKS stored from it.
+into the run result and into a BKS stored from it. The executable hash is the
+hash of the solver file: the native executable, the jar, or the script of a
+`runtime = "python"` solver, named in `executable` and run as
+`argv = ["{python}", "{executable}", ...]`. The interpreter or the JVM that ran
+it is recorded next to it in the run result (`runtime_executable`,
+`runtime_version`).
 
 With `input_format = "lkh"`, `extra_args` are literal lines appended to the
 LKH-3 parameter file (`extra_args = ["RUNS = 10"]`), whatever the `argv` -- a

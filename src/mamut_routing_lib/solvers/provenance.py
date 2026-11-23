@@ -17,7 +17,7 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any
 
-__all__ = ["cpu_model", "environment", "file_sha256", "lib_version", "package_version"]
+__all__ = ["cpu_model", "environment", "file_sha256", "java_release", "lib_version", "package_version"]
 
 
 @lru_cache(maxsize=1)
@@ -110,23 +110,52 @@ def environment(*, include_host: bool = False) -> dict[str, Any]:
     return facts
 
 
-_SHA_CACHE: dict[tuple[str, int, int], str] = {}
+def java_release(java: str | Path) -> str | None:
+    """The version of the JDK or JRE that holds this ``java`` launcher, from its ``release`` file.
+
+    ``21.0.13+9-LTS (Eclipse Adoptium)``; ``None`` when the launcher has no ``release`` file next
+    to its ``bin`` directory. Reading the file costs nothing, where ``java -version`` starts a JVM.
+    """
+    try:
+        text = (Path(java).resolve().parent.parent / "release").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    values = {}
+    for line in text.splitlines():
+        key, separator, value = line.partition("=")
+        if separator:
+            values[key.strip()] = value.strip().strip('"')
+    version = values.get("JAVA_RUNTIME_VERSION") or values.get("JAVA_VERSION")
+    if not version:
+        return None
+    return f"{version} ({values['IMPLEMENTOR']})" if values.get("IMPLEMENTOR") else version
 
 
-def file_sha256(path: str | Path) -> str | None:
-    """sha256 of a file's bytes, cached on (path, size, mtime); ``None`` if it does not exist."""
+_SHA_CACHE: dict[tuple[str, int, int, int, int, int], str] = {}
+
+
+def file_sha256(path: str | Path, *, cache: bool = True) -> str | None:
+    """sha256 of a file's bytes; ``None`` if it does not exist.
+
+    With ``cache`` the digest is remembered for the identity of the file: path, size, modification
+    time, change time and inode. A build installed over another with the same size and modification
+    time (``cp -p``, a reproducible build) has another inode or change time, which no tool sets back.
+    ``cache=False`` is for a file written once per run: remembering it only grows the cache, and a
+    work directory reused within one tick of the file-system clock gives two files one identity.
+    """
     target = Path(path)
     try:
         stat = target.stat()
     except OSError:
         return None
-    key = (str(target.resolve()), stat.st_size, stat.st_mtime_ns)
-    cached = _SHA_CACHE.get(key)
+    key = (str(target.resolve()), stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+    cached = _SHA_CACHE.get(key) if cache else None
     if cached is None:
         digest = hashlib.sha256()
         with target.open("rb") as handle:
             for block in iter(lambda: handle.read(1 << 20), b""):
                 digest.update(block)
         cached = digest.hexdigest()
-        _SHA_CACHE[key] = cached
+        if cache:
+            _SHA_CACHE[key] = cached
     return cached

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import threading
@@ -94,6 +95,57 @@ def test_coordinate_solver_on_a_euclidean_collection_instance(collection: Path) 
     assert result.provenance["input_sha256"] and result.provenance["argv"][0] == sys.executable
     assert "host" not in result.provenance
     assert solved.bks_metadata()["input_sha256"] == result.provenance["input_sha256"]
+
+
+def test_a_python_solver_is_hashed_by_its_script_not_by_the_interpreter(collection: Path, tmp_path: Path) -> None:
+    script = tmp_path / "solve.py"
+    script.write_text(
+        "import runpy\nrunpy.run_module('mamut_routing_lib.solvers.external._fake_solver', run_name='__main__')\n"
+    )
+    descriptor = FAKE_LKH.with_overrides(executable=str(script), argv=("{python}", "{executable}", "--params", "{params}"))
+    solver = ExternalSolver(descriptor)
+    assert solver.availability().available and solver.availability().executable == str(script)
+    solved = run_solver(solver, _variant(collection, "CVRP", "fastest"), time_limit_s=5)
+    assert solved.valid
+    provenance = solved.result.provenance
+    assert provenance["argv"][:2] == [sys.executable, str(script)]
+    assert provenance["executable"] == str(script)
+    assert provenance["executable_sha256"] == hashlib.sha256(script.read_bytes()).hexdigest()
+    assert provenance["runtime_executable"] == sys.executable and provenance["runtime_version"]
+    assert solved.bks_metadata()["executable_sha256"] == provenance["executable_sha256"]
+
+    missing = ExternalSolver(descriptor.with_overrides(executable=str(tmp_path / "gone.py")))
+    assert not missing.availability().available and "script not found" in missing.availability().reason
+
+
+def test_a_python_solver_that_names_no_script_publishes_no_executable_hash(collection: Path) -> None:
+    """Its argv runs a module: the interpreter's hash would say nothing about the code that ran."""
+    solved = run_solver(ExternalSolver(FAKE_LKH), _variant(collection, "CVRP", "fastest"), time_limit_s=5)
+    assert solved.valid
+    assert solved.result.provenance["executable_sha256"] is None
+    assert solved.result.provenance["runtime_executable"] == sys.executable
+    assert "executable_sha256" not in solved.bks_metadata()
+
+
+def test_a_java_solver_records_its_jar_and_the_jvm_that_ran_it(collection: Path, tmp_path: Path) -> None:
+    jdk = tmp_path / "jdk"
+    (jdk / "bin").mkdir(parents=True)
+    java = jdk / "bin" / "java"  # a launcher that runs the stand-in solver, whatever the jar
+    java.write_text(f'#!/bin/sh\nexec "{sys.executable}" -m mamut_routing_lib.solvers.external._fake_solver "$@"\n')
+    java.chmod(0o755)
+    (jdk / "release").write_text('IMPLEMENTOR="Test JDK"\nJAVA_RUNTIME_VERSION="21.0.1+12"\n')
+    jar = tmp_path / "solver.jar"
+    jar.write_bytes(b"the solver")
+    descriptor = FAKE_LKH.with_overrides(
+        runtime="java", jar=str(jar), java=str(java), argv=("{java}", "-jar", "{jar}", "--params", "{params}")
+    )
+    solved = run_solver(ExternalSolver(descriptor), _variant(collection, "CVRP", "fastest"), time_limit_s=5)
+    assert solved.valid
+    provenance = solved.result.provenance
+    assert provenance["executable"] == str(jar)
+    assert provenance["executable_sha256"] == hashlib.sha256(b"the solver").hexdigest()
+    assert provenance["runtime_executable"] == str(java.resolve())
+    assert provenance["runtime_version"] == "21.0.1+12 (Test JDK)"
 
 
 def test_coordinate_solver_refuses_a_road_metric(collection: Path) -> None:

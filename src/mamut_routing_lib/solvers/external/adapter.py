@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import math
 import os
+import platform
 import shutil
 import sys
 import tempfile
@@ -57,7 +58,7 @@ from mamut_routing_lib.solvers.external.scaling import (
     scale_explicit_data,
     unscale_cost,
 )
-from mamut_routing_lib.solvers.provenance import environment, file_sha256
+from mamut_routing_lib.solvers.provenance import environment, file_sha256, java_release
 
 __all__ = ["ExternalSolver", "PreparedInput"]
 
@@ -120,16 +121,27 @@ class ExternalSolver:
         where = self._config_path or str(default_config_path())
         if self.descriptor.runtime == "java":
             return f"set solvers.{self.name}.jar in {where}"
+        if self.descriptor.runtime == "python":
+            return f"fix solvers.{self.name}.executable (the solver's script) in {where}"
         if self.descriptor.executable:
             return f"fix solvers.{self.name}.executable in {where}"
         names = self.descriptor.executable_names
         return f"set solvers.{self.name}.executable in {where}, or put {names[0] if names else self.name} on PATH"
 
     def resolve_executable(self) -> tuple[str | None, str | None]:
-        """(absolute executable or jar, reason when missing)."""
+        """(absolute executable, jar or Python script, reason when missing).
+
+        A Python solver names its script in ``executable``. Without one, its argv names a module or a
+        script by itself, and this is the interpreter that runs it.
+        """
         descriptor = self.descriptor
         if descriptor.runtime == "python":
-            return sys.executable, None
+            if not descriptor.executable:
+                return sys.executable, None
+            script = Path(descriptor.executable).expanduser()
+            if not script.is_absolute() or not script.is_file():
+                return None, f"script not found: {script}" + ("" if script.is_absolute() else " (give an absolute path)")
+            return str(script.resolve()), None
         if descriptor.runtime == "java":
             if not descriptor.jar:
                 return None, "no jar configured"
@@ -163,6 +175,26 @@ class ExternalSolver:
             return (str(path), None) if path.is_file() else (None, f"java not found: {path}")
         found = shutil.which(java)
         return (found, None) if found else (None, f"{java} not found on PATH")
+
+    def solver_file(self) -> str | None:
+        """The file that is the solver: the native executable, the jar, or the script of a Python solver.
+
+        ``None`` for a Python solver that names no script: the interpreter is not the solver, and its
+        hash would say nothing about the code that ran.
+        """
+        if self.descriptor.runtime == "python" and not self.descriptor.executable:
+            return None
+        return self.resolve_executable()[0]
+
+    def _runtime_identity(self) -> dict[str, Any]:
+        """What runs the solver file, when it does not run by itself: the interpreter or the JVM."""
+        if self.descriptor.runtime == "python":
+            return {"runtime_executable": sys.executable, "runtime_version": platform.python_version()}
+        if self.descriptor.runtime == "java":
+            java = self._java()[0]
+            if java is not None:
+                return {"runtime_executable": str(Path(java).resolve()), "runtime_version": java_release(java)}
+        return {}
 
     def availability(self) -> Availability:
         executable, reason = self.resolve_executable()
@@ -402,12 +434,15 @@ class ExternalSolver:
                 monitor.phase("preparing input")
             prepared = self.prepare(request, workdir)
             argv = self.build_argv(prepared, request)
+            solver_file = self.solver_file()
             provenance.update(
                 argv=argv,
-                executable=argv[0] if descriptor.runtime != "java" else self.resolve_executable()[0],
-                executable_sha256=file_sha256(self.resolve_executable()[0] or argv[0]),
-                input_sha256=file_sha256(prepared.problem),
-                params_sha256=file_sha256(prepared.params) if prepared.params else None,
+                # The solver itself, not what launches it: a wrapper (`taskset`), an interpreter, a JVM.
+                executable=solver_file or argv[0],
+                executable_sha256=file_sha256(solver_file) if solver_file else None,
+                **self._runtime_identity(),
+                input_sha256=file_sha256(prepared.problem, cache=False),
+                params_sha256=file_sha256(prepared.params, cache=False) if prepared.params else None,
                 scale=prepared.plan.to_json(),
                 problem_type_line=prepared.problem_type_line,
                 vehicles=prepared.vehicles,
@@ -492,7 +527,7 @@ class ExternalSolver:
             if said:
                 reason += f"; the solver's output ends with: {said}"
             return SolveResult(**common, status=status, error=reason)
-        provenance["solution_sha256"] = file_sha256(solution)
+        provenance["solution_sha256"] = file_sha256(solution, cache=False)
         text = solution.read_text(encoding="utf-8", errors="replace")
         num_customers = int(prepared.checkable.num_customers)
         try:

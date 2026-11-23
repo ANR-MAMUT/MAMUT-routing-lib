@@ -234,6 +234,27 @@ def test_relative_paths_are_read_from_the_config_folder(tmp_path: Path, monkeypa
     assert descriptors["ails2"].java == str(config_dir.resolve() / "jdk" / "bin" / "java")
 
 
+def test_the_script_of_a_python_solver_is_a_file_of_the_config_folder(tmp_path: Path, monkeypatch) -> None:
+    """A bare name is a command on PATH for a native solver, and a file next to the config for a Python one."""
+    config_dir = tmp_path / "conf"
+    config_dir.mkdir()
+    monkeypatch.chdir(tmp_path)
+    path = _config(
+        config_dir,
+        '[solvers.mine]\nruntime = "python"\nexecutable = "solve.py"\nargv = ["{python}", "{executable}", "{problem}", "{solution}"]\n'
+        'input_format = "cvrplib-explicit"\noutput_format = "cvrplib-sol"\nproblem_types = ["CVRP"]\n'
+        '[solvers.lkh3]\nexecutable = "LKH"\n',
+    )
+    descriptors = configured_descriptors(path)
+    assert descriptors["mine"].executable == str(config_dir.resolve() / "solve.py")
+    assert descriptors["lkh3"].executable == "LKH"
+    solver = get_solver("mine", config=path)
+    assert not solver.availability().available and "script not found" in solver.availability().reason
+    (config_dir / "solve.py").write_text("")
+    registry.reload_solvers()
+    assert get_solver("mine", config=path).availability().available
+
+
 def test_the_id_convention_is_one_based_unless_declared(tmp_path: Path) -> None:
     new_solver = (
         '[solvers.{name}]\nargv = ["x", "{{problem}}", "{{solution}}"]\ninput_format = "cvrplib-explicit"\n'

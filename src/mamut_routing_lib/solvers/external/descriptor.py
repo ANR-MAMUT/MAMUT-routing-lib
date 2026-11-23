@@ -5,7 +5,8 @@ writes, its numeric limits and its capabilities; ``ExternalSolver`` does the
 rest. Built-ins live in ``catalog``; users add or override descriptors in the
 solvers config (``config``).
 
-argv placeholders: ``{executable}`` (absolute path), ``{java}``, ``{jar}``,
+argv placeholders: ``{executable}`` (absolute path: the native executable, or
+the script of a ``runtime = "python"`` solver), ``{java}``, ``{jar}``,
 ``{python}`` (this interpreter), ``{problem}``, ``{params}``, ``{solution}``,
 ``{workdir}`` (absolute paths), ``{seed}``, ``{time_limit_s}`` (``30`` or
 ``12.5``), ``{time_limit_int}`` (whole seconds, at least 1), ``{vehicles}``.
@@ -45,6 +46,8 @@ class ExternalSolverDescriptor:
     input_format: InputFormat
     output_format: OutputFormat
     capabilities: SolverCapabilities
+    #: The solver file: a native executable, or the script of a ``runtime = "python"`` solver (run as
+    #: ``{python} {executable}``). It is what ``executable_sha256`` hashes; a Java solver's is its ``jar``.
     executable: str | None = None
     executable_names: tuple[str, ...] = ()
     runtime: Literal["native", "java", "python"] = "native"

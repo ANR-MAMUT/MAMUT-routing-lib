@@ -43,6 +43,10 @@ directory or a benchmark tree: the file names executables that will be run.
 Paths: ``~`` is expanded, and a relative path is read from the config file's folder,
 never the working directory: ``jar = "AILSII.jar"``, ``executable = "./bin/filo2"``.
 A bare ``executable`` or ``java`` name (``filo2``, ``java``) is looked up on PATH.
+With ``runtime = "python"``, ``executable`` is the solver's script (a file, read
+from the config file's folder when relative): ``argv = ["{python}", "{executable}", ...]``.
+The script is what the provenance hashes; a solver whose argv names its code by
+itself (``"-m", "package.module"``) records no executable hash.
 
 Unknown keys and mistyped values (``fleet_limit = "false"``) are errors, so a typo
 never silently runs a different command. An error in one ``[solvers.<name>]`` table
@@ -366,9 +370,12 @@ def _descriptor(
         values["limits"] = Limits(
             **{**{k: getattr(base_limits, k) for k in _LIMIT_KEYS}, **{k: _number(v, name, f"limits.{k}") for k, v in limits.items()}}
         )
+    runtime = values.get("runtime", parent.runtime if parent else "native")
     for key in ("executable", "jar", "java"):
         if key in values:
-            values[key] = _config_relative(values[key], base_dir, on_path=key != "jar")
+            # A jar and the script of a Python solver are files, never commands: no PATH lookup for a bare name.
+            is_file = key == "jar" or (key == "executable" and runtime == "python")
+            values[key] = _config_relative(values[key], base_dir, on_path=not is_file)
     if "jar" in values and not Path(values["jar"]).is_absolute():
         raise SolverConfigError(f"solvers.{name}.jar must be a path to the jar (absolute, or relative to the config file)")
     if "progress_pattern" in values:
