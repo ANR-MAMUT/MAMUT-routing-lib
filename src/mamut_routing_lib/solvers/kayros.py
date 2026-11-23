@@ -11,8 +11,13 @@ The adapter therefore runs each solve in a child Python process
 process group, a hard timeout, and a stop request (the monitor, Ctrl-C, a GUI
 cancel) that kills the process within a poll. The worker saves every incumbent
 before reporting it, so a stopped solve still returns its last incumbent's
-routes. The routes are re-checked by the lib's TD checker afterwards
-(``solvers.run.run_solver``), like every other solver's.
+routes. So does a solve whose worker dies without a result -- the system kills
+a process that runs out of memory, and native code can crash: the run then
+ends as ``feasible`` with ``stopped_early``, its ``error`` says how the worker
+ended, and the provenance has ``recovered_from_checkpoint``. An error that the
+worker reports itself stays a failed result. The routes are re-checked by the
+lib's TD checker afterwards (``solvers.run.run_solver``), like every other
+solver's.
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ import importlib.util
 import json
 import os
 import shutil
+import signal
 import sys
 import tempfile
 import time
@@ -76,6 +82,18 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 
 def _routes(payload: dict[str, Any] | None) -> list[list[int]]:
     return [[int(stop) for stop in route] for route in (payload or {}).get("routes") or []]
+
+
+def _how_it_ended(returncode: int | None) -> str:
+    """``exited with code 1``, or ``was killed by SIGKILL`` for the negative code of a signal."""
+    if returncode is None or returncode >= 0:
+        return f"exited with code {returncode}"
+    try:
+        name = signal.Signals(-returncode).name
+    except ValueError:
+        name = f"signal {-returncode}"
+    # The kernel ends a process that runs out of memory with SIGKILL, and nothing else says so.
+    return f"was killed by {name}" + (" (the system does this to a process that runs out of memory)" if name == "SIGKILL" else "")
 
 
 class KayrosSolver:
@@ -207,13 +225,7 @@ class KayrosSolver:
                     "route_durations": list(result.get("route_durations") or []),
                 },
             )
-        if outcome.termination == "exited":
-            error = (result or {}).get("error")
-            if not error:
-                lines = [line.strip() for line in outcome.log_tail.splitlines() if line.strip()][-3:]
-                error = f"KAYROS exited with code {outcome.returncode} and no result" + (f": {' | '.join(lines)}" if lines else "")
-            return SolveResult(**base, wall_time=wall_time, status="failed", error=str(error))
-        # Stopped on request, or killed at the hard timeout: the last incumbent the worker saved.
+        # Whatever follows has no finished solution: the last incumbent that the worker saved is the answer.
         value = (incumbent or {}).get("value")
         common = dict(
             **base,
@@ -223,6 +235,24 @@ class KayrosSolver:
             solver_cost_raw=None if value is None else float(value),
             metadata={"iterations": (incumbent or {}).get("iteration")},
         )
+        if outcome.termination == "exited":
+            ended = _how_it_ended(outcome.returncode)
+            if result is None and common["routes"]:
+                # The worker died without a word (out of memory, a crash in native code). The run is
+                # not `failed`: a failed result has no routes for the caller, and these are checked.
+                base["provenance"]["recovered_from_checkpoint"] = True
+                return SolveResult(
+                    **common,
+                    status="feasible",
+                    stopped_early=True,
+                    error=f"the KAYROS worker {ended} before it returned a result: these are the routes of the last incumbent it saved",
+                )
+            error = (result or {}).get("error")
+            if not error:
+                lines = [line.strip() for line in outcome.log_tail.splitlines() if line.strip()][-3:]
+                error = f"KAYROS {ended} and left no result" + (f": {' | '.join(lines)}" if lines else "")
+            return SolveResult(**base, wall_time=wall_time, status="failed", error=str(error))
+        # Stopped on request, or killed at the hard timeout.
         if outcome.termination == "cancelled":
             return SolveResult(**common, status="cancelled", stopped_early=True)
         return SolveResult(**common, status="timeout", error="KAYROS did not return by its time limit and was stopped at the hard timeout")

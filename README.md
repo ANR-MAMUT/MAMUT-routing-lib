@@ -202,7 +202,9 @@ tree. A failing instance becomes an `error` row instead of stopping the batch.
 Ctrl-C stops every running solve: external solvers are killed with their
 process group, and so is KAYROS, which runs in a child Python process because
 its search has no stop hook between two incumbents (a stopped solve keeps its
-last incumbent). SIGTERM and SIGHUP (`timeout 60 mamut-routing solve`, a systemd
+last incumbent, and so does a solve whose worker the system kills, for example
+when memory runs out: the row is solved, and a line says how the worker ended).
+SIGTERM and SIGHUP (`timeout 60 mamut-routing solve`, a systemd
 stop, a closed terminal) end the command the same way. A command that is killed
 outright (SIGKILL, a crash) cannot stop anything itself: on Linux and macOS each
 solver process has a guard that ends it once the command is gone. Exit status: 0
