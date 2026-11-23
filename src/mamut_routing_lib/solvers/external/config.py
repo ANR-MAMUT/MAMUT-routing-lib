@@ -43,7 +43,8 @@ directory or a benchmark tree: the file names executables that will be run.
 
 Paths: ``~`` is expanded, and a relative path is read from the config file's folder,
 never the working directory: ``jar = "AILSII.jar"``, ``executable = "./bin/filo2"``.
-A bare ``executable`` or ``java`` name (``filo2``, ``java``) is looked up on PATH.
+A bare ``executable`` or ``java`` name (``filo2``, ``java``) is looked up on PATH, in
+its absolute entries only: a relative entry (``.``) is the working directory.
 With ``runtime = "python"``, ``executable`` is the solver's script (a file, read
 from the config file's folder when relative): ``argv = ["{python}", "{executable}", ...]``.
 The script is what the provenance hashes; a solver whose argv names its code by
@@ -596,7 +597,8 @@ _STARTER_HEADER = """\
 # set its path, then check with `mamut-routing solvers list`.
 #
 # - Relative paths are read from this file's folder; a bare executable name is
-#   looked up on PATH. Booleans are unquoted (true / false).
+#   looked up on PATH (absolute entries only, never the working directory).
+#   Booleans are unquoted (true / false).
 # - A mistake in one table disables that solver only; `solvers list` says why.
 # - `version` is recorded in the provenance of every BKS a run stores.
 schema_version = 1
@@ -670,8 +672,7 @@ def starter_config_text(*, detect: bool = True) -> str:
     With ``detect``, a solver already found on PATH is marked as such (it needs no table).
     The text parses as a valid config that defines no solver.
     """
-    import shutil
-
+    from mamut_routing_lib.solvers.external.adapter import find_on_path
     from mamut_routing_lib.solvers.external.catalog import BUILTIN_DESCRIPTORS, patch_path
 
     parts = [_STARTER_HEADER]
@@ -680,7 +681,7 @@ def starter_config_text(*, detect: bool = True) -> str:
         text = about.format(homepage=descriptor.homepage or "", patch=patch_path("hgs-cvrp-explicit-matrix.patch"))
         block = [_comment(text)]
         if detect and descriptor.runtime == "native":
-            found = next((hit for candidate in descriptor.executable_names if (hit := shutil.which(candidate))), None)
+            found = next((hit for candidate in descriptor.executable_names if (hit := find_on_path(candidate)[0])), None)
             if found:
                 block.append(f"# Found on PATH: {found} (used as is; a table is only needed to pin a version).")
         block.append(f"# [solvers.{name}]")

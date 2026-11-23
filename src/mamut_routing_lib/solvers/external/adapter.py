@@ -60,7 +60,7 @@ from mamut_routing_lib.solvers.external.scaling import (
 )
 from mamut_routing_lib.solvers.provenance import environment, file_sha256, java_release
 
-__all__ = ["ExternalSolver", "PreparedInput"]
+__all__ = ["ExternalSolver", "PreparedInput", "find_on_path"]
 
 PROBLEM_FILE = "problem.vrp"
 PARAMS_FILE = "problem.par"
@@ -80,6 +80,28 @@ class PreparedInput:
     fixed_fleet: int | None
     problem_type_line: str
     checkable: Any
+
+
+def find_on_path(name: str) -> tuple[str | None, str | None]:
+    """(the command ``name`` on PATH, or a hit that only a relative PATH entry gives).
+
+    Only the absolute entries of PATH are searched. A relative entry (``.``, an empty one, ``bin``)
+    is the working directory, which the solvers config never reads on purpose: a file called
+    ``filo2`` in a benchmark tree would run, and be credited, as the solver. Such a hit is
+    returned apart, for the message that says why the solver is not available.
+    """
+    entries = os.environ.get("PATH", os.defpath).split(os.pathsep)
+    absolute = [entry for entry in entries if entry and os.path.isabs(entry)]
+    found = shutil.which(name, path=os.pathsep.join(absolute)) if absolute else None
+    if found and os.path.isabs(found):
+        return found, None
+    return None, (shutil.which(name) if len(absolute) < len(entries) else None)
+
+
+def _relative_hit_note(relative_hit: str | None) -> str:
+    if not relative_hit:
+        return ""
+    return f" ({relative_hit} is only found through a relative PATH entry, which is not searched: give an absolute path)"
 
 
 def _fmt_seconds(value: float) -> str:
@@ -158,23 +180,25 @@ class ExternalSolver:
                 if path.is_file() and os.access(path, os.X_OK):
                     return str(path.resolve()), None
                 return None, f"executable not found or not executable: {path}"
-            found = shutil.which(configured)
+            found, relative_hit = find_on_path(configured)
             if found:
                 return str(Path(found).resolve()), None
-            return None, f"configured executable {configured!r} is not on PATH"
+            return None, f"configured executable {configured!r} is not on PATH" + _relative_hit_note(relative_hit)
+        relative_hit = None
         for candidate in descriptor.executable_names:
-            found = shutil.which(candidate)
+            found, elsewhere = find_on_path(candidate)
             if found:
                 return str(Path(found).resolve()), None
-        return None, "executable not found"
+            relative_hit = relative_hit or elsewhere
+        return None, "executable not found" + _relative_hit_note(relative_hit)
 
     def _java(self) -> tuple[str | None, str | None]:
         java = self.descriptor.java
         path = Path(java).expanduser()
         if path.is_absolute():
             return (str(path), None) if path.is_file() else (None, f"java not found: {path}")
-        found = shutil.which(java)
-        return (found, None) if found else (None, f"{java} not found on PATH")
+        found, relative_hit = find_on_path(java)
+        return (found, None) if found else (None, f"{java} not found on PATH" + _relative_hit_note(relative_hit))
 
     def solver_file(self) -> str | None:
         """The file that is the solver: the native executable, the jar, or the script of a Python solver.

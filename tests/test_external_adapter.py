@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 import threading
 from pathlib import Path
@@ -329,6 +330,38 @@ def _executable(tmp_path: Path, name: str) -> Path:
     path.write_text("#!/bin/sh\nexit 0\n")
     path.chmod(0o755)
     return path
+
+
+@pytest.mark.parametrize("relative_path", [".", "/nonexistent:.", "/nonexistent::/also-nonexistent", "tree"])
+def test_a_bare_name_is_never_found_through_the_working_directory(tmp_path: Path, monkeypatch, relative_path: str) -> None:
+    """A relative PATH entry is the working directory: a file called `filo2` in a benchmark tree is not the solver."""
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    for name in ("filo2", "java"):
+        _executable(tree, name)
+    monkeypatch.chdir(tmp_path if relative_path == "tree" else tree)
+    monkeypatch.setenv("PATH", relative_path.replace(":", os.pathsep))
+
+    found_by_name = ExternalSolver(BUILTIN_DESCRIPTORS["filo2"]).availability()
+    assert not found_by_name.available and "only found through a relative PATH entry" in found_by_name.reason
+    configured = ExternalSolver(BUILTIN_DESCRIPTORS["filo2"].with_overrides(executable="filo2")).availability()
+    assert not configured.available and "'filo2' is not on PATH" in configured.reason
+    assert "only found through a relative PATH entry" in configured.reason
+    jar = tmp_path / "solver.jar"
+    jar.write_bytes(b"jar")
+    java = ExternalSolver(BUILTIN_DESCRIPTORS["ails2"].with_overrides(jar=str(jar))).availability()
+    assert not java.available and "java not found on PATH" in java.reason
+
+
+def test_a_bare_name_is_found_in_the_absolute_entries_of_path(tmp_path: Path, monkeypatch) -> None:
+    tree, bin_dir = tmp_path / "tree", tmp_path / "bin"
+    for folder in (tree, bin_dir):
+        folder.mkdir()
+        _executable(folder, "filo2")
+    monkeypatch.chdir(tree)
+    monkeypatch.setenv("PATH", os.pathsep.join([".", str(bin_dir)]))  # the working directory comes first, and is skipped
+    availability = ExternalSolver(BUILTIN_DESCRIPTORS["filo2"]).availability()
+    assert availability.available and availability.executable == str((bin_dir / "filo2").resolve())
 
 
 def test_a_configured_executable_never_falls_back_to_another_on_path(tmp_path: Path, monkeypatch) -> None:

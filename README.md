@@ -245,7 +245,8 @@ problem_types = ["CVRP"]
 # symmetric_only = false                # only if it really reads asymmetric FULL_MATRIX files
 ```
 
-Relative paths are read from the config file's folder; a bare executable name is looked up on PATH. Unknown keys
+Relative paths are read from the config file's folder; a bare executable name is looked up on PATH, in its absolute
+entries only (a relative entry such as `.` is the working directory, which is never searched). Unknown keys
 and mistyped values (`fleet_limit = "false"`) are errors, with a suggestion for near-miss keys; an error in one
 `[solvers.<name>]` table disables that solver only (`solvers list` shows why), and `extends` may name a table defined
 anywhere in the file.
