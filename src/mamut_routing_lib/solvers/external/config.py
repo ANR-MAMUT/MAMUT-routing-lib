@@ -36,6 +36,7 @@ directory or a benchmark tree: the file names executables that will be run.
     problem_types = ["CVRP", "VRPTW"]
     objectives = ["MonoCost"]
     symmetric_only = false                # it reads asymmetric FULL_MATRIX files (default: true)
+    id_convention = "zero-based"          # its .sol numbers customers 0..n-1 (default: one-based)
 
 ``mamut-routing solvers init`` writes a commented starter file (``starter_config_text``).
 
@@ -53,6 +54,12 @@ the generic explicit file says ``TYPE : CVRP`` whatever the matrix. A solver
 that ``extends`` a built-in inherits the built-in's value (LKH-3 takes
 asymmetric matrices, and so does HGS-CVRP in a build with the shipped
 full-matrix reader patch. FILO2 and AILS-II do not).
+
+``id_convention`` says how a ``cvrplib-sol`` solution file numbers its stops:
+``one-based`` (the default: customers 1..n as CVRPLIB writes them, a 0 is the
+depot), ``zero-based`` (customers 0..n-1) or ``auto`` (guess from the file). The
+guess reads a one-based file that writes the depot and misses the last customer
+as a complete zero-based one, so a solver's convention is better declared.
 """
 
 from __future__ import annotations
@@ -99,6 +106,7 @@ _SCALAR_FIELDS = {
     "java": str,
     "runtime": str,
     "solution_file": str,
+    "id_convention": str,
     "distance_model": str,
     "input_format": str,
     "output_format": str,
@@ -123,6 +131,7 @@ _CHOICES = {
     "distance_model": ("float", "nint", "integer"),
     "input_format": ("cvrplib-x", "cvrplib-matrix", "cvrplib-explicit", "lkh"),
     "output_format": ("cvrplib-sol", "lkh-mtsp"),
+    "id_convention": ("one-based", "zero-based", "auto"),
     "live_progress": ("none", "elapsed", "incumbent"),
 }
 #: argv placeholders (see ``descriptor``); ``{java_options}`` is a whole argv token of its own.
@@ -633,6 +642,7 @@ _STARTER_FOOTER = """\
 # problem_types = ["CVRP"]
 # objectives = ["MonoCost"]
 # symmetric_only = true               # false: it reads asymmetric FULL_MATRIX files
+# id_convention = "one-based"        # how its .sol numbers customers: one-based (1..n, CVRPLIB) | zero-based | auto
 """
 
 

@@ -156,10 +156,34 @@ def test_a_run_without_a_solution_reports_what_the_solver_said(collection: Path,
     assert "the solver's output ends with: fake solver: mode=crash" in solved.result.error
 
 
-def test_zero_based_ids_are_understood(collection: Path, monkeypatch) -> None:
+def test_zero_based_ids_are_read_when_the_descriptor_declares_them(collection: Path, monkeypatch) -> None:
     _env(monkeypatch, FAKE_MODE="zero-based")
-    solved = run_solver(ExternalSolver(FAKE_X), _variant(collection, "CVRP", "euclidean"), time_limit_s=5)
-    assert solved.valid
+    path = _variant(collection, "CVRP", "euclidean")
+    solved = run_solver(ExternalSolver(FAKE_X.with_overrides(id_convention="zero-based")), path, time_limit_s=5)
+    assert solved.valid and solved.result.provenance["solution_ids"] == "zero-based"
+    # Undeclared, the file is read the way CVRPLIB numbers stops (1..n, 0 is the depot): refused, with the key to set.
+    refused = run_solver(ExternalSolver(FAKE_X), path, time_limit_s=5)
+    assert refused.result.status == "failed" and not refused.result.routes
+    assert "never visited" in refused.result.error
+    assert 'id_convention = "zero-based" (solvers.fake-x' in refused.result.error
+
+
+def test_an_incomplete_answer_is_never_completed(collection: Path, monkeypatch) -> None:
+    """Customers from 1, the depot written as 0 once, the last customer left out: the ids cover 0..n-1."""
+    _env(monkeypatch, FAKE_MODE="depot-and-missing")
+    path = _variant(collection, "CVRP", "euclidean")
+    solved = run_solver(ExternalSolver(FAKE_X), path, time_limit_s=5)
+    assert solved.result.status == "failed" and not solved.result.routes
+    assert "never visited" in solved.result.error
+    assert solved.result.provenance["solution_ids"] == "one-based"
+    # "auto" is a choice of the descriptor. It reads this file as a complete zero-based one, which is
+    # why it is not the default: these are routes that the solver never produced.
+    guessed = run_solver(ExternalSolver(FAKE_X.with_overrides(id_convention="auto")), path, time_limit_s=5)
+    assert guessed.valid and guessed.result.provenance["solution_ids"] == "zero-based"
+
+
+def test_the_builtin_solvers_declare_cvrplib_numbering() -> None:
+    assert {descriptor.id_convention for descriptor in BUILTIN_DESCRIPTORS.values()} == {"one-based"}
 
 
 def test_a_wrong_reported_cost_is_flagged_and_ignored(collection: Path, monkeypatch) -> None:

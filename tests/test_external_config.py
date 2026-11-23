@@ -82,6 +82,7 @@ def test_extends_makes_a_named_variant(tmp_path: Path) -> None:
         ('[solvers.filo2]\nsymmetric_only = "false"\n', "true or false"),
         ('[solvers.filo2]\nlive_progress = "always"\n', "live_progress must be one of"),
         ('[solvers.filo2]\nruntime = "jvm"\n', "runtime must be one of"),
+        ('[solvers.filo2]\nid_convention = "0-based"\n', "id_convention must be one of one-based, zero-based, auto"),
         ('[solvers.filo2]\nwarm_start = true\n', "no warm start"),
         ('[solvers.filo2]\nargv = ["{executable}", "{problme}"]\n', "did you mean 'problem'"),
         ('[solvers.filo2]\nargv = ["{executable", "{problem}"]\n', "literal braces"),
@@ -231,6 +232,25 @@ def test_relative_paths_are_read_from_the_config_folder(tmp_path: Path, monkeypa
     assert descriptors["lkh3"].executable == "LKH"  # a bare name is looked up on PATH
     assert descriptors["ails2"].jar == str(config_dir.resolve() / "AILSII.jar")
     assert descriptors["ails2"].java == str(config_dir.resolve() / "jdk" / "bin" / "java")
+
+
+def test_the_id_convention_is_one_based_unless_declared(tmp_path: Path) -> None:
+    new_solver = (
+        '[solvers.{name}]\nargv = ["x", "{{problem}}", "{{solution}}"]\ninput_format = "cvrplib-explicit"\n'
+        'output_format = "cvrplib-sol"\nproblem_types = ["CVRP"]\n'
+    )
+    text = (
+        new_solver.format(name="plain")
+        + new_solver.format(name="from-zero") + 'id_convention = "zero-based"\n'
+        + '[solvers.guess]\nextends = "from-zero"\nid_convention = "auto"\n'
+        + '[solvers.child]\nextends = "from-zero"\n'
+    )
+    descriptors = configured_descriptors(_config(tmp_path, text))
+    assert descriptors["plain"].id_convention == "one-based"
+    assert descriptors["from-zero"].id_convention == "zero-based"
+    assert descriptors["guess"].id_convention == "auto"
+    assert descriptors["child"].id_convention == "zero-based"  # inherited
+    assert descriptors["plain"].sha256() != descriptors["plain"].with_overrides(id_convention="auto").sha256()
 
 
 def test_lkh_extra_args_are_literal_parameter_lines(tmp_path: Path) -> None:

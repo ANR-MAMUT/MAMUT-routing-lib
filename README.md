@@ -254,6 +254,12 @@ A solver declared in the config is `symmetric_only = true` unless it says otherw
 road-network variants (`fastest`, `shortest`) are refused for it rather than handed over as a `TYPE : CVRP` file a
 symmetric solver would misread; `extends = "lkh3"` inherits LKH-3's asymmetric support.
 
+A `cvrplib-sol` solution file is read with the numbering its solver declares: `id_convention = "one-based"` (the
+default: customers 1..n as CVRPLIB writes them, a 0 is the depot), `"zero-based"` (customers 0..n-1) or `"auto"`.
+The numbering is not guessed unless the solver asks for it, because a guess can complete an incomplete answer:
+`Route #1: 0 1 2` for 3 customers is a complete zero-based file, or a one-based file that writes the depot and
+misses customer 3. The four built-in solvers write one-based files.
+
 Each run writes the solver's input into a scratch directory
 (`--keep-artifacts DIR` keeps it), scaled to the integers the solver needs:
 exactly (x1000 for 3-decimal matrices; the solver's cost then unscales exactly

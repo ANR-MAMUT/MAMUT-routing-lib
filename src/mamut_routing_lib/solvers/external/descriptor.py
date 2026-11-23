@@ -12,6 +12,11 @@ argv placeholders: ``{executable}`` (absolute path), ``{java}``, ``{jar}``,
 ``fleet_args`` are appended (formatted) when the instance has a fixed fleet,
 then ``extra_args`` -- except with ``input_format = "lkh"``, where ``extra_args``
 are literal lines appended to the parameter file, whatever the argv.
+
+``id_convention`` says how a ``cvrplib-sol`` solution file numbers its stops. It
+is declared, not guessed: a file ``Route #1: 0 1 2`` for 3 customers is complete
+if customers are numbered from 0, and misses customer 3 if they are numbered
+from 1 with the depot written as 0.
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ import json
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Literal, Mapping
 
+from mamut_routing_lib.solutions import IdConvention
 from mamut_routing_lib.solvers.base import SolverCapabilities
 from mamut_routing_lib.solvers.external.scaling import Limits
 
@@ -47,6 +53,12 @@ class ExternalSolverDescriptor:
     java_options: tuple[str, ...] = ()
     #: Solution path relative to the work directory (``{seed}`` is substituted).
     solution_file: str = "solution.sol"
+    #: How a ``cvrplib-sol`` file numbers its stops: ``one-based`` (customers 1..n, a 0 is the depot:
+    #: what CVRPLIB writes), ``zero-based`` (customers 0..n-1), or ``auto``, which reads a file that
+    #: covers 0..n-1 exactly once as zero-based and anything else as one-based. ``auto`` reads a
+    #: one-based file that writes the depot once and misses customer n as a complete zero-based
+    #: one, so it is a choice and never the default. ``lkh-mtsp`` files have one numbering.
+    id_convention: IdConvention = "one-based"
     #: How the solver measures distances on coordinates: ``nint`` rounds to integers.
     distance_model: Literal["float", "nint", "integer"] = "float"
     coordinate_scales: tuple[float, ...] = (1.0,)

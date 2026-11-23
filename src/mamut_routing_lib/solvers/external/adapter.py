@@ -454,6 +454,7 @@ class ExternalSolver:
             normalize_routes,
             parse_lkh_mtsp_solution,
             parse_solution_text,
+            resolve_convention,
         )
 
         wall = time.perf_counter() - started
@@ -493,7 +494,18 @@ class ExternalSolver:
                 routes = normalize_routes([[node - 1 for node in route] for route in raw_routes], num_customers, convention="one-based")
             else:
                 raw_routes, raw_cost = parse_solution_text(text, filename=solution.name)
-                routes = normalize_routes(raw_routes, num_customers)
+                # The descriptor states the numbering: guessing it can complete an incomplete answer.
+                convention = self.descriptor.id_convention
+                provenance["solution_ids"] = resolve_convention(raw_routes, num_customers, convention)
+                try:
+                    routes = normalize_routes(raw_routes, num_customers, convention=convention)
+                except SolutionFormatError as error:
+                    if convention == "one-based" and resolve_convention(raw_routes, num_customers) == "zero-based":
+                        raise SolutionFormatError(
+                            f"{error} The stop ids cover 0..{num_customers - 1} exactly once: if {self.label} numbers "
+                            f'customers from 0, declare id_convention = "zero-based" (solvers.{self.name} in the solvers config).'
+                        ) from error
+                    raise
         except SolutionFormatError as error:
             return SolveResult(**common, status="failed", error=f"unreadable solution file: {error}")
         solver_cost, exact_cost = unscale_cost(raw_cost, plan)
