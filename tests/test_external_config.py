@@ -96,6 +96,11 @@ def test_extends_makes_a_named_variant(tmp_path: Path) -> None:
         ("[other]\nkey = 1\n", "top-level"),
         ('[solvers.filo2]\nsolution_file = "/home/user/notes.txt"\n', "inside the work directory"),
         ('[solvers.filo2]\nsolution_file = "../../x.sol"\n', "inside the work directory"),
+        ('[solvers.lkh3]\nextra_args = ["SEED = 1"]\n', r"lkh3\.extra_args: 'SEED = 1' sets SEED, the seed of the run"),
+        ('[solvers.lkh3]\nextra_args = ["RUNS = 10", "time_limit=9999"]\n', "sets TIME_LIMIT, the time limit of the run"),
+        ('[solvers.long]\nextends = "lkh3"\nextra_args = ["PRECISION 10"]\n', r"long\.extra_args: .* sets PRECISION"),
+        ('[solvers.lkh3]\nextra_args = ["  MTSP_SOLUTION_FILE = /tmp/other.sol"]\n', "sets MTSP_SOLUTION_FILE"),
+        ('[solvers.lkh3]\nextra_args = ["PROBLEM_FILE=/tmp/other.vrp"]\n', "sets PROBLEM_FILE"),
     ],
 )
 def test_configuration_errors_are_loud(tmp_path: Path, text: str, message: str) -> None:
@@ -285,6 +290,11 @@ def test_lkh_extra_args_are_literal_parameter_lines(tmp_path: Path) -> None:
         name="wrapped.toml",
     )
     assert configured_descriptors(wrapped)["lkh-pinned"].extra_args == ("SPECIAL = {not a placeholder}",)
+    # Tuning lines are kept, and so are a comment and a parameter whose name only starts like one of the run's.
+    tuned = _config(
+        tmp_path, '[solvers.lkh3]\nextra_args = ["RUNS = 10", "MAX_TRIALS = 500", "# SEED = 1", "SEEDS = 3"]\n', name="tuned.toml"
+    )
+    assert configured_descriptors(tuned)["lkh3"].extra_args == ("RUNS = 10", "MAX_TRIALS = 500", "# SEED = 1", "SEEDS = 3")
     # Any other format formats its extra_args as command-line tokens, placeholders checked.
     with pytest.raises(SolverConfigError, match="extra_args"):
         configured_descriptors(

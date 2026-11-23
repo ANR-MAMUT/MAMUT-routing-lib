@@ -12,7 +12,9 @@ the script of a ``runtime = "python"`` solver), ``{java}``, ``{jar}``,
 ``12.5``), ``{time_limit_int}`` (whole seconds, at least 1), ``{vehicles}``.
 ``fleet_args`` are appended (formatted) when the instance has a fixed fleet,
 then ``extra_args`` -- except with ``input_format = "lkh"``, where ``extra_args``
-are literal lines appended to the parameter file, whatever the argv.
+are literal lines appended to the parameter file, whatever the argv. Such a
+line cannot set a parameter that the runner writes for the run (the files, the
+seed, the time limit, the precision): the descriptor is refused.
 
 ``id_convention`` says how a ``cvrplib-sol`` solution file numbers its stops. It
 is declared, not guessed: a file ``Route #1: 0 1 2`` for 3 customers is complete
@@ -29,6 +31,7 @@ from typing import Any, Literal, Mapping
 
 from mamut_routing_lib.solutions import IdConvention
 from mamut_routing_lib.solvers.base import SolverCapabilities
+from mamut_routing_lib.solvers.external.problem import check_lkh_extra_lines
 from mamut_routing_lib.solvers.external.scaling import Limits
 
 __all__ = ["ExternalSolverDescriptor", "InputFormat", "OutputFormat"]
@@ -84,6 +87,10 @@ class ExternalSolverDescriptor:
     homepage: str | None = None
     #: Where the descriptor came from: ``builtin`` or the config file that defined/overrode it.
     source: str = "builtin"
+
+    def __post_init__(self) -> None:
+        if self.input_format == "lkh":
+            check_lkh_extra_lines(self.extra_args)  # ValueError: a line that would contradict the recorded run
 
     def with_overrides(self, **values: Any) -> "ExternalSolverDescriptor":
         return replace(self, **values)

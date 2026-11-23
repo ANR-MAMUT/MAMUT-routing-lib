@@ -507,3 +507,22 @@ def test_one_solve_reads_the_distance_matrix_once(collection: Path, monkeypatch)
     pytest.importorskip("pyvrp")
     assert run_solver("pyvrp", path, time_limit_s=1).valid
     assert len(reads) == 1
+
+
+def test_an_lkh_descriptor_cannot_contradict_the_run_it_records() -> None:
+    """LKH-3 keeps the last occurrence of a parameter: an extra `SEED = 1` would run another seed than the result says."""
+    from mamut_routing_lib.solvers.external.problem import lkh_parameter_key, render_lkh_params
+
+    assert [lkh_parameter_key(line) for line in ("SEED = 1", "  seed=1", "= Time_Limit 9", "# SEED = 1", "", "RUNS = 10")] == [
+        "SEED", "SEED", "TIME_LIMIT", "", "", "RUNS",
+    ]
+    for line in ("SEED = 1", "TIME_LIMIT = 9999", "precision=10", "PROBLEM_FILE = x.vrp", "MTSP_SOLUTION_FILE = x.sol"):
+        with pytest.raises(ValueError, match="the run would not be the one that its result records"):
+            FAKE_LKH.with_overrides(extra_args=(line,))
+        with pytest.raises(ValueError, match="sets "):
+            list(render_lkh_params(problem=Path("p.vrp"), solution=Path("s.sol"), seed=7, time_limit_s=5, extra=(line,)))
+    assert FAKE_LKH.with_overrides(extra_args=("RUNS = 10",)).extra_args == ("RUNS = 10",)
+    # For any other input format, extra_args are command-line tokens: nothing of LKH-3 applies.
+    assert FAKE_X.with_overrides(extra_args=("SEED = 1",)).extra_args == ("SEED = 1",)
+    lines = list(render_lkh_params(problem=Path("p.vrp"), solution=Path("s.sol"), seed=7, time_limit_s=5, extra=("RUNS = 10",)))
+    assert lines[-1] == "RUNS = 10" and "SEED = 7" in lines and "TIME_LIMIT = 5.0" in lines

@@ -28,10 +28,14 @@ Node ``i + 1`` of a file is library node ``i``; the depot is node 1.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Iterable, Sequence
 
 __all__ = [
+    "LKH_RUN_PARAMETERS",
+    "check_lkh_extra_lines",
+    "lkh_parameter_key",
     "render_explicit_cvrplib",
     "render_matrix_format",
     "render_lkh_params",
@@ -165,6 +169,42 @@ def render_lkh_problem(
     yield "EOF"
 
 
+#: LKH-3 parameters that belong to the run: the runner writes them from the request, and the
+#: result records them. LKH-3 assigns each parameter as it reads it (``ReadParameters.c``, read in
+#: LKH-3.0.6), so an extra line that sets one again would win over the line of the runner.
+LKH_RUN_PARAMETERS = {
+    "PROBLEM_FILE": "the input file of the run",
+    "MTSP_SOLUTION_FILE": "the solution file of the run",
+    "SEED": "the seed of the run",
+    "TIME_LIMIT": "the time limit of the run",
+    "PRECISION": "the scale of the costs",
+}
+
+_LKH_KEYWORD = re.compile(r"[=\s]*([^=\s]+)")
+
+
+def lkh_parameter_key(line: str) -> str:
+    """The keyword of a parameter line as LKH-3 reads it: the first token, in upper case.
+
+    LKH-3 splits a line on ``=`` and white space. Empty for a blank line and for a comment (``# ...``).
+    """
+    match = _LKH_KEYWORD.match(line)
+    if match is None or match.group(1).startswith("#"):
+        return ""
+    return match.group(1).upper()
+
+
+def check_lkh_extra_lines(extra: Sequence[str]) -> None:
+    """Refuse (``ValueError``) an extra parameter line that sets a parameter of the run."""
+    for line in extra:
+        key = lkh_parameter_key(line)
+        if key in LKH_RUN_PARAMETERS:
+            raise ValueError(
+                f"{line!r} sets {key}, {LKH_RUN_PARAMETERS[key]}. The runner writes it, and LKH-3 keeps the last "
+                "occurrence of a parameter: the run would not be the one that its result records"
+            )
+
+
 def render_lkh_params(
     *,
     problem: Path,
@@ -180,8 +220,11 @@ def render_lkh_params(
     counts from after reading the parameters, preprocessing included);
     ``PRECISION = 1`` keeps scaled costs inside LKH's 32-bit ``C * PRECISION``;
     ``MTSP_MIN_SIZE = 0`` lets vehicles stay unused, so ``VEHICLES`` is an upper
-    bound rather than an exact fleet.
+    bound rather than an exact fleet. ``extra`` lines come last and may tune the
+    search (``RUNS = 10``, ``POPULATION_SIZE = 10``), not set a parameter of the
+    run (:data:`LKH_RUN_PARAMETERS`).
     """
+    check_lkh_extra_lines(extra)
     yield "SPECIAL"
     yield f"PROBLEM_FILE = {problem}"
     yield f"MTSP_SOLUTION_FILE = {solution}"

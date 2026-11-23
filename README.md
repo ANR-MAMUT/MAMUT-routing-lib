@@ -286,8 +286,12 @@ it is recorded next to it in the run result (`runtime_executable`,
 
 With `input_format = "lkh"`, `extra_args` are literal lines appended to the
 LKH-3 parameter file (`extra_args = ["RUNS = 10"]`), whatever the `argv` -- a
-command wrapped in `taskset` or a launcher script keeps them. For every other
-format they are extra command-line tokens.
+command wrapped in `taskset` or a launcher script keeps them. A line that sets
+a parameter of the run (`PROBLEM_FILE`, `MTSP_SOLUTION_FILE`, `SEED`,
+`TIME_LIMIT`, `PRECISION`) is a config error: LKH-3 keeps the last occurrence
+of a parameter, so the run would not have the seed, the budget or the scale
+that its result records. For every other format they are extra command-line
+tokens.
 
 ### Solutions found elsewhere
 

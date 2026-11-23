@@ -20,7 +20,8 @@ directory or a benchmark tree: the file names executables that will be run.
 
     [solvers.lkh3]
     executable = "~/bin/LKH"
-    extra_args = ["POPULATION_SIZE = 10"] # LKH-3: extra parameter-file lines
+    extra_args = ["POPULATION_SIZE = 10"] # LKH-3: extra parameter-file lines (not SEED, TIME_LIMIT,
+                                          # PRECISION or the file names: the runner sets those)
 
     [solvers.hgs-fork]                    # a variant of a built-in
     extends = "hgs-cvrp"
@@ -81,6 +82,7 @@ from typing import Any, Callable
 from mamut_routing_lib.enums import ObjectiveFunction, ProblemType
 from mamut_routing_lib.solvers.base import Availability, SolverCapabilities, SolverUnavailableError, Support
 from mamut_routing_lib.solvers.external.descriptor import ExternalSolverDescriptor
+from mamut_routing_lib.solvers.external.problem import check_lkh_extra_lines
 from mamut_routing_lib.solvers.external.scaling import Limits
 
 __all__ = [
@@ -406,6 +408,11 @@ def _descriptor(
     if input_format != "lkh":  # with the lkh format, extra_args are literal parameter-file lines
         for token in values.get("extra_args", ()):
             _check_template(name, "extra_args", token, _ARGV_FIELDS)
+    else:
+        try:
+            check_lkh_extra_lines(values.get("extra_args", parent.extra_args if parent else ()))
+        except ValueError as error:
+            raise SolverConfigError(f"solvers.{name}.extra_args: {error}") from error
 
     capability_values: dict[str, Any] = {}
     for key in ("problem_types", "objectives"):
