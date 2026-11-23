@@ -15,6 +15,17 @@
   interpreter exit) kills them, so Ctrl-C in a CLI or a GUI shutdown leaves no
   orphan solver behind -- a solver in its own session does not receive the
   terminal's SIGINT.
+- A parent that is killed runs none of this: SIGKILL, an unhandled SIGTERM
+  (``timeout 60 mamut-routing solve``, a systemd stop) or a crash end it without
+  the exit hook, and the hard timeout lives in its poll loop. Each registered
+  solver therefore has a *guard* (POSIX): a small process that holds the read
+  end of a pipe whose only writer is this process. When this process dies, for
+  whatever reason, the guard reads end of file and kills the solver's process
+  group. A run that ends normally writes one byte first, and the guard exits
+  without killing. A process forked from this one without ``exec`` while a
+  solve runs inherits the pipe, and the guard then waits for it too.
+- :func:`interrupt_on_termination` turns SIGTERM and SIGHUP into the interrupt
+  that Ctrl-C raises, for a command line that reports what it stopped.
 """
 
 from __future__ import annotations
@@ -27,19 +38,51 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Mapping, Sequence
+from typing import Iterator, Literal, Mapping, Sequence
 
 from mamut_routing_lib.solvers.base import SolveMonitor
 
-__all__ = ["ProcessOutcome", "kill_process_tree", "live_process_count", "run_process", "terminate_all"]
+__all__ = [
+    "ProcessOutcome",
+    "TerminationSignal",
+    "interrupt_on_termination",
+    "kill_process_tree",
+    "live_process_count",
+    "run_process",
+    "terminate_all",
+]
 
 _IS_WINDOWS = sys.platform == "win32"
 _LIVE: dict[int, subprocess.Popen] = {}
+#: The guard of each live solver, by the solver's pid.
+_GUARDS: dict[int, subprocess.Popen] = {}
 _LIVE_LOCK = threading.Lock()
 #: Pids that ``terminate_all`` stopped: their run is ``cancelled``, not a solver failure.
 _TERMINATED: set[int] = set()
+
+#: The guard process (``python -I -S -c``): ``argv`` is the solver's process group and the grace
+#: between SIGTERM and SIGKILL; its standard input is the pipe. It ignores the signals that end
+#: its parent, because it has to outlive it.
+_GUARD_SOURCE = """\
+import os, signal, sys, time
+for name in ("SIGTERM", "SIGHUP", "SIGINT"):
+    signal.signal(getattr(signal, name), signal.SIG_IGN)
+group, grace = int(sys.argv[1]), float(sys.argv[2])
+if os.read(0, 1):  # a byte: the parent ended the run itself
+    sys.exit(0)
+try:  # end of file without a byte: the parent is gone
+    os.killpg(group, signal.SIGTERM)
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline:
+        os.killpg(group, 0)
+        time.sleep(0.05)
+    os.killpg(group, signal.SIGKILL)
+except OSError:  # the group is gone
+    pass
+"""
 
 
 @dataclass(frozen=True)
@@ -60,14 +103,53 @@ def live_process_count() -> int:
         return len(_LIVE)
 
 
-def _register(process: subprocess.Popen) -> None:
+def _start_guard(group: int, term_grace_s: float) -> subprocess.Popen | None:
+    """Start the guard of process group ``group``; ``None`` where there is none (Windows, no interpreter to run)."""
+    if _IS_WINDOWS or not sys.executable or getattr(sys, "frozen", False):
+        return None
+    try:
+        return subprocess.Popen(
+            [sys.executable, "-I", "-S", "-c", _GUARD_SOURCE, str(group), repr(max(0.0, float(term_grace_s)))],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            cwd=os.sep,  # never hold a work directory
+            start_new_session=True,  # a signal sent to this process's group must not reach the guard
+        )
+    except OSError:
+        return None  # the solve goes on, unguarded
+
+
+def _release_guard(guard: subprocess.Popen) -> None:
+    """Tell the guard that the run is over (one byte, then end of file), and reap it."""
+    if guard.stdin is not None:
+        try:
+            guard.stdin.write(b".")
+            guard.stdin.close()
+        except OSError:  # the guard is already gone
+            pass
+    try:
+        guard.wait(timeout=5)
+    except subprocess.TimeoutExpired:  # pragma: no cover - a guard that does not read its pipe
+        guard.kill()
+        guard.wait()
+
+
+def _register(process: subprocess.Popen, *, term_grace_s: float = 2.0) -> None:
+    guard = _start_guard(process.pid, term_grace_s)
     with _LIVE_LOCK:
         _LIVE[process.pid] = process
+        if guard is not None:
+            _GUARDS[process.pid] = guard
 
 
 def _unregister(process: subprocess.Popen) -> None:
+    """Forget a solver whose process group is gone, and release its guard."""
     with _LIVE_LOCK:
         _LIVE.pop(process.pid, None)
+        guard = _GUARDS.pop(process.pid, None)
+    if guard is not None:
+        _release_guard(guard)
 
 
 def _was_terminated(process: subprocess.Popen) -> bool:
@@ -127,6 +209,50 @@ def terminate_all(term_grace_s: float = 1.0) -> int:
 
 
 atexit.register(terminate_all)
+
+
+class TerminationSignal(KeyboardInterrupt):
+    """SIGTERM or SIGHUP, raised as the interrupt of Ctrl-C by :func:`interrupt_on_termination`."""
+
+    def __init__(self, signum: int):
+        super().__init__(signum)
+        self.signum = int(signum)
+
+    @property
+    def name(self) -> str:
+        """``SIGTERM`` or ``SIGHUP``."""
+        return signal.Signals(self.signum).name
+
+
+def _raise_termination(signum: int, frame: object) -> None:
+    raise TerminationSignal(signum)
+
+
+@contextmanager
+def interrupt_on_termination() -> Iterator[None]:
+    """Inside the block, SIGTERM and SIGHUP raise :class:`TerminationSignal` in the main thread.
+
+    It is a ``KeyboardInterrupt``, so a command line that stops its solvers and reports on Ctrl-C
+    does the same for ``timeout 60 <command>``, a systemd stop or a closed terminal, which
+    otherwise end the process without a word. The former handlers are restored on exit. Python
+    installs signal handlers from the main thread only: anywhere else this does nothing.
+    """
+    previous: dict[int, object] = {}
+    if threading.current_thread() is threading.main_thread():
+        for name in ("SIGTERM", "SIGHUP"):
+            signum = getattr(signal, name, None)
+            if signum is None:  # no SIGHUP on Windows
+                continue
+            try:
+                previous[signum] = signal.signal(signum, _raise_termination)
+            except (OSError, ValueError):  # pragma: no cover - a signal this platform does not let us handle
+                pass
+    try:
+        yield
+    finally:
+        for signum, handler in previous.items():
+            # ``None`` is a handler that was not installed from Python: it cannot be put back.
+            signal.signal(signum, signal.SIG_DFL if handler is None else handler)  # type: ignore[arg-type]
 
 
 def _read_new(log_path: Path, offset: int) -> tuple[str, int]:
@@ -221,7 +347,7 @@ def run_process(
                 log_tail="",
                 error=f"cannot start {argv[0]}: {error}",
             )
-        _register(process)
+        _register(process, term_grace_s=term_grace_s)
         termination: Literal["exited", "timeout", "cancelled", "error"] = "exited"
         try:
             while True:

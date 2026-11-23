@@ -195,3 +195,136 @@ def test_progress_groups_that_are_not_numbers_are_skipped(tmp_path: Path) -> Non
     )
     assert outcome.termination == "exited" and outcome.returncode == 0 and solution.is_file()
     assert outcome.best_cost is None
+
+
+# --------------------------------------------------------------------------- #
+# The guard: a solver never outlives a parent that was killed
+# --------------------------------------------------------------------------- #
+
+#: A parent of its own: it runs the stand-in solver through ``run_process`` and writes the solver's pid.
+_PARENT = """
+import os, sys, threading, time
+from pathlib import Path
+from mamut_routing_lib.solvers.external import process
+
+work, mode = Path(sys.argv[1]), sys.argv[2]
+
+def record_pid():
+    while not process._LIVE:
+        time.sleep(0.01)
+    (work / "solver.pid.tmp").write_text(str(next(iter(process._LIVE))))
+    os.replace(work / "solver.pid.tmp", work / "solver.pid")
+
+threading.Thread(target=record_pid, daemon=True).start()
+process.run_process(
+    [sys.executable, "-m", "mamut_routing_lib.solvers.external._fake_solver",
+     "--problem", str(work / "problem.vrp"), "--solution", str(work / "s.sol")],
+    cwd=work, log_path=work / "solver.log", time_limit_s=120, term_grace_s=0.3, poll_s=0.05,
+    env={**os.environ, "FAKE_MODE": mode, "FAKE_PID_FILE": str(work / "grandchild.pid")},
+)
+"""
+
+
+def _wait_until(condition, timeout_s: float = 20.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while not condition():
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.05)
+    return True
+
+
+@pytest.mark.parametrize(
+    ("signal_name", "mode"),
+    [("SIGKILL", "sleep"), ("SIGTERM", "sleep"), ("SIGKILL", "ignore-sigterm"), ("SIGKILL", "spawn-grandchild")],
+)
+def test_a_killed_parent_leaves_no_solver_behind(tmp_path: Path, signal_name: str, mode: str) -> None:
+    """SIGKILL and an unhandled SIGTERM run no exit hook, and the hard timeout dies with the parent."""
+    import signal
+    import subprocess
+
+    _problem(tmp_path)
+    parent = subprocess.Popen([sys.executable, "-c", _PARENT, str(tmp_path), mode])
+    pids: list[int] = []
+    try:
+        log, pid_file, grandchild_file = tmp_path / "solver.log", tmp_path / "solver.pid", tmp_path / "grandchild.pid"
+        assert _wait_until(lambda: pid_file.exists() and log.exists() and "fake solver" in log.read_text()), "the solver never started"
+        pids.append(int(pid_file.read_text()))
+        if mode == "spawn-grandchild":
+            assert _wait_until(lambda: grandchild_file.exists() and grandchild_file.read_text().strip()), "no grandchild"
+            pids.append(int(grandchild_file.read_text()))
+        time.sleep(0.3)  # the stand-in has installed its SIGTERM handler by now
+        assert all(_alive(pid) for pid in pids)
+        parent.send_signal(getattr(signal, signal_name))
+        parent.wait(timeout=10)
+        assert _wait_until(lambda: not any(_alive(pid) for pid in pids), timeout_s=10), f"still alive after {signal_name}: {pids}"
+    finally:
+        if parent.poll() is None:
+            parent.kill()
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def test_a_run_that_ends_releases_its_guard(tmp_path: Path) -> None:
+    """The guard of a finished run exits without a signal: nothing is left running, and nothing is killed late."""
+    from mamut_routing_lib.solvers.external import process as runner
+
+    started: list = []
+    start_guard = runner._start_guard
+
+    def recording_start(group: int, term_grace_s: float):
+        guard = start_guard(group, term_grace_s)
+        started.append(guard)
+        return guard
+
+    runner._start_guard = recording_start
+    try:
+        outcome = run_process(
+            [*FAKE, "--problem", str(_problem(tmp_path)), "--solution", str(tmp_path / "s.sol")],
+            cwd=tmp_path,
+            log_path=tmp_path / "solver.log",
+            time_limit_s=10,
+            poll_s=0.05,
+        )
+    finally:
+        runner._start_guard = start_guard
+    assert outcome.termination == "exited" and outcome.returncode == 0
+    assert len(started) == 1 and started[0] is not None
+    assert started[0].returncode == 0  # reaped, and it left by itself
+    assert not runner._GUARDS and live_process_count() == 0
+
+
+def test_termination_signals_become_an_interrupt() -> None:
+    import signal
+
+    from mamut_routing_lib.solvers.external.process import TerminationSignal, interrupt_on_termination
+
+    before = signal.getsignal(signal.SIGTERM)
+    with pytest.raises(TerminationSignal) as caught:
+        with interrupt_on_termination():
+            os.kill(os.getpid(), signal.SIGTERM)
+            time.sleep(1)  # the handler runs here, in the main thread
+    assert isinstance(caught.value, KeyboardInterrupt)
+    assert (caught.value.signum, caught.value.name) == (signal.SIGTERM, "SIGTERM")
+    assert signal.getsignal(signal.SIGTERM) is before  # restored
+
+
+def test_termination_signals_are_left_alone_outside_the_main_thread() -> None:
+    import signal
+
+    from mamut_routing_lib.solvers.external.process import interrupt_on_termination
+
+    before = signal.getsignal(signal.SIGTERM)
+    seen: list = []
+
+    def run() -> None:
+        with interrupt_on_termination():
+            seen.append(signal.getsignal(signal.SIGTERM))
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    worker.join()
+    assert seen == [before]

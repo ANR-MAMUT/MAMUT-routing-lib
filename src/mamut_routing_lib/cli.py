@@ -1113,7 +1113,7 @@ def solve_instances(
         run_solver,
     )
     from mamut_routing_lib.solvers.external.config import SolverConfigError
-    from mamut_routing_lib.solvers.external.process import terminate_all
+    from mamut_routing_lib.solvers.external.process import TerminationSignal, interrupt_on_termination, terminate_all
 
     state: CLIState = ctx.obj
 
@@ -1425,41 +1425,47 @@ def solve_instances(
             detail=detail,
         )
 
-    try:
-        if multi_instance:
-            future_indices = {}
-            with ThreadPoolExecutor(max_workers=effective_jobs) as executor:
-                for index, record in enumerate(selected):
-                    future_indices[executor.submit(_solve_record_safe, record)] = index
-                try:
-                    with tqdm(
-                        total=len(selected),
-                        desc=f"Solving ({effective_jobs} jobs)",
-                        unit="run",
-                        leave=True,
-                        dynamic_ncols=True,
-                        file=sys.stderr,
-                    ) as bar:
-                        for future in as_completed(future_indices):
-                            index = future_indices[future]
-                            rows[index] = future.result()
-                            bar.update(1)
-                except KeyboardInterrupt:
-                    for future in future_indices:
-                        future.cancel()
-                    _stop_everything()
-                    raise
-        elif selected:
-            rows[0] = _solve_record_safe(selected[0])
-    except KeyboardInterrupt:
-        _stop_everything()
-        finished = [row for row in rows if row is not None and row.detail != "interrupted"]
-        message = "Interrupted: every running solve was stopped and wrote no BKS."
-        written = [row for row in finished if row.bks_label.startswith(("created", "replaced"))]
-        if written:
-            message += f" {len(written)} solve(s) that finished before the interrupt wrote their BKS."
-        typer.echo(message, err=True)
-        raise typer.Exit(code=130)
+    # SIGTERM and SIGHUP (`timeout 60 mamut-routing solve`, a systemd stop, a closed terminal) end the
+    # command the way Ctrl-C does: the solvers are stopped and the summary says what was written.
+    with interrupt_on_termination():
+        try:
+            if multi_instance:
+                future_indices = {}
+                with ThreadPoolExecutor(max_workers=effective_jobs) as executor:
+                    for index, record in enumerate(selected):
+                        future_indices[executor.submit(_solve_record_safe, record)] = index
+                    try:
+                        with tqdm(
+                            total=len(selected),
+                            desc=f"Solving ({effective_jobs} jobs)",
+                            unit="run",
+                            leave=True,
+                            dynamic_ncols=True,
+                            file=sys.stderr,
+                        ) as bar:
+                            for future in as_completed(future_indices):
+                                index = future_indices[future]
+                                rows[index] = future.result()
+                                bar.update(1)
+                    except KeyboardInterrupt:
+                        for future in future_indices:
+                            future.cancel()
+                        _stop_everything()
+                        raise
+            elif selected:
+                rows[0] = _solve_record_safe(selected[0])
+        except KeyboardInterrupt as stop:
+            _stop_everything()
+            finished = [row for row in rows if row is not None and row.detail != "interrupted"]
+            # The exit code is the shell's for a signal: 130 for Ctrl-C, 143 for SIGTERM, 129 for SIGHUP.
+            by_signal = stop if isinstance(stop, TerminationSignal) else None
+            reason = f"Stopped by {by_signal.name}" if by_signal else "Interrupted"
+            message = f"{reason}: every running solve was stopped and wrote no BKS."
+            written = [row for row in finished if row.bks_label.startswith(("created", "replaced"))]
+            if written:
+                message += f" {len(written)} solve(s) that finished before the interrupt wrote their BKS."
+            typer.echo(message, err=True)
+            raise typer.Exit(code=128 + by_signal.signum if by_signal else 130)
 
     solved_rows = [row for row in rows if row is not None] + error_rows
     any_failure = any(row.status != "feasible" for row in solved_rows)

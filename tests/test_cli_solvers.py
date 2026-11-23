@@ -104,8 +104,8 @@ def test_solve_skips_instances_a_solver_cannot_take(tmp_path: Path) -> None:
     assert "skipped (TD) 2" in result.stdout
 
 
-def _interrupt_cli(args: list[str], *, ready, env: dict[str, str], timeout_s: float = 30.0):
-    """Run the CLI in a subprocess, send SIGINT once ``ready()`` holds, return (rc, output, seconds after SIGINT)."""
+def _interrupt_cli(args: list[str], *, ready, env: dict[str, str], timeout_s: float = 30.0, signal_name: str = "SIGINT"):
+    """Run the CLI in a subprocess, send it a signal once ``ready()`` holds, return (rc, output, seconds after the signal)."""
     import os
     import signal
     import subprocess
@@ -125,7 +125,7 @@ def _interrupt_cli(args: list[str], *, ready, env: dict[str, str], timeout_s: fl
             assert time.monotonic() < deadline, "the solves never started"
             time.sleep(0.1)
         time.sleep(0.5)
-        child.send_signal(signal.SIGINT)
+        child.send_signal(getattr(signal, signal_name))
         sent = time.monotonic()
         output, _ = child.communicate(timeout=timeout_s)
         return child.returncode, output.decode(), time.monotonic() - sent
@@ -163,6 +163,50 @@ def test_ctrl_c_stops_running_external_solves_at_once(tmp_path: Path, toy_cvrp_i
     assert after < 10, f"Ctrl-C took {after:.1f}s"
     assert "every running solve was stopped and wrote no BKS" in output
     assert not list(tmp_path.glob("*.bks.*.json"))
+    assert _solver_processes(artifacts) == []
+
+
+@pytest.mark.parametrize("batch", [False, True], ids=["one-instance", "parallel-batch"])
+def test_sigterm_ends_a_solve_the_way_ctrl_c_does(tmp_path: Path, toy_cvrp_instance, toy_vrptw_instance, batch) -> None:
+    """`timeout 60 mamut-routing solve`, a systemd stop: the solvers are stopped and the command says so."""
+    paths = [_instance(toy_cvrp_instance, tmp_path)]
+    if batch:
+        paths.append(_instance(toy_vrptw_instance, tmp_path))
+    artifacts = tmp_path / "artifacts"
+    args = ["solve", *map(str, paths), "--solver", "fake", "--solvers-config", str(_config(tmp_path)),
+            "--time-limit-s", "120", "--keep-artifacts", str(artifacts), "--save-bks", "--authors", "Tester"]
+    if batch:
+        args += ["--jobs", "2"]
+    rc, output, after = _interrupt_cli(
+        args,
+        ready=lambda: len(list(artifacts.rglob("solver.log"))) == len(paths),
+        env={"FAKE_MODE": "sleep"},
+        signal_name="SIGTERM",
+    )
+    assert rc == 143, output  # 128 + SIGTERM, as a shell reports it
+    assert after < 10, f"SIGTERM took {after:.1f}s"
+    assert "Stopped by SIGTERM: every running solve was stopped and wrote no BKS" in output
+    assert not list(tmp_path.glob("*.bks.*.json"))
+    assert _solver_processes(artifacts) == []
+
+
+def test_a_killed_command_leaves_no_solver_behind(tmp_path: Path, toy_cvrp_instance, toy_vrptw_instance) -> None:
+    """SIGKILL cannot be handled: the guard of each solver stops it once the command is gone."""
+    import time
+
+    paths = [_instance(toy_cvrp_instance, tmp_path), _instance(toy_vrptw_instance, tmp_path)]
+    artifacts = tmp_path / "artifacts"
+    rc, _output, _after = _interrupt_cli(
+        ["solve", *map(str, paths), "--solver", "fake", "--solvers-config", str(_config(tmp_path)),
+         "--time-limit-s", "120", "--keep-artifacts", str(artifacts), "--jobs", "2"],
+        ready=lambda: len(list(artifacts.rglob("solver.log"))) == len(paths),
+        env={"FAKE_MODE": "sleep"},
+        signal_name="SIGKILL",
+    )
+    assert rc == -9
+    deadline = time.monotonic() + 10
+    while _solver_processes(artifacts) and time.monotonic() < deadline:
+        time.sleep(0.1)
     assert _solver_processes(artifacts) == []
 
 
