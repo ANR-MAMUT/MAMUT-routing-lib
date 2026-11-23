@@ -62,6 +62,7 @@ class SolutionCheckResult(BaseModel):
     routing_cost: int | float | None
     num_routes: int | None
     error_message: str = ""
+    exact_evaluation: dict | None = None
 
     def is_valid(self) -> bool:
         """True when the status is ``valid``."""

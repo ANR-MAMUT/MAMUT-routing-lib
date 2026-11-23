@@ -1,4 +1,4 @@
-"""Re-price stored TD BKS under the current checker contract.
+"""Re-price legacy TD BKS under the historical td-fold/2 contract.
 
 A change of the TD route fold (see ``td.checker.TD_CHECKER_CONTRACT``) moves
 the float value of some stored BKS by a few ulps, and occasionally by more
@@ -212,6 +212,9 @@ def reprice_td_bks(
     date = note_date or datetime.now(UTC).date().isoformat()
     try:
         bks = load_bks(path)
+        if "standard" in bks.metadata or "exact_evaluation" in bks.metadata:
+            return RepriceResult(str(path), "error", previous_cost=bks.cost,
+                                 detail="Legacy td-fold/2 repricing cannot rewrite an exact-profile record.")
         loaded = load_td_instance_for_routes(
             instance_path_for_bks(path),
             bks.routes,

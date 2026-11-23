@@ -79,6 +79,10 @@ from mamut_routing_lib.checker import (
     is_better_exact,
     is_better_solution,
 )
+from mamut_routing_lib.exact import evaluate_exact, prepare_exact
+from mamut_routing_lib.exact_static import prepare_static
+from mamut_routing_lib.exact_td import prepare_td
+from mamut_routing_lib.exact_types import ExactEvaluation, ExactRouteError, ExactRouteEvaluation, STATIC_PROFILE, TD_PROFILE
 from mamut_routing_lib.cvrplib import (
     ExportResult,
     UnsupportedInstanceError,
@@ -145,6 +149,15 @@ from mamut_routing_lib.solvers import (
 )
 
 __all__ = [
+    "evaluate_exact",
+    "prepare_exact",
+    "prepare_static",
+    "prepare_td",
+    "ExactEvaluation",
+    "ExactRouteEvaluation",
+    "ExactRouteError",
+    "STATIC_PROFILE",
+    "TD_PROFILE",
     "CheckedSolve",
     "SolutionFormatError",
     "base_objective",

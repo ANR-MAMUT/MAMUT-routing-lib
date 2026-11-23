@@ -120,6 +120,7 @@ class TDSolutionCheckResult(BaseModel):
     routing_cost: float | None
     num_routes: int | None
     error_message: str = ""
+    exact_evaluation: dict | None = None
     route_evaluations: list[TDRouteEvaluation] = []
 
     def is_valid(self) -> bool:

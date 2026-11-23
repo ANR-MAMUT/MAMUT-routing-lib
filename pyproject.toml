@@ -1,6 +1,6 @@
 [build-system]
-requires = ["hatchling>=1.25.0"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=77.0.3", "pybind11>=2.13.6"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "mamut-routing-lib"
@@ -40,7 +40,6 @@ keywords = [
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Science/Research",
-  "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
   "Programming Language :: Python",
   "Programming Language :: Python :: 3",
@@ -70,18 +69,12 @@ Source = "https://github.com/ANR-MAMUT/MAMUT-routing-lib"
 Issues = "https://github.com/ANR-MAMUT/MAMUT-routing-lib/issues"
 MAMUT-routing = "https://github.com/ANR-MAMUT/MAMUT-routing"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/mamut_routing_lib"]
+[tool.setuptools.packages.find]
+where = ["src"]
+namespaces = false
 
-[tool.hatch.build.targets.sdist]
-exclude = [
-    ".git",
-    ".gitignore",
-    ".pytest_cache",
-    "**/__pycache__",
-    "dist",
-    "build",
-]
+[tool.setuptools.package-data]
+"mamut_routing_lib.solvers.external" = ["patches/*.patch"]
 
 [dependency-groups]
 dev = [

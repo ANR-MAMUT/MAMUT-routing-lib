@@ -59,6 +59,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from mamut_routing_lib.json_utils import strict_json_loads
 from mamut_routing_lib.td.igp import _gc_paused, build_arc_atf
 from mamut_routing_lib.td.models import (
     ROAD_GRAPH_FORMAT,
@@ -411,7 +412,10 @@ def load_instance_road_graph(path: str | Path) -> InstanceRoadGraph:
     raw = source.read_bytes()
     if source.name.endswith(ROAD_GZIP_SUFFIX):
         raw = gzip.decompress(raw)
-    payload = json.loads(raw.decode("utf-8"))
+    try:
+        payload = strict_json_loads(raw.decode("utf-8"))
+    except ValueError as error:
+        raise RoadGraphFormatError(f"{source}: {error}") from error
     if payload.get("format") != ROAD_GRAPH_FORMAT:
         raise RoadGraphFormatError(f"unexpected format marker: {payload.get('format')!r}")
     if payload.get("format_version") != ROAD_GRAPH_FORMAT_VERSION:
@@ -464,7 +468,10 @@ def load_traffic_overlay(path: str | Path) -> TrafficOverlay:
     raw = source.read_bytes()
     if source.name.endswith(TRAFFIC_GZIP_SUFFIX):
         raw = gzip.decompress(raw)
-    payload = json.loads(raw.decode("utf-8"))
+    try:
+        payload = strict_json_loads(raw.decode("utf-8"))
+    except ValueError as error:
+        raise RoadGraphFormatError(f"{source}: {error}") from error
     if payload.get("format") != TRAFFIC_OVERLAY_FORMAT:
         raise RoadGraphFormatError(f"unexpected format marker: {payload.get('format')!r}")
     if payload.get("format_version") != TRAFFIC_OVERLAY_FORMAT_VERSION:

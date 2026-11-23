@@ -15,9 +15,10 @@ in ``mamut_routing_lib.td.models``.
 
 from __future__ import annotations
 
+from math import isfinite
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, field_validator
 
 from mamut_routing_lib.enums import (
     BenchmarkName,
@@ -29,8 +30,10 @@ from mamut_routing_lib.enums import (
 from mamut_routing_lib.sidecars import SidecarRef
 
 
-Coordinate: TypeAlias = tuple[int | float, int | float]
-ArcCost: TypeAlias = int | float
+NumericOperand: TypeAlias = StrictInt | StrictFloat
+Coordinate: TypeAlias = tuple[NumericOperand, NumericOperand]
+ArcCost: TypeAlias = NumericOperand
+NonnegativeInteger: TypeAlias = Annotated[StrictInt, Field(ge=0)]
 
 
 def _validate_relative_path(path_value: str) -> str:
@@ -111,32 +114,20 @@ class ReferenceLLA(BaseModel):
 class _InstanceValidationMixin(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    num_customers: int
-    num_vehicles: int | None = None
-    vehicle_capacity: int
+    num_customers: NonnegativeInteger
+    num_vehicles: NonnegativeInteger | None = None
+    vehicle_capacity: NonnegativeInteger
     coordinates: list[Coordinate]
-    demands: list[int]
-    depot: int = Field(default=0, ge=0)
+    demands: list[NonnegativeInteger]
+    depot: NonnegativeInteger = 0
     arc_costs: list[list[ArcCost]]
     reference_lla: ReferenceLLA | None = None
-
-    @field_validator("num_customers", "vehicle_capacity")
-    @classmethod
-    def validate_positive(cls, value: int) -> int:
-        if value <= 0:
-            raise ValueError("must be positive")
-        return value
-
-    @field_validator("num_vehicles")
-    @classmethod
-    def validate_positive_optional(cls, value: int | None) -> int | None:
-        if value is not None and value <= 0:
-            raise ValueError("must be positive")
-        return value
 
     @field_validator("coordinates", "demands")
     @classmethod
     def validate_node_vector_lengths(cls, value: list[Any], info: Any) -> list[Any]:
+        if "num_customers" not in info.data:
+            return value
         expected_length = info.data["num_customers"] + 1
         if len(value) != expected_length:
             raise ValueError(
@@ -148,6 +139,8 @@ class _InstanceValidationMixin(BaseModel):
     @field_validator("arc_costs")
     @classmethod
     def validate_arc_costs(cls, value: list[list[ArcCost]], info: Any) -> list[list[ArcCost]]:
+        if "num_customers" not in info.data:
+            return value
         expected_size = info.data["num_customers"] + 1
         if len(value) != expected_size:
             raise ValueError(
@@ -174,8 +167,8 @@ class BenchmarkInstance(_InstanceValidationMixin):
     instance_name: str
     instance_origin: InstanceOrigin
     benchmark_name: BenchmarkName
-    service_times: list[int]
-    time_windows: list[tuple[int, int]]
+    service_times: list[NumericOperand]
+    time_windows: list[tuple[NumericOperand, NumericOperand]]
     metadata: InstanceMetadata | dict[str, Any] = Field(
         default_factory=dict,
         union_mode="left_to_right",
@@ -184,6 +177,8 @@ class BenchmarkInstance(_InstanceValidationMixin):
     @field_validator("service_times", "time_windows")
     @classmethod
     def validate_vrptw_node_vector_lengths(cls, value: list[Any], info: Any) -> list[Any]:
+        if "num_customers" not in info.data:
+            return value
         expected_length = info.data["num_customers"] + 1
         if len(value) != expected_length:
             raise ValueError(
@@ -240,7 +235,7 @@ class ArcCostsEuclidean(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     model: Literal["euclidean"] = ARC_COSTS_EUCLIDEAN_MODEL
-    decimals: int = 3
+    decimals: StrictInt = 3
 
     @field_validator("decimals")
     @classmethod
@@ -270,34 +265,22 @@ class _SlimInstanceValidationMixin(BaseModel):
     instance_name: str
     instance_origin: InstanceOrigin
     benchmark_name: BenchmarkName
-    num_customers: int
-    num_vehicles: int | None = None
-    vehicle_capacity: int
+    num_customers: NonnegativeInteger
+    num_vehicles: NonnegativeInteger | None = None
+    vehicle_capacity: NonnegativeInteger
     coordinates: list[Coordinate]
-    demands: list[int]
-    depot: int = Field(default=0, ge=0)
+    demands: list[NonnegativeInteger]
+    depot: NonnegativeInteger = 0
     reference_lla: ReferenceLLA | None = None
     metric_variant: MetricVariant
     arc_costs_source: AnyArcCostsSource
     metadata: dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("num_customers", "vehicle_capacity")
-    @classmethod
-    def validate_positive(cls, value: int) -> int:
-        if value <= 0:
-            raise ValueError("must be positive")
-        return value
-
-    @field_validator("num_vehicles")
-    @classmethod
-    def validate_positive_optional(cls, value: int | None) -> int | None:
-        if value is not None and value <= 0:
-            raise ValueError("must be positive")
-        return value
-
     @field_validator("coordinates", "demands")
     @classmethod
     def validate_node_vector_lengths(cls, value: list[Any], info: Any) -> list[Any]:
+        if "num_customers" not in info.data:
+            return value
         expected_length = info.data["num_customers"] + 1
         if len(value) != expected_length:
             raise ValueError(
@@ -313,13 +296,15 @@ class BenchmarkInstanceCVRPCollection(_SlimInstanceValidationMixin):
 
 
 class BenchmarkInstanceVRPTWCollection(_SlimInstanceValidationMixin):
-    """Slim VRPTW instance of a family-first collection (service times and windows may be floats; hydration requires integers)."""
-    service_times: list[int | float]
-    time_windows: list[tuple[int | float, int | float]]
+    """Slim VRPTW instance of a family-first collection (service times and windows may be fractional)."""
+    service_times: list[NumericOperand]
+    time_windows: list[tuple[NumericOperand, NumericOperand]]
 
     @field_validator("service_times", "time_windows")
     @classmethod
     def validate_vrptw_node_vector_lengths(cls, value: list[Any], info: Any) -> list[Any]:
+        if "num_customers" not in info.data:
+            return value
         expected_length = info.data["num_customers"] + 1
         if len(value) != expected_length:
             raise ValueError(
@@ -356,6 +341,7 @@ class OptimalityMetadata(BaseModel):
     prover: str
     certificate: str
     date: str
+    target_profile: str | None = Field(default=None, min_length=1)
     arithmetic: str | None = None
     proven_optimum: int | float | None = None
     dual_bound: int | float | None = None
@@ -366,19 +352,38 @@ class OptimalityMetadata(BaseModel):
     note: str | None = None
 
 
+class SolverReportedOptimality(BaseModel):
+    """An attributable solver self-report under its own evaluation contract."""
+
+    model_config = ConfigDict(extra="allow")
+    status: Literal["solver-reported-optimal"]
+    target_profile: str = Field(min_length=1)
+    solver: str = Field(min_length=1)
+    campaign: str | None = None
+
+
 class _SolutionValidationMixin(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     instance_name: str
-    routes: list[list[int]]
-    cost: int | float | None = None
+    routes: list[list[StrictInt]]
+    cost: NumericOperand | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("cost")
+    @classmethod
+    def validate_cost(cls, value):
+        if isinstance(value, float) and not isfinite(value):
+            raise ValueError("display cost must be finite")
+        return value
 
     @field_validator("metadata")
     @classmethod
     def validate_optimality_metadata(cls, value: dict[str, Any]) -> dict[str, Any]:
         if "optimality" in value:
-            optimality = OptimalityMetadata.model_validate(value["optimality"])
+            claim = value["optimality"]
+            model = SolverReportedOptimality if isinstance(claim, dict) and "status" in claim else OptimalityMetadata
+            optimality = model.model_validate(claim)
             value = dict(value)
             value["optimality"] = optimality.model_dump(mode="json", exclude_none=True)
         return value

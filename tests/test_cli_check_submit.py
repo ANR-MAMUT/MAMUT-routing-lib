@@ -129,7 +129,7 @@ def test_submit_warns_when_the_objective_differs_from_the_family(toy_vrptw_insta
 
 
 @pytest.mark.parametrize("command", [["bks", "submit"], ["check"]])
-@pytest.mark.parametrize("objective", ["Duration", "FleetCostDuration", "HierarchicalVehicleCost"])
+@pytest.mark.parametrize("objective", ["Duration", "FleetCostDuration"])
 def test_an_objective_that_does_not_apply_is_a_usage_error(toy_cvrp_instance, tmp_path: Path, command, objective) -> None:
     instance = _write(toy_cvrp_instance, tmp_path)
     args = [*command, str(instance), str(_sol(tmp_path, "Route #1: 1 2\n")), "--objective", objective]
@@ -137,7 +137,7 @@ def test_an_objective_that_does_not_apply_is_a_usage_error(toy_cvrp_instance, tm
         args += ["--authors", "X"]
     result = _runner().invoke(app, args)
     assert result.exit_code == 2, result.output
-    assert f"{objective} does not apply to CVRP instances (use MonoCost)" in result.stderr
+    assert f"{objective} does not apply to CVRP instances (use MonoCost or HierarchicalVehicleCost)" in result.stderr
     assert not list(tmp_path.glob("*.bks.*.json"))
 
 
@@ -166,17 +166,19 @@ def test_check_says_when_it_reads_ids_as_zero_based(toy_cvrp_instance, tmp_path:
     assert "0-based" not in quiet.stderr and "one-based ids" in quiet.stdout
 
 
-def test_check_prints_the_exact_decimal_cost(toy_cvrp_instance, tmp_path: Path) -> None:
-    # The route 0-1-2-0 sums 0.1 + 0.2 + 0.4 = 0.7000000000000001 in floats; its exact cost is 0.7.
+def test_check_prints_the_exact_binary64_cost(toy_cvrp_instance, tmp_path: Path) -> None:
+    # The exact sum has an odd numerator and a power-of-two denominator.
     costs = [[0.0, 0.1, 0.4], [0.1, 0.0, 0.2], [0.4, 0.2, 0.0]]
     toy = toy_cvrp_instance.model_copy(update={"arc_costs": costs})
     instance = _write(toy, tmp_path)
     solution = _sol(tmp_path, "Route #1: 1 2\n")
     result = _runner().invoke(app, ["check", str(instance), str(solution)])
     assert result.exit_code == 0, result.output
-    assert "cost       0.7\n" in result.stdout
+    from fractions import Fraction
+    exact = sum(map(Fraction, [0.1, 0.2, 0.4]))
+    assert f"cost       {exact}\n" in result.stdout
     payload = json.loads(_runner().invoke(app, ["check", str(instance), str(solution), "--json"]).stdout)
-    assert payload["exact_cost"] == "0.7" and payload["cost"] == 0.7000000000000001
+    assert payload["exact_cost"] == str(exact) and payload["cost"] == float(exact)
 
 
 def test_submit_meta_cannot_set_what_the_store_writes(toy_cvrp_instance, tmp_path: Path) -> None:
@@ -217,3 +219,58 @@ def test_check_json_that_is_not_a_solution_exits_2(toy_cvrp_instance, tmp_path: 
     result = _runner().invoke(app, ["check", str(instance), str(_sol(tmp_path, text, "found.json"))])
     assert result.exit_code == 2, result.output
     assert "must be an object with a 'routes' array" in result.stderr
+
+
+@pytest.mark.parametrize('td', [False, True], ids=['static', 'td'])
+def test_marked_bks_input_is_verified_on_check_preview_and_submit(toy_cvrp_instance, tmp_path, td):
+    from td_utils import write_toy_instance_files
+
+    instance = write_toy_instance_files(tmp_path) if td else _write(toy_cvrp_instance, tmp_path)
+    external = _sol(tmp_path, 'Route #1: 1\nRoute #2: 2\n')
+    runner = _runner()
+    create = runner.invoke(app, ['bks', 'submit', str(instance), str(external), '--authors', 'Finder', '--backend', 'python'])
+    assert create.exit_code == 0, create.output
+    stored = next(tmp_path.glob('*.bks.*.json'))
+    original = stored.read_bytes()
+    marked = _sol(tmp_path, original.decode(), 'submission.json')
+    commands = [ ['check', str(instance), str(marked), '--json'],
+                 ['bks', 'submit', str(instance), str(marked), '--dry-run'],
+                 ['bks', 'submit', str(instance), str(marked), '--authors', 'Finder'] ]
+    for cmd in commands:
+        valid = runner.invoke(app, [*cmd, '--backend', 'python'])
+        assert valid.exit_code == 0, valid.output
+    payload = json.loads(original)
+    record = payload['metadata']['exact_evaluation']
+    if td:
+        # A later feasible departure has the same duration on the flat TD route.
+        record['route_evaluations'][0]['departure_time'] = {'numerator': '1', 'denominator': '1'}
+        mismatched = 'route_evaluations'
+    else:
+        record['authoritative_cost']['numerator'] = '999'
+        mismatched = 'authoritative_cost'
+    marked.write_text(json.dumps(payload))
+    for cmd in commands:
+        result = runner.invoke(app, [*cmd, '--backend', 'python'])
+        assert result.exit_code == 1 and mismatched in result.output, result.output
+        assert stored.read_bytes() == original
+    payload = json.loads(original)
+    payload['cost'] += 1
+    marked.write_text(json.dumps(payload))
+    for cmd in commands:
+        check = runner.invoke(app, [*cmd, '--backend', 'python'])
+        assert check.exit_code == 1 and 'cost' in check.output, check.output
+    # Reordering complete routes or inserting depot markers cannot change the asserted route stream.
+    payload = json.loads(original)
+    payload['routes'].reverse()
+    marked.write_text(json.dumps(payload))
+    assert runner.invoke(app, [*commands[0], '--backend', 'python']).exit_code == 1
+    payload['routes'][0].insert(0, 0)
+    marked.write_text(json.dumps(payload))
+    assert runner.invoke(app, [*commands[0], '--backend', 'python']).exit_code == 2
+    payload = json.loads(original)
+    payload['metadata']['standard'] = payload['metadata'].pop('exact_evaluation')
+    marked.write_text(json.dumps(payload))
+    for cmd in commands:
+        result = runner.invoke(app, [*cmd, '--backend', 'python'])
+        assert result.exit_code == 2 and 'manifest' in result.output, result.output
+    assert stored.read_bytes() == original

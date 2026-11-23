@@ -1098,7 +1098,7 @@ def solve_instances(
     cost and GAP its distance to the BKS stored before the solve. Nothing is
     kept by default: --output-dir DIR saves every solution, and --save-bks
     --authors NAME stores a solution that strictly beats the stored BKS (exact
-    decimal costs; ties keep the incumbent) next to the instance. PyVRP needs
+    binary64 rational costs, keeping ties) next to the instance. PyVRP needs
     the 'pyvrp' extra: pip install "mamut-routing-lib\\[pyvrp]".
     """
     from mamut_routing_lib.objectives import default_objective
@@ -2073,31 +2073,6 @@ def _warn_objective(instance: Any, objective: ObjectiveFunction) -> None:
         )
 
 
-def _exact_cost_text(instance: Any, instance_path: Path, routes: list[list[int]], checkable: Any = None) -> str | None:
-    """The static checker's exact decimal cost (``204030.827``, not the float sum ``204030.82699999996``).
-
-    ``checkable`` is the hydrated instance when the caller already has it (``solutions.load_checkable``).
-    """
-    from mamut_routing_lib.checker import compute_exact_solution_cost
-    from mamut_routing_lib.solutions import is_time_dependent, load_checkable
-
-    if is_time_dependent(instance):
-        return None
-    try:
-        if checkable is None:
-            checkable = load_checkable(instance, instance_path)
-        exact = compute_exact_solution_cost(checkable, routes)
-    except Exception:  # noqa: BLE001 - the float cost is still printed
-        return None
-    places = next((k for k in range(31) if (10**k) % exact.denominator == 0), None)
-    if places is None:  # not a finite decimal: cannot come from decimal arc costs
-        return None
-    scaled = abs(exact.numerator) * (10**places // exact.denominator)
-    whole, fraction = divmod(scaled, 10**places)
-    text = f"{whole}.{fraction:0{places}d}".rstrip("0").rstrip(".") if places else str(whole)
-    return f"-{text}" if exact < 0 else text
-
-
 def _power_of_ten_ratio(declared: float, checker: float) -> float | None:
     """10^k (k != 0) when ``declared`` is ``checker`` scaled by it, to 0.1 %: a solver's integer units."""
     import math
@@ -2153,6 +2128,7 @@ def check_external_solution(
         typer.Option("--objective", case_sensitive=False, help="Objective (default: the family's published one)."),
     ] = None,
     ids: Annotated[str, typer.Option("--ids", help=_IDS_HELP)] = "auto",
+    backend: Annotated[str, typer.Option("--backend", help="Exact evaluator: native (default) or python.")] = "native",
     as_json: Annotated[bool, typer.Option("--json", help="Print the verdict as JSON.")] = False,
 ) -> None:
     """Check an externally found solution with the reference checker.
@@ -2166,22 +2142,28 @@ def check_external_solution(
     from mamut_routing_lib.solutions import check_routes, load_checkable
 
     instance, parsed = _load_external_solution(instance_path, solution_path, ids)
-    resolved = _resolve_objective(instance, objective)
-    checkable = load_checkable(instance, instance_path)  # read once: the verdict, then the exact cost
-    result = check_routes(instance, instance_path, parsed.routes, resolved, checkable=checkable)
+    resolved = _resolve_objective(instance, objective or (parsed.marked_input.objective_function if parsed.marked_input else None))
+    checkable = load_checkable(instance, instance_path)
+    result = check_routes(instance, instance_path, parsed.routes, resolved, checkable=checkable, backend=backend,
+                          marked_input=parsed.marked_input)
     valid = result.is_valid()
     mismatch = (
         valid
         and parsed.declared_cost is not None
-        and result.routing_cost is not None
-        and abs(float(parsed.declared_cost) - float(result.routing_cost)) > 1e-6 * max(1.0, abs(float(result.routing_cost)))
+        and parsed.declared_cost != result.routing_cost
     )
+    exact = result.exact_evaluation
+    exact_cost = None
+    if exact:
+        pair = exact["authoritative_cost"]
+        exact_cost = pair["numerator"] if pair["denominator"] == "1" else f"{pair['numerator']}/{pair['denominator']}"
     payload = {
         "valid": valid,
         "status": result.status.value,
         "error": result.error_message or None,
         "cost": result.routing_cost,
-        "exact_cost": _exact_cost_text(instance, instance_path, parsed.routes, checkable) if valid else None,
+        "exact_cost": exact_cost,
+        "exact_evaluation": exact,
         "num_routes": result.num_routes if valid else len(parsed.routes),
         "declared_cost": parsed.declared_cost,
         "declared_cost_matches": None if parsed.declared_cost is None or not valid else not mismatch,
@@ -2204,7 +2186,7 @@ def check_external_solution(
             typer.echo(f"cost       {payload['exact_cost'] or result.routing_cost}{declared}")
     if mismatch:
         why = "another metric variant, rounding, or a different instance"
-        scale = _power_of_ten_ratio(float(parsed.declared_cost), float(result.routing_cost))
+        scale = _power_of_ten_ratio(float(parsed.declared_cost), float(result.routing_cost)) if result.routing_cost is not None else None
         if scale is not None:
             why = f"it is about the checker's cost x {scale:g}: probably the solver's scaled integer units"
         typer.secho(
@@ -2244,13 +2226,14 @@ def bks_submit(
         typer.Option("--meta", help="Extra metadata as KEY=VALUE (JSON values are decoded); repeatable."),
     ] = None,
     ids: Annotated[str, typer.Option("--ids", help=_IDS_HELP)] = "auto",
+    backend: Annotated[str, typer.Option("--backend", help="Exact evaluator: native (default) or python.")] = "native",
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Report what the store would do without writing.")] = False,
 ) -> None:
     """Propose an externally found solution as the BKS of an instance.
 
     The solution is checked, then stored next to the instance as
     <base>.bks.<Objective>.json only if it strictly beats the stored BKS (exact
-    decimal costs for static instances; the TD checker for time-dependent ones).
+    rational comparison under the instance's binary64 profile).
     A tie keeps the incumbent. A file written by `solve --output-dir` brings its
     run's provenance (solver, version, seed, budget); the flags override it.
     Exit status 0 for created / replaced / kept, 1 when the checker rejects the
@@ -2259,9 +2242,10 @@ def bks_submit(
     from mamut_routing_lib.solutions import preview_bks_update, submit_bks
 
     instance, parsed = _load_external_solution(instance_path, solution_path, ids)
-    resolved = _resolve_objective(instance, objective)
+    resolved = _resolve_objective(instance, objective or (parsed.marked_input.objective_function if parsed.marked_input else None))
     if dry_run:
-        preview = preview_bks_update(instance_path, parsed.routes, objective_function=resolved, instance=instance)
+        preview = preview_bks_update(instance_path, parsed.routes, objective_function=resolved, instance=instance, backend=backend,
+                                     marked_input=parsed.marked_input)
         typer.echo(json.dumps(preview, indent=1))
         if preview["action"] in ("invalid", "stored_invalid"):
             raise typer.Exit(code=1)
@@ -2285,9 +2269,11 @@ def bks_submit(
             instance_path,
             parsed.routes,
             authors=authors,
+            backend=backend,
             objective_function=resolved,
             metadata=metadata,
             instance=instance,
+            marked_input=parsed.marked_input,
         )
     except ValueError as error:
         typer.echo(f"Error: {error}", err=True)

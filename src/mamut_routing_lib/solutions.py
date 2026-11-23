@@ -28,7 +28,7 @@ functions, is the expensive part of a check. ``load_checkable`` does it once;
 
 from __future__ import annotations
 
-import json
+import math
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -36,6 +36,9 @@ from pathlib import Path
 from typing import Any, Literal, Mapping
 
 from mamut_routing_lib.enums import ObjectiveFunction, ProblemType
+from mamut_routing_lib.json_utils import strict_json_loads
+from mamut_routing_lib.models import BenchmarkBKS
+from mamut_routing_lib.exact_types import ExactBackend, ExactRouteError
 
 __all__ = [
     "STORE_METADATA_KEYS",
@@ -75,15 +78,17 @@ STORE_METADATA_KEYS = frozenset(
         "checker",
         "checker_commit",
         "checker_contract",
+        "standard",
+        "exact_evaluation",
         "verification_report",
     }
 )
 
 _ROUTE_LINE = re.compile(r"^\s*Route\s*#?\s*\d+\s*:\s*(.*)$", re.IGNORECASE)
 _NUMBER = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
-_COST_LINE = re.compile(rf"^\s*cost\s*[:=]?\s*({_NUMBER})\s*$", re.IGNORECASE)
-_LKH_HEADER = re.compile(rf"Cost:\s*({_NUMBER})_({_NUMBER})")
-_LKH_ROUTE = re.compile(r"^\s*(\d+(?:\s+\d+)*)\s*\(#\s*(\d+)\)\s*Cost:\s*(" + _NUMBER + r")\s*$")
+_COST_LINE = re.compile(r"^\s*cost\b\s*[:=]?\s*(.*?)\s*$", re.IGNORECASE)
+_LKH_HEADER = re.compile(r"Cost:\s*([^\s_]+)_([^\s]+)", re.IGNORECASE)
+_LKH_ROUTE = re.compile(r"^\s*(\d+(?:\s+\d+)*)\s*\(#\s*(\d+)\)\s*Cost:\s*(.*?)\s*$", re.IGNORECASE)
 
 
 class SolutionFormatError(ValueError):
@@ -102,6 +107,7 @@ class ParsedSolution:
     ids: str = "one-based"
     #: The ``metadata`` object of a JSON solution file (``None`` for other formats).
     metadata: dict[str, Any] | None = None
+    marked_input: BenchmarkBKS | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -120,30 +126,9 @@ def parse_solution_text(text: str, *, filename: str = "") -> tuple[list[list[int
     if not stripped:
         raise SolutionFormatError("The solution is empty.")
 
-    looks_json = stripped[0] in "[{" or filename.lower().endswith(".json")
-    if looks_json:
-        try:
-            payload = json.loads(stripped)
-        except ValueError as error:
-            raise SolutionFormatError(f"Not valid JSON: {error}") from error
-        if isinstance(payload, list):
-            raw_routes, declared = payload, None
-        elif isinstance(payload, dict):
-            raw_routes, declared = payload.get("routes"), payload.get("cost")
-        else:  # null, a number, a string: valid JSON, not a solution
-            raise SolutionFormatError(
-                f"JSON solution must be an object with a 'routes' array or an array of routes, not {stripped[:40]!r}."
-            )
-        if not isinstance(raw_routes, list):
-            raise SolutionFormatError("JSON solution has no 'routes' array.")
-        routes = []
-        for route in raw_routes:
-            if not isinstance(route, list):
-                raise SolutionFormatError("Every entry of 'routes' must be a list of stops.")
-            routes.append([_json_stop(stop) for stop in route])
-        if declared is not None and (isinstance(declared, bool) or not isinstance(declared, (int, float))):
-            raise SolutionFormatError(f"JSON 'cost' must be a number, got {declared!r}.")
-        return routes, (float(declared) if declared is not None else None)
+    if stripped[0] in "[{" or filename.lower().endswith(".json"):
+        routes, declared, _, _ = _parse_json_solution(stripped)
+        return routes, declared
 
     routes = []
     declared_cost: float | None = None
@@ -157,18 +142,65 @@ def parse_solution_text(text: str, *, filename: str = "") -> tuple[list[list[int
             continue
         cost_match = _COST_LINE.match(line)
         if cost_match:
-            declared_cost = float(cost_match.group(1))
-    if not routes:
+            declared_cost = _finite_cost(cost_match.group(1))
+    if not routes and not _COST_LINE.fullmatch(stripped):
         raise SolutionFormatError(
             "No 'Route #k: ...' lines found. Provide a CVRPLIB .sol file or JSON routes."
         )
     return routes, declared_cost
 
 
-def _json_stop(stop: Any) -> int:
-    if isinstance(stop, bool) or not isinstance(stop, (int, float)) or float(stop) != int(stop):
-        raise SolutionFormatError(f"Route stops must be integers, got {stop!r}.")
-    return int(stop)
+def _finite_cost(value: int | float | str) -> float:
+    if isinstance(value, str) and not re.fullmatch(_NUMBER, value):
+        raise SolutionFormatError(f"Expected a finite numerical cost, got {value!r}.")
+    try:
+        cost = float(value)
+    except (ValueError, OverflowError) as exc:
+        raise SolutionFormatError("Cost exceeds the finite binary64 range.") from exc
+    if not math.isfinite(cost):
+        raise SolutionFormatError("Cost exceeds the finite binary64 range.")
+    return cost
+
+
+def _parse_json_solution(text: str) -> tuple[list[list[int]], float | None, dict | None, BenchmarkBKS | None]:
+    try:
+        payload = strict_json_loads(text)
+    except ValueError as exc:
+        raise SolutionFormatError(f"Not valid JSON: {exc}") from exc
+    declared = metadata = None
+    if isinstance(payload, list):
+        routes = payload
+    elif isinstance(payload, dict):
+        routes, declared = payload.get("routes"), payload.get("cost")
+        metadata = payload.get("metadata")
+    else:
+        raise SolutionFormatError(
+            f"JSON solution must be an object with a 'routes' array or an array of routes, not {text[:40]!r}."
+        )
+    if not isinstance(routes, list):
+        raise SolutionFormatError("JSON solution has no 'routes' array.")
+    for route in routes:
+        if not isinstance(route, list):
+            raise SolutionFormatError("Every entry of 'routes' must be a list of stops.")
+        if not route:
+            raise SolutionFormatError("JSON routes cannot contain an empty route.")
+        if any(type(stop) is not int for stop in route):
+            raise SolutionFormatError("Route stops must be integers.")
+    if declared is not None and type(declared) not in (int, float):
+        raise SolutionFormatError(f"JSON 'cost' must be a number, got {declared!r}.")
+    cost = None if declared is None else _finite_cost(declared)
+    metadata = metadata if isinstance(metadata, dict) else None
+    marked = None
+    if metadata is not None and "standard" in metadata:
+        raise SolutionFormatError("Cannot verify metadata.standard without an authenticated family manifest.")
+    if metadata is not None and "exact_evaluation" in metadata:
+        if "cost" not in payload:
+            raise SolutionFormatError("An exact BKS must explicitly store its cost projection (number or null).")
+        try:
+            marked = BenchmarkBKS.model_validate(payload)
+        except ValueError as error:
+            raise SolutionFormatError(f"Invalid marked BKS: {error}") from error
+    return routes, cost, metadata, marked
 
 
 def parse_lkh_mtsp_solution(text: str) -> tuple[list[list[int]], float | None, float | None]:
@@ -184,14 +216,20 @@ def parse_lkh_mtsp_solution(text: str) -> tuple[list[list[int]], float | None, f
     penalty = cost = None
     header = _LKH_HEADER.search(lines[0])
     if header:
-        penalty, cost = float(header.group(1)), float(header.group(2))
+        penalty, cost = _finite_cost(header.group(1)), _finite_cost(header.group(2))
+    elif re.search(r"Cost:", lines[0], re.IGNORECASE):
+        raise SolutionFormatError("Malformed LKH-3 penalty and cost header.")
     depot_id: int | None = None
     routes: list[list[int]] = []
     for line in lines[1:]:
         match = _LKH_ROUTE.match(line)
         if not match:
             continue
-        nodes = [int(part) for part in match.group(1).split()]
+        _finite_cost(match.group(3))
+        try:
+            nodes = [int(part) for part in match.group(1).split()]
+        except ValueError as exc:
+            raise SolutionFormatError("Unreadable LKH-3 stop id.") from exc
         if depot_id is None:
             depot_id = nodes[0]
         customers = [node for node in nodes if node != depot_id]
@@ -242,6 +280,8 @@ def normalize_routes(
             f"{depot}, so external stop ids cannot be mapped safely."
         )
     raw_stops = [stop for route in routes for stop in route]
+    if not routes and num_customers == 0:
+        return []
     if not raw_stops:
         raise SolutionFormatError("The solution contains no customer stops.")
 
@@ -296,22 +336,26 @@ def read_solution_text(
     convention: IdConvention = "auto",
 ) -> ParsedSolution:
     """Parse any supported format and normalise its ids onto an instance with ``num_customers``."""
-    if not filename.lower().endswith(".json") and _looks_like_lkh(text):
+    stripped = text.strip()
+    if filename.lower().endswith(".json") or stripped.startswith(("[", "{")):
+        routes, declared, metadata, marked = _parse_json_solution(text)
+        if marked is not None:
+            if convention == "zero-based":
+                raise SolutionFormatError("Marked BKS routes use one-based customer identifiers.")
+            return ParsedSolution(routes, declared, "json", metadata=metadata, marked_input=marked)
+        fmt = "json"
+    elif _looks_like_lkh(text):
         routes, penalty, cost = parse_lkh_mtsp_solution(text)
         if penalty:
             raise SolutionFormatError(f"LKH-3 reports a penalty of {penalty:g}: the solution is infeasible.")
         # LKH node k is library node k-1 (the depot is node 1).
         library = normalize_routes([[node - 1 for node in route] for route in routes], num_customers, depot=depot, convention="one-based")
         return ParsedSolution(library, cost, "lkh-mtsp", penalty)
-    routes, declared = parse_solution_text(text, filename=filename)
+    else:
+        routes, declared = ([], None) if not stripped and num_customers == 0 else parse_solution_text(text, filename=filename)
+        fmt, metadata = "cvrplib-sol", None
     ids = resolve_convention(routes, num_customers, convention)
     library = normalize_routes(routes, num_customers, depot=depot, convention=ids)  # type: ignore[arg-type]
-    fmt = "json" if text.lstrip()[:1] in "[{" or filename.lower().endswith(".json") else "cvrplib-sol"
-    metadata = None
-    if fmt == "json":
-        payload = json.loads(text)
-        if isinstance(payload, dict) and isinstance(payload.get("metadata"), dict):
-            metadata = payload["metadata"]
     return ParsedSolution(library, declared, fmt, ids=ids, metadata=metadata)
 
 
@@ -335,7 +379,9 @@ def write_cvrplib_solution(routes: list[list[int]], cost: int | float | None = N
     """CVRPLIB ``.sol`` text of library routes (customers 1..n), ``Cost`` line when given."""
     lines = [f"Route #{index}: {' '.join(str(stop) for stop in route)}" for index, route in enumerate(routes, start=1)]
     if cost is not None:
-        value = float(cost)
+        if isinstance(cost, bool):
+            raise SolutionFormatError("Cost must be a number.")
+        value = _finite_cost(cost)
         lines.append(f"Cost {int(value)}" if value.is_integer() else f"Cost {value!r}")
     return "\n".join(lines) + "\n"
 
@@ -369,6 +415,17 @@ def load_checkable(instance: Any, instance_path: str | Path | None) -> Any:
     return hydrate_collection_instance(instance, instance_path)
 
 
+def _require_marked_target(marked: BenchmarkBKS, instance: Any, routes, objective: ObjectiveFunction) -> None:
+    from mamut_routing_lib.artifacts import get_instance_identifier
+
+    if "standard" in marked.metadata or "exact_evaluation" not in marked.metadata:
+        raise ValueError("Expected an exact evaluation without an unauthenticated family manifest.")
+    if marked.instance_name != get_instance_identifier(instance) or marked.objective_function != objective:
+        raise ValueError("Marked BKS identifies a different instance or objective.")
+    if marked.routes != routes:
+        raise ValueError("Marked BKS routes must match their original customer identifiers and order.")
+
+
 def check_routes(
     instance: Any,
     instance_path: str | Path,
@@ -376,57 +433,45 @@ def check_routes(
     objective_function: ObjectiveFunction | None = None,
     *,
     declared_cost: int | float | None = None,
+    backend: ExactBackend = "native",
     checkable: Any = None,
+    marked_input: BenchmarkBKS | None = None,
 ) -> Any:
-    """Check ``routes`` (library ids, depot implicit) on the instance at ``instance_path``.
-
-    Returns a ``SolutionCheckResult`` (static) or ``TDSolutionCheckResult`` (TD); both expose
-    ``status``, ``routing_cost``, ``num_routes``, ``error_message`` and ``is_valid()``. A
-    ``declared_cost`` makes the checker refuse any deviation (``objective_value_mismatch``).
-    ``checkable`` is the instance as :func:`load_checkable` returns it, when the caller already
-    holds it; it is loaded here otherwise.
-    """
-    from mamut_routing_lib.artifacts import get_instance_identifier
-    from mamut_routing_lib.models import BenchmarkSolution
-
-    path = Path(instance_path)
-    try:
-        candidate = BenchmarkSolution(
-            instance_name=get_instance_identifier(instance),
-            routes=[[int(stop) for stop in route] for route in routes],
-            cost=declared_cost,
-            metadata={},
-        )
-    except ValueError as error:  # pydantic: a route visits a customer twice, or a bad id
-        return _invalid(instance, error)
-    if checkable is None:
-        checkable = load_checkable(instance, path)
-    if is_time_dependent(instance):
-        from mamut_routing_lib.td import check_td_solution
-
-        objective = objective_function or ObjectiveFunction.DURATION
-        return check_td_solution(checkable, candidate, objective_function=objective)
-
-    from mamut_routing_lib.checker import check_solution
-
-    return check_solution(checkable, candidate)
-
-
-def _invalid(instance: Any, error: Exception) -> Any:
-    """The checker's rejection for a route set the solution model refuses to build."""
+    """Check and price a submission under the exact profile for its instance type."""
     from mamut_routing_lib.checker import SolutionCheckResult, SolutionCheckStatus
+    from mamut_routing_lib.exact import prepare_exact
+    from mamut_routing_lib.td.checker import TDRouteEvaluation, TDSolutionCheckResult
 
-    message = str(error)
-    if "elementary" in message:
-        status = SolutionCheckStatus.CUSTOMER_SERVED_MULTIPLE_TIMES
-        message = "a route visits a customer more than once"
+    if checkable is None:
+        checkable = load_checkable(instance, instance_path)
     else:
-        status = SolutionCheckStatus.INVALID_CUSTOMER_INDEX
-    if is_time_dependent(instance):
-        from mamut_routing_lib.td.checker import TDSolutionCheckResult
-
-        return TDSolutionCheckResult.make_invalid(status, message)
-    return SolutionCheckResult.make_invalid(status, message)
+        _require_same_instance(instance, checkable, Path(instance_path))
+    prepared = prepare_exact(checkable, backend=backend, objective_function=objective_function)
+    is_td = is_time_dependent(instance)
+    result_type = TDSolutionCheckResult if is_td else SolutionCheckResult
+    try:
+        exact = prepared.evaluate(routes)
+    except ExactRouteError as error:
+        return result_type.make_invalid(error.status, str(error))
+    if marked_input is not None:
+        from mamut_routing_lib.exact_store import verify_stored
+        try:
+            _require_marked_target(marked_input, instance, routes, exact.objective)
+            verify_stored(marked_input, exact)
+        except ValueError as error:
+            return result_type.make_invalid(SolutionCheckStatus.OBJECTIVE_VALUE_MISMATCH, str(error))
+    if declared_cost is not None and declared_cost != exact.display_cost:
+        return result_type.make_invalid(SolutionCheckStatus.OBJECTIVE_VALUE_MISMATCH,
+                                        "Declared display cost differs from the exact result's projection.")
+    fields = dict(status=SolutionCheckStatus.VALID, routing_cost=exact.display_cost,
+                  num_routes=len(exact.routes), exact_evaluation=exact.as_dict())
+    if is_td:
+        fields["route_evaluations"] = [
+            TDRouteEvaluation(route=list(route), feasible=True,
+                              duration=float(witness.duration), departure_time=float(witness.departure_time))
+            for route, witness in zip(exact.routes, exact.route_evaluations)
+        ]
+    return result_type(**fields)
 
 
 # --------------------------------------------------------------------------- #
@@ -439,14 +484,16 @@ def submit_bks(
     routes: list[list[int]],
     *,
     authors: str,
+    backend: ExactBackend = "native",
     objective_function: ObjectiveFunction | None = None,
     metadata: Mapping[str, Any] | None = None,
     instance: Any = None,
     checkable: Any = None,
+    marked_input: BenchmarkBKS | None = None,
 ) -> Any:
     """Store ``routes`` as the BKS of the instance if they strictly improve it.
 
-    Static instances go through ``bks.save_solution_as_bks_if_improved`` (exact decimal
+    Static instances go through ``bks.save_solution_as_bks_if_improved`` (exact binary64
     comparison), TD instances through ``td.save_td_solution_as_bks_if_improved``. The
     objective defaults to the family's published one (``objectives.base_objective``).
     Returns the store's ``BKSUpdateResult``; raises ``ValueError`` for an invalid solution,
@@ -471,10 +518,13 @@ def submit_bks(
     objective = require_supported_objective(loaded, objective_function or base_objective(loaded))
     solution = BenchmarkSolution(
         instance_name=get_instance_identifier(loaded),
-        routes=[[int(stop) for stop in route] for route in routes],
+        routes=routes,
         cost=None,
         metadata={},
     )
+    if marked_input is not None:
+        _require_marked_target(marked_input, loaded, routes, objective)
+        solution = marked_input
     if is_time_dependent(loaded):
         from mamut_routing_lib.td import load_td_instance, save_td_solution_as_bks_if_improved
 
@@ -484,14 +534,15 @@ def submit_bks(
             authors=authors,
             metadata=dict(metadata or {}),
             objective_function=objective,
+            backend=backend,
         )
     from mamut_routing_lib.bks import create_bks_from_solution, save_bks_if_improved, save_solution_as_bks_if_improved
 
     if checkable is None:
-        return save_solution_as_bks_if_improved(path, objective, solution, authors=authors, metadata=dict(metadata or {}))
+        return save_solution_as_bks_if_improved(path, objective, solution, authors=authors, metadata=dict(metadata or {}), backend=backend)
     # The same two steps as save_solution_as_bks_if_improved, on the instance already in hand.
-    bks = create_bks_from_solution(checkable, solution, objective, authors=authors, metadata=dict(metadata or {}))
-    return save_bks_if_improved(checkable, bks, path)
+    bks = create_bks_from_solution(checkable, solution, objective, authors=authors, metadata=dict(metadata or {}), backend=backend)
+    return save_bks_if_improved(checkable, bks, path, backend=backend)
 
 
 def _require_same_instance(loaded: Any, checkable: Any, path: Path) -> None:
@@ -514,67 +565,57 @@ def preview_bks_update(
     routes: list[list[int]],
     *,
     objective_function: ObjectiveFunction | None = None,
+    backend: ExactBackend = "native",
     instance: Any = None,
     checkable: Any = None,
+    marked_input: BenchmarkBKS | None = None,
 ) -> dict[str, Any]:
     """What ``submit_bks`` would do, without writing: ``action`` is ``would_create``,
     ``would_replace``, ``would_keep`` (``tie`` when equal), ``invalid`` (the candidate) or
     ``stored_invalid`` (the stored BKS fails the checker; ``submit_bks`` would raise).
 
-    Uses the stores' own comparisons: exact decimal costs for static instances, the TD
-    checker's costs for time-dependent ones. Raises ``ValueError`` for an objective that
-    does not apply to the instance.
+    Re-evaluates both sets of routes under the same exact profile and objective.
     """
-    from mamut_routing_lib.artifacts import get_bks_path_for_instance, load_benchmark_instance, load_bks
-    from mamut_routing_lib.checker import get_objective_tuple
+    from mamut_routing_lib.artifacts import get_bks_path_for_instance, get_instance_identifier, load_benchmark_instance, load_bks
+    from mamut_routing_lib.exact import prepare_exact
+    from mamut_routing_lib.exact_store import verify_stored
     from mamut_routing_lib.objectives import base_objective, require_supported_objective
 
     path = Path(instance_path)
     loaded = instance if instance is not None else load_benchmark_instance(path)
     objective = require_supported_objective(loaded, objective_function or base_objective(loaded))
-    if checkable is None:  # one load for the candidate, the stored BKS and the exact comparison
+    if checkable is None:
         checkable = load_checkable(loaded, path)
-    check = check_routes(loaded, path, routes, objective, checkable=checkable)
+    else:
+        _require_same_instance(loaded, checkable, path)
+    prepared = prepare_exact(checkable, backend=backend, objective_function=objective)
     bks_path = get_bks_path_for_instance(path, objective)
-    summary: dict[str, Any] = {
-        "objective_function": objective.value,
-        "path": str(bks_path),
-        "candidate_cost": check.routing_cost,
-        "candidate_num_routes": check.num_routes,
-        "existing_cost": None,
-        "existing_num_routes": None,
-        "tie": False,
-    }
-    if not check.is_valid():
-        return {**summary, "action": "invalid", "error": check.error_message or str(check.status)}
+    summary = dict(objective_function=objective.value, path=str(bks_path), candidate_cost=None,
+                   candidate_num_routes=None, existing_cost=None, existing_num_routes=None, tie=False)
+    try:
+        candidate = prepared.evaluate(routes)
+    except ExactRouteError as error:
+        return {**summary, "action": "invalid", "error": str(error)}
+    if marked_input is not None:
+        try:
+            _require_marked_target(marked_input, loaded, routes, objective)
+            verify_stored(marked_input, candidate)
+        except ValueError as error:
+            return {**summary, "action": "invalid", "error": str(error)}
+    summary.update(candidate_cost=candidate.display_cost, candidate_num_routes=len(candidate.routes))
     if not bks_path.exists():
         return {**summary, "action": "would_create"}
-    existing = load_bks(bks_path)
-    summary["existing_cost"] = existing.cost
-    summary["existing_num_routes"] = existing.num_routes
-    # With its stored cost, as the stores check it: a stored cost the checker disagrees with is an invalid BKS.
-    stored_check = check_routes(loaded, path, existing.routes, objective, declared_cost=existing.cost, checkable=checkable)
-    if not stored_check.is_valid():
-        # submit_bks refuses to compare against it ("Stored BKS is invalid"): say so instead of guessing.
-        return {**summary, "action": "stored_invalid", "error": stored_check.error_message or str(stored_check.status)}
-    if is_time_dependent(loaded):
-        from mamut_routing_lib.checker import is_better_solution
-
-        candidate_cost = float(check.routing_cost)
-        existing_cost = float(existing.cost) if existing.cost is not None else float("inf")
-        better = is_better_solution(routes, candidate_cost, existing.routes, existing_cost, objective)
-        tie = get_objective_tuple(routes, candidate_cost, objective) == get_objective_tuple(
-            existing.routes, existing_cost, objective
-        )
-    else:
-        from mamut_routing_lib.checker import compute_exact_solution_cost, is_better_exact
-
-        candidate_exact = compute_exact_solution_cost(checkable, routes)
-        existing_exact = compute_exact_solution_cost(checkable, existing.routes)
-        better = is_better_exact(routes, candidate_exact, existing.routes, existing_exact, objective)
-        tie = get_objective_tuple(routes, candidate_exact, objective) == get_objective_tuple(
-            existing.routes, existing_exact, objective
-        )
-    if better:
+    try:
+        existing = load_bks(bks_path)
+        if existing.instance_name != get_instance_identifier(loaded):
+            raise ValueError("Stored BKS belongs to a different instance.")
+        incumbent = prepared.evaluate(existing.routes)
+        verify_stored(existing, incumbent)
+        summary.update(existing_cost=incumbent.display_cost, existing_num_routes=len(incumbent.routes))
+    except ValueError as error:
+        return {**summary, "action": "stored_invalid", "error": str(error)}
+    if candidate.objective_key < incumbent.objective_key:
+        if "standard" in existing.metadata:
+            return {**summary, "action": "stored_invalid", "error": "Verify the certified incumbent's family manifest before replacement."}
         return {**summary, "action": "would_replace"}
-    return {**summary, "action": "would_keep", "tie": bool(tie)}
+    return {**summary, "action": "would_keep", "tie": candidate.objective_key == incumbent.objective_key}

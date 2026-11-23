@@ -14,6 +14,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import math
 import os
 import threading
 import zlib
@@ -21,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from mamut_routing_lib.json_utils import load_json_from_file
+from mamut_routing_lib.json_utils import load_json_from_file, strict_json_loads
 from mamut_routing_lib.td.models import (
     ATF_FORMAT,
     ATF_FORMAT_VERSION,
@@ -77,35 +78,56 @@ def _validate_arc_function(i: int, j: int, atf: NDCPWLF, horizon: tuple[float, f
             )
 
 
+def _atf_binary64(value: Any) -> float:
+    """Read a JSON number without accepting string, Boolean or nonfinite operands."""
+    if type(value) not in (float, int):
+        raise ATFFormatError("ATF coordinates and horizon bounds must be JSON numbers")
+    try:
+        result = float(value)
+    except OverflowError as error:
+        raise ATFFormatError("ATF numerical operand overflows binary64") from error
+    if not math.isfinite(result):
+        raise ATFFormatError("ATF numerical operands must be finite")
+    return result
+
+
 def _atfs_from_payload(payload: dict[str, Any], *, validate_complete: bool = True) -> InstanceATFs:
     if payload.get("format") != ATF_FORMAT:
         raise ATFFormatError(f"unexpected format marker: {payload.get('format')!r}")
-    if payload.get("format_version") != ATF_FORMAT_VERSION:
+    if type(payload.get("format_version")) is not int or payload["format_version"] != ATF_FORMAT_VERSION:
         raise ATFFormatError(f"unsupported format_version: {payload.get('format_version')!r}")
 
     horizon_raw = payload["horizon"]
-    horizon = (float(horizon_raw[0]), float(horizon_raw[1]))
+    if not isinstance(horizon_raw, list) or len(horizon_raw) != 2:
+        raise ATFFormatError("horizon must contain its two endpoints")
+    horizon = (_atf_binary64(horizon_raw[0]), _atf_binary64(horizon_raw[1]))
     # Same anchoring contract as the instance model: theta and the return clamp live on domains
     # starting at abscissa 0, so a sidecar may not declare a horizon that starts below 0.
     if horizon[0] < 0:
         raise ATFFormatError(f"horizon must start at or after 0, got {horizon[0]!r}")
-    num_customers = int(payload["num_customers"])
+    if horizon[0] >= horizon[1]:
+        raise ATFFormatError("horizon must have positive length")
+    num_customers = payload["num_customers"]
+    if type(num_customers) is not int or num_customers < 0:
+        raise ATFFormatError("num_customers must be a nonnegative JSON integer")
     num_vertices = num_customers + 1
 
     arcs: dict[tuple[int, int], NDCPWLF] = {}
     previous: tuple[int, int] | None = None
     for entry in payload["arcs"]:
-        if len(entry) != 4:
+        if not isinstance(entry, list) or len(entry) != 4:
             raise ATFFormatError(f"arc entry must be [i, j, xs, ys], got {entry!r}")
         i, j, xs, ys = entry
-        if not (0 <= i < num_vertices and 0 <= j < num_vertices) or i == j:
+        if type(i) is not int or type(j) is not int or not (0 <= i < num_vertices and 0 <= j < num_vertices) or i == j:
             raise ATFFormatError(f"invalid arc indices ({i}, {j})")
-        key = (int(i), int(j))
+        key = (i, j)
         if previous is not None and key <= previous:
             raise ATFFormatError(f"arcs must be sorted lexicographically; ({i}, {j}) after {previous}")
         previous = key
+        if not isinstance(xs, list) or not isinstance(ys, list):
+            raise ATFFormatError(f"arc ({i}, {j}): knot coordinates must be arrays")
         try:
-            atf = NDCPWLF([float(x) for x in xs], [float(y) for y in ys])
+            atf = NDCPWLF([_atf_binary64(x) for x in xs], [_atf_binary64(y) for y in ys])
         except PWLFError as error:
             raise ATFFormatError(f"arc ({i}, {j}): {error}") from error
         _validate_arc_function(key[0], key[1], atf, horizon)
@@ -224,7 +246,10 @@ def load_instance_atfs(
         digest = hashlib.sha256(raw).hexdigest()
         if digest != expected_sha256:
             raise ATFChecksumError(f"{source}: sha256 {digest} does not match the expected {expected_sha256}")
-    payload = json.loads(raw.decode("utf-8"))
+    try:
+        payload = strict_json_loads(raw.decode("utf-8"))
+    except ValueError as error:
+        raise ATFFormatError(f"{source}: {error}") from error
     return _atfs_from_payload(payload, validate_complete=validate_complete)
 
 

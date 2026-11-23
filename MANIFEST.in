@@ -1,0 +1,4 @@
+include CITATION.cff uv.lock
+recursive-include native *.cpp *.h *.hpp
+graft tests
+global-exclude *.py[cod]

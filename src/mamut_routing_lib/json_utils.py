@@ -119,9 +119,25 @@ def get_custom_json_string(
     )
 
 
+def strict_json_loads(data: str | bytes) -> Any:
+    """Parse JSON without silently selecting one of two identically named members."""
+    def unique_members(pairs):
+        members = {}
+        for name, value in pairs:
+            if name in members:
+                raise ValueError(f"Duplicate JSON object member: {name!r}")
+            members[name] = value
+        return members
+
+    def invalid_constant(value):
+        raise ValueError(f"Invalid JSON numeric constant: {value}")
+
+    return json.loads(data, object_pairs_hook=unique_members, parse_constant=invalid_constant)
+
+
 def load_json_from_file(filepath: str | Path) -> Any:
     with Path(filepath).open("r", encoding="utf-8") as handle:
-        return json.load(handle)
+        return strict_json_loads(handle.read())
 
 
 def save_json_to_file(

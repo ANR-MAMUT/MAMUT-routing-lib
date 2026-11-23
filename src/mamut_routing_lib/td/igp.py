@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from mamut_routing_lib.json_utils import strict_json_loads
 from mamut_routing_lib.td.models import (
     IGP_CATEGORIES_FORMAT,
     IGP_CATEGORIES_FORMAT_VERSION,
@@ -244,7 +245,10 @@ def load_instance_categories(path: str | Path) -> InstanceCategories:
     raw = source.read_bytes()
     if source.name.endswith(IGP_GZIP_SUFFIX):
         raw = gzip.decompress(raw)
-    payload = json.loads(raw.decode("utf-8"))
+    try:
+        payload = strict_json_loads(raw.decode("utf-8"))
+    except ValueError as error:
+        raise IGPFormatError(f"{source}: {error}") from error
     if payload.get("format") != IGP_CATEGORIES_FORMAT:
         raise IGPFormatError(f"unexpected format marker: {payload.get('format')!r}")
     if payload.get("format_version") != IGP_CATEGORIES_FORMAT_VERSION:

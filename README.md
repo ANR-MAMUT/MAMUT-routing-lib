@@ -23,7 +23,7 @@ It provides:
 - optional remote snapshot archive retrieval
 - export of static instances to the classic CVRPLIB `.vrp` (and Solomon `.txt`) formats for solvers that do not read `.vrp.json`
 
-The time-dependent layer is the pricing authority of [KAYROS](https://github.com/0nyr/kayros), the MAMUT time-dependent VRP solver: KAYROS finds routes, this library's checker defines and validates their cost.
+Kayros finds TD routes and reports results under its own checker contract. This library can independently evaluate those routes under the selected benchmark profile. [Kayros](https://github.com/0nyr/kayros)
 
 This repository does not own site generation, publication-history generation, migration pipelines, or solver integrations. It is a pure contract and runtime library for benchmark data management intended to be used by researchers and practitioners alike, both inside and outside the MAMUT project.
 
@@ -38,6 +38,34 @@ or, using the modern [`uv`](https://github.com/astral-sh/uv) Python package mana
 ```bash
 uv add mamut-routing-lib
 ```
+
+## Exact route evaluation on v0.13
+
+For static instances, `binary64-exact-v1` reads each matrix entry as a binary64 value and sums its exact rational value over all traversed arcs. For time-dependent instances, `td-binary64-exact-v1` reads the arrival-time functions the same way and computes the minimum feasible duration and the earliest departure attaining it for every route. The instance objective determines how those route values are compared and whether a fixed fleet charge applies.
+
+| Profile | Default C++ backend | Selectable Python reference |
+| --- | --- | --- |
+| `binary64-exact-v1` | `cpp-dyadic-prepared` (integer arithmetic with promotion) | `python-fraction` |
+| `td-binary64-exact-v1` | `cpp-gmp-compose` (rational function composition) | `python-fraction-partition` |
+
+```python
+from mamut_routing_lib import evaluate_exact, prepare_exact
+
+# instance_path points to a .vrp.json file. Its referenced sidecars resolve relative to it.
+prepared = prepare_exact(instance_path)
+result = prepared.evaluate(routes)  # reuse prepared for other submissions
+assert result.cost == evaluate_exact(instance_path, routes, backend="python").cost
+print(result.cost)          # fractions.Fraction
+print(result.display_cost)  # nearest binary64 value, or None on overflow
+for route, witness in zip(result.routes, result.route_evaluations):
+    print(route, witness.duration, witness.departure_time)
+```
+
+The CLI commands `check` and `bks submit` accept `--backend native` (default) or `--backend python`. Source builds of the default wheel require a C++20 toolchain, Boost headers, and GMP C/C++ development headers and libraries. To build a reference-only package, run `MAMUT_REFERENCE_ONLY=1 python -m pip install .` in a checkout. Select `backend="python"` explicitly with that installation. Requesting the native backend without its extension raises an installation error.
+
+BKS submission evaluates the candidate and the incumbent under the same profile and compares their rational objective values. Exact ties keep the incumbent. New records carry the reduced cost, canonical route digest and actual backend identity under `metadata.exact_evaluation`. TD records also carry a reduced duration and earliest departure for each route in stored order. The top-level `cost` is a display value. On display overflow it is `null` and the exact rational remains available. Family revision and verified manifest hashes are required to issue `metadata.standard`.
+
+A Kayros optimality claim names the contract under which the solver made it. Repricing the same routes under the v0.13 TD profile preserves the historical target, usually `td-fold/1`. If a better submission displaces an annotated incumbent, the store keeps the original BKS bytes under `.bks-history/<sha256>.json`. The new submission can carry its own solver claim.
 
 ## Local Loading
 
@@ -344,27 +372,11 @@ Caveats:
   refused: explicit paths are an error, scanned ones are skipped with a warning.
 - Existing outputs are reported as `exists` and left alone unless `--force`.
 
-## Time-dependent checker contract and re-pricing
+## Replaying historical records
 
-The TD checker (`mamut_routing_lib.td.check_td_solution`) defines every TD
-cost; its route fold is versioned as `TD_CHECKER_CONTRACT`. Since 0.12.0 it is
-`td-fold/2`: vertex ready-time maps (`max(t, earliest) + service`) and the
-depot due-date cut are applied exactly to the accumulator's breakpoints, and
-arcs compose with the slope-one rule, so integer data is folded without any
-rounding (see the module docstring and `docs/benchmarks/formats/time-dependent.md`
-of the benchmark repository). After a contract change every stored TD BKS is
-re-priced once, routes untouched:
+The static compatibility helpers `check_solution` and `compute_exact_solution_cost` retain the released arithmetic for historical callers. The latter interprets shortest decimal spellings. Use `evaluate_exact` for the v0.13 binary64 rational cost.
 
-```bash
-# Dry run with a JSON report, then write
-mamut-routing bks reprice-td benchmarks --dry-run --jobs 8 --report reprice.json
-mamut-routing bks reprice-td benchmarks --jobs 8
-```
-
-A file is rewritten only when a checker output changed (`cost`,
-`validated_cost`, `route_durations`, `route_departure_times`); a moved cost is
-recorded in `metadata.repriced`, and an optimality stamp gets its
-`proven_optimum` updated with a note.
+The v0.12 entry point `mamut_routing_lib.td.check_td_solution` uses `TD_CHECKER_CONTRACT` (`td-fold/2`). Its `bks reprice-td` command is retained for working with legacy records. To preview its effects on a historical checkout, run `mamut-routing bks reprice-td benchmarks --dry-run --jobs 8 --report reprice.json`. Use the exact entry points above for v0.13 submissions. The historical repricer refuses a record that carries exact evaluation or certification metadata.
 
 ## Development
 

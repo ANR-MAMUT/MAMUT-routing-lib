@@ -145,6 +145,34 @@ def test_writer_round_trips() -> None:
     assert write_cvrplib_solution([[1]], 7.0).endswith("Cost 7\n")
 
 
+@pytest.mark.parametrize("text", [
+    '{"routes":[[1]],"routes":[[1]]}', '{"routes":[[1]],"metadata":{"x":1,"x":2}}',
+    '{"routes":[[1]],"cost":1e999}', '{"routes":[[1]],"cost":NaN}',
+    '{"routes":[[1]],"cost":' + '9' * 350 + '}',
+    'Route #1: 1\nCost inf', 'Route #1: 1\nCost 1e999', 'Route #1: 1\nCost NaN',
+    'p, Cost: 0_1e999\n1 2 1 (#1) Cost: 1',
+    'p, Cost: 0_1\n1 2 1 (#1) Cost: NaN',
+    'p, Cost: 0_1\n1 2 1 (#1) Cost: 1e999',
+    '{"routes":[[1.0]]}', '{"routes":[[1e999]]}', '{"routes":[[],[1]]}',
+])
+def test_external_solution_rejects_invalid_numbers_and_ambiguous_json(text):
+    with pytest.raises(SolutionFormatError):
+        read_solution_text(text, 1)
+
+
+@pytest.mark.parametrize("text", ["[]", '{"routes":[],"cost":0}', "Cost 0", ""])
+def test_zero_customer_instance_accepts_empty_route_set(text):
+    parsed = read_solution_text(text, 0)
+    assert parsed.routes == [] and parsed.declared_cost in (None, 0)
+    with pytest.raises(SolutionFormatError):
+        read_solution_text(text, 1)
+
+
+def test_declared_cost_writer_rejects_overflow():
+    with pytest.raises(SolutionFormatError):
+        write_cvrplib_solution([[1]], 10**400)
+
+
 def _write(instance, tmp_path: Path) -> Path:
     path = tmp_path / f"{instance.instance_name}.vrp.json"
     path.write_text(json.dumps(instance.model_dump(mode="json")), encoding="utf-8")

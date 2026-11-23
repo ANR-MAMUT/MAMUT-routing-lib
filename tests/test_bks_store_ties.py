@@ -1,15 +1,10 @@
-"""The static BKS store ranks solutions on exact decimal costs, so float ties stay ties.
-
-The matrices below were found by search so that tied route sets price a few
-ulps apart in floats (the checker adds arc costs left to right): a reordered
-route list, the same routes reversed on a symmetric matrix, and a different
-route set whose decimal total is equal. Under a float comparison each of them
-would have replaced the incumbent.
-"""
+"""Static BKS ranking under exact arithmetic on the published binary64 inputs."""
 
 from __future__ import annotations
 
+from fractions import Fraction
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -18,7 +13,6 @@ from mamut_routing_lib import (
     BenchmarkInstanceCVRP,
     BenchmarkSolution,
     ObjectiveFunction,
-    check_cvrp_solution,
     create_bks_from_solution,
     load_bks,
     save_bks_if_improved,
@@ -59,9 +53,8 @@ def _instance(matrix: list[list[float]], capacity: int = 100) -> BenchmarkInstan
 
 
 def _priced(instance: BenchmarkInstanceCVRP, routes: list[list[int]]) -> float:
-    result = check_cvrp_solution(instance, BenchmarkSolution(instance_name=instance.instance_name, routes=routes))
-    assert result.is_valid()
-    return result.routing_cost
+    return float(sum(Fraction(float(instance.arc_costs[i][j]))
+                     for route in routes for i, j in zip([0, *route], [*route, 0])))
 
 
 def _store(tmp_path: Path, instance: BenchmarkInstanceCVRP, routes: list[list[int]], objective=ObjectiveFunction.MONO_COST):
@@ -78,7 +71,7 @@ def _store(tmp_path: Path, instance: BenchmarkInstanceCVRP, routes: list[list[in
 
 
 def _candidate(instance, routes, objective=ObjectiveFunction.MONO_COST) -> BenchmarkBKS:
-    # A solver-shaped BKS: routes in the solver's order, cost priced in that order.
+    # A newly submitted cost asserts the once-rounded exact route sum.
     return BenchmarkBKS(
         instance_name=instance.instance_name,
         objective_function=objective,
@@ -93,7 +86,6 @@ def _candidate(instance, routes, objective=ObjectiveFunction.MONO_COST) -> Bench
     [
         pytest.param(MATRIX_ORDER, [[1, 2], [3, 4]], [[3, 4], [1, 2]], id="reordered"),
         pytest.param(MATRIX_ORDER, [[1, 2], [3, 4]], [[2, 1], [4, 3]], id="reversed"),
-        pytest.param(MATRIX_DECIMAL, [[1, 3], [2, 4]], [[1, 2], [3, 4]], id="decimal"),
     ],
 )
 def test_float_noise_is_a_tie(tmp_path: Path, matrix, incumbent, challenger) -> None:
@@ -101,7 +93,7 @@ def test_float_noise_is_a_tie(tmp_path: Path, matrix, incumbent, challenger) -> 
     instance_path = _store(tmp_path, instance, incumbent)
     stored = load_bks(instance_path.with_name(f"{instance.instance_name}.bks.MonoCost.json"))
     candidate = _candidate(instance, challenger)
-    assert candidate.cost < stored.cost  # the float comparison would have replaced it
+    assert candidate.cost == stored.cost
 
     result = save_bks_if_improved(instance, candidate, instance_path)
 
@@ -145,7 +137,7 @@ def test_created_bks_stores_canonical_routes_and_their_price() -> None:
         BenchmarkSolution(
             instance_name=instance.instance_name,
             routes=solver_routes,
-            cost=_priced(instance, solver_routes),  # declared in the solver's own order: accepted
+            cost=_priced(instance, solver_routes),
         ),
         ObjectiveFunction.MONO_COST,
         authors=AUTHORS,
@@ -172,3 +164,86 @@ def test_invalid_candidates_are_refused(tmp_path: Path) -> None:
     misnamed = _candidate(instance, [[1, 2], [3, 4]]).model_copy(update={"instance_name": "another"})
     with pytest.raises(ValueError, match="does not match the instance"):
         save_bks_if_improved(instance, misnamed, instance_path)
+
+def test_decimal_tie_is_a_strict_binary64_improvement(tmp_path):
+    instance = _instance(MATRIX_DECIMAL)
+    incumbent, challenger = [[1, 3], [2, 4]], [[1, 2], [3, 4]]
+    path = _store(tmp_path, instance, incumbent)
+    assert _priced(instance, incumbent) == _priced(instance, challenger)
+    result = save_bks_if_improved(instance, _candidate(instance, challenger), path, backend="python")
+    assert result.action == "replaced" and not result.tie
+    bks = load_bks(result.path)
+    assert bks.routes == challenger
+    assert bks.metadata["exact_evaluation"]["evaluation"]["backend"] == "python-fraction"
+    assert "standard" not in bks.metadata
+
+
+def test_historical_display_is_not_an_exact_claim(tmp_path):
+    instance = _instance(MATRIX_ORDER)
+    path = tmp_path / "toy.vrp.json"
+    incumbent = _candidate(instance, [[1, 2], [3, 4]])
+    incumbent.cost = 123.0
+    store = path.with_name("toy.bks.MonoCost.json")
+    save_json_to_file(incumbent.model_dump(mode="json"), store)
+    original = store.read_bytes()
+    result = save_bks_if_improved(instance, _candidate(instance, [[3, 4], [1, 2]]), path, backend="python")
+    assert result.action == "kept_existing" and result.tie
+    assert store.read_bytes() == original
+
+
+def test_corrupted_exact_cost_is_rejected(tmp_path):
+    instance = _instance(MATRIX_ORDER)
+    routes = [[1, 2], [3, 4]]
+    path = _store(tmp_path, instance, routes)
+    store = path.with_name(f"{instance.instance_name}.bks.MonoCost.json")
+    record = load_bks(store)
+    record.metadata["exact_evaluation"]["authoritative_cost"]["numerator"] = "0"
+    save_json_to_file(record.model_dump(mode="json"), store)
+    before = store.read_bytes()
+    with pytest.raises(ValueError, match="authoritative_cost"):
+        save_bks_if_improved(instance, _candidate(instance, routes), path)
+    assert store.read_bytes() == before
+
+
+def test_manifest_bound_incumbent_requires_manifest_verification(tmp_path):
+    instance = _instance(MATRIX_DECIMAL)
+    routes = [[1], [2], [3], [4]]
+    path = _store(tmp_path, instance, routes)
+    store = path.with_name(f"{instance.instance_name}.bks.MonoCost.json")
+    record = load_bks(store)
+    record.metadata["standard"] = {**record.metadata.pop("exact_evaluation"), "manifest_sha256": "f"*64}
+    save_json_to_file(record.model_dump(mode="json"), store)
+    before = store.read_bytes()
+    assert save_bks_if_improved(instance, _candidate(instance, routes), path).tie
+    with pytest.raises(ValueError, match="manifest"):
+        save_bks_if_improved(instance, _candidate(instance, [[1, 2], [3, 4]]), path)
+    assert store.read_bytes() == before
+
+
+def test_bks_exact_cost_can_overflow_its_binary64_display(tmp_path):
+    instance = _instance(MATRIX_ORDER)
+    instance.arc_costs[0][1] = sys.float_info.max
+    instance.arc_costs[4][0] = sys.float_info.max
+    solution = BenchmarkSolution(instance_name=instance.instance_name, routes=[[1, 2, 3, 4]])
+    bks = create_bks_from_solution(instance, solution, ObjectiveFunction.MONO_COST,
+                                   authors=AUTHORS, backend="python")
+    assert bks.cost is None
+    assert bks.metadata["exact_evaluation"]["display_overflow"] is True
+    update = save_bks_if_improved(instance, bks, tmp_path / "toy.vrp.json", backend="python")
+    assert update.action == "created" and update.candidate_cost is None
+    assert load_bks(update.path).metadata["exact_evaluation"]["authoritative_cost"] == (
+        bks.metadata["exact_evaluation"]["authoritative_cost"]
+    )
+
+
+def test_solver_claim_requires_an_explicit_matching_target():
+    instance = _instance(MATRIX_ORDER)
+    solution = BenchmarkSolution(instance_name=instance.instance_name, routes=[[1, 2, 3, 4]])
+    claim = dict(status="solver-reported-optimal", target_profile="td-fold/1", solver="solver X")
+    with pytest.raises(ValueError, match="target_profile"):
+        create_bks_from_solution(instance, solution, ObjectiveFunction.MONO_COST,
+                                 authors=AUTHORS, metadata={"optimality": claim}, backend="python")
+    claim["target_profile"] = "binary64-exact-v1"
+    result = create_bks_from_solution(instance, solution, ObjectiveFunction.MONO_COST,
+                                      authors=AUTHORS, metadata={"optimality": claim}, backend="python")
+    assert result.metadata["optimality"] == claim

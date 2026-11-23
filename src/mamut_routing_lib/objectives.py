@@ -63,15 +63,13 @@ def base_objective(instance: Any) -> ObjectiveFunction:
 def supported_objectives(instance: Any) -> tuple[ObjectiveFunction, ...]:
     """The objectives a solution of this instance can be checked and stored under.
 
-    CVRP: ``MonoCost``. VRPTW: ``MonoCost`` and ``HierarchicalVehicleCost``. Time-dependent
+    Static: ``MonoCost`` and ``HierarchicalVehicleCost``. Time-dependent
     instances: ``Duration`` and ``FleetCostDuration`` (the TD checker's objectives).
     """
     problem = _problem_type(instance)
     if problem in (ProblemType.TDVRP, ProblemType.TDVRPTW):
         return (ObjectiveFunction.DURATION, ObjectiveFunction.FLEET_COST_DURATION)
-    if problem is ProblemType.VRPTW:
-        return (ObjectiveFunction.MONO_COST, ObjectiveFunction.HIERARCHICAL_VEHICLE_COST)
-    return (ObjectiveFunction.MONO_COST,)
+    return (ObjectiveFunction.MONO_COST, ObjectiveFunction.HIERARCHICAL_VEHICLE_COST)
 
 
 def require_supported_objective(instance: Any, objective: ObjectiveFunction) -> ObjectiveFunction:

@@ -583,9 +583,7 @@ def hydrate_collection_instance(
     Non-collection instances pass through unchanged. For a collection
     instance the matrix is ``arc_costs`` if given, else resolved from the
     instance's ``arc_costs_source`` (``resolve_arc_costs``, which needs
-    ``instance_path`` for sidecar sources). VRPTW collection instances with
-    non-integer service times or windows cannot hydrate into the integer
-    checker model and raise ``ValueError``.
+    ``instance_path`` for sidecar sources). Hydration preserves fractional service times and windows.
     """
     if not is_collection_instance(instance):
         return instance
@@ -610,13 +608,7 @@ def hydrate_collection_instance(
         "metadata": dict(instance.metadata),
     }
     if isinstance(instance, BenchmarkInstanceVRPTWCollection):
-        service_times = [int(value) for value in instance.service_times]
-        time_windows = [(int(ready), int(due)) for ready, due in instance.time_windows]
-        if service_times != [float(v) for v in instance.service_times] or any(
-            (float(int(r)), float(int(d))) != (float(r), float(d)) for r, d in instance.time_windows
-        ):
-            raise ValueError("Non-integer time windows/service times cannot hydrate into the v1 checker model")
-        return BenchmarkInstance(**common, service_times=service_times, time_windows=time_windows)
+        return BenchmarkInstance(**common, service_times=instance.service_times, time_windows=instance.time_windows)
     return BenchmarkInstanceCVRP(**common)
 
 

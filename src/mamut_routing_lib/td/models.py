@@ -14,7 +14,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from mamut_routing_lib.enums import BenchmarkName, InstanceOrigin
-from mamut_routing_lib.models import Coordinate, ReferenceLLA
+from mamut_routing_lib.models import Coordinate, NonnegativeInteger, NumericOperand, ReferenceLLA
 from mamut_routing_lib.sidecars import SidecarRef
 
 TD_ATF_MODEL = "atf-ndcpwlf"
@@ -178,36 +178,24 @@ class _TDInstanceValidationMixin(BaseModel):
     instance_name: str
     instance_origin: InstanceOrigin
     benchmark_name: BenchmarkName
-    num_customers: int
-    num_vehicles: int | None = None
-    vehicle_capacity: int
+    num_customers: NonnegativeInteger
+    num_vehicles: NonnegativeInteger | None = None
+    vehicle_capacity: NonnegativeInteger
     coordinates: list[Coordinate]
-    demands: list[int]
-    service_times: list[int | float]
-    depot: int = Field(default=0, ge=0)
+    demands: list[NonnegativeInteger]
+    service_times: list[NumericOperand]
+    depot: NonnegativeInteger = 0
     reference_lla: ReferenceLLA | None = None
-    horizon: tuple[int | float, int | float]
-    fleet_fixed_cost: int | float | None = None
+    horizon: tuple[NumericOperand, NumericOperand]
+    fleet_fixed_cost: NumericOperand | None = None
     td: AnyTDTravelModelRef
     metadata: dict[str, Any] = Field(default_factory=dict)
-
-    @field_validator("num_customers", "vehicle_capacity")
-    @classmethod
-    def validate_positive(cls, value: int) -> int:
-        if value <= 0:
-            raise ValueError("must be positive")
-        return value
-
-    @field_validator("num_vehicles")
-    @classmethod
-    def validate_positive_optional(cls, value: int | None) -> int | None:
-        if value is not None and value <= 0:
-            raise ValueError("must be positive")
-        return value
 
     @field_validator("coordinates", "demands", "service_times")
     @classmethod
     def validate_node_vector_lengths(cls, value: list[Any], info: Any) -> list[Any]:
+        if "num_customers" not in info.data:
+            return value
         expected_length = info.data["num_customers"] + 1
         if len(value) != expected_length:
             raise ValueError(
@@ -253,11 +241,13 @@ class _TDInstanceValidationMixin(BaseModel):
 
 
 class BenchmarkInstanceTDVRPTW(_TDInstanceValidationMixin):
-    time_windows: list[tuple[int | float, int | float]]
+    time_windows: list[tuple[NumericOperand, NumericOperand]]
 
     @field_validator("time_windows")
     @classmethod
     def validate_time_window_lengths(cls, value: list[Any], info: Any) -> list[Any]:
+        if "num_customers" not in info.data:
+            return value
         expected_length = info.data["num_customers"] + 1
         if len(value) != expected_length:
             raise ValueError(

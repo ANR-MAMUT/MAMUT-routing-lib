@@ -5,3 +5,10 @@ __pycache__/
 
 # Pytest cache
 .pytest_cache/
+
+# Python distribution and native builds
+/build/
+/dist/
+*.egg-info/
+*.so
+*.pyd

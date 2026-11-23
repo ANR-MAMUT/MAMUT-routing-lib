@@ -15,9 +15,13 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from mamut_routing_lib.exact_types import binary64_operand, nonnegative_integer
+from mamut_routing_lib.json_utils import strict_json_loads
 
 DISTANCES_FORMAT = "mamut-distances"
 DISTANCES_FORMAT_VERSION = 1
@@ -43,17 +47,22 @@ class InstanceDistances:
     format_version: int = DISTANCES_FORMAT_VERSION
 
     def __post_init__(self) -> None:
-        self.num_customers = int(self.num_customers)
-        self.values = [[float(v) for v in row] for row in self.values]
+        try:
+            self.num_customers = nonnegative_integer(self.num_customers, "num_customers")
+            self.values = [[binary64_operand(v) for v in row] for row in self.values]
+        except (TypeError, ValueError) as exc:
+            raise DistancesFormatError(f"invalid distance matrix input: {exc}") from exc
 
 
 def _validate_distances(distances: InstanceDistances) -> None:
+    if type(distances.format_version) is not int or distances.format_version != DISTANCES_FORMAT_VERSION:
+        raise DistancesFormatError(f"unsupported format_version: {distances.format_version!r}")
     if not distances.base_name:
         raise DistancesFormatError("base_name must be non-empty")
     if not distances.metric:
         raise DistancesFormatError("metric must be non-empty")
-    if distances.num_customers <= 0:
-        raise DistancesFormatError(f"num_customers must be positive, got {distances.num_customers}")
+    if type(distances.num_customers) is not int or distances.num_customers < 0:
+        raise DistancesFormatError("num_customers must be a nonnegative integer")
     expected = distances.num_customers + 1
     if len(distances.values) != expected:
         raise DistancesFormatError(
@@ -63,6 +72,12 @@ def _validate_distances(distances: InstanceDistances) -> None:
         if len(row) != expected:
             raise DistancesFormatError(f"values row {i} has {len(row)} entries, expected {expected}")
         for j, value in enumerate(row):
+            try:
+                finite = type(value) in (float, int) and math.isfinite(value)
+            except OverflowError:
+                finite = False
+            if not finite:
+                raise DistancesFormatError(f"entry [{i}][{j}] must be a finite binary64 number")
             if i == j:
                 if value != 0.0:
                     raise DistancesFormatError(f"diagonal entry [{i}][{j}] must be 0.0, got {value}")
@@ -76,6 +91,7 @@ def distances_to_canonical_json_bytes(distances: InstanceDistances) -> bytes:
     Fixed key order, one matrix row per line, floats via Python's shortest
     round-trip repr, gzip-independent.
     """
+    _validate_distances(distances)
     header_lines = [
         "{",
         f'    "format": {json.dumps(DISTANCES_FORMAT)},',
@@ -103,7 +119,6 @@ def save_instance_distances(distances: InstanceDistances, path: str | Path) -> N
     ``.distances-`` infix is required so the sidecar is never confused with
     other artifact kinds.
     """
-    _validate_distances(distances)
     target = Path(path)
     if DISTANCES_INFIX not in target.name:
         raise DistancesFormatError(f"distances path must contain {DISTANCES_INFIX!r}: {target.name}")
@@ -124,17 +139,22 @@ def load_instance_distances(path: str | Path) -> InstanceDistances:
     raw = source.read_bytes()
     if source.name.endswith(DISTANCES_GZIP_SUFFIX):
         raw = gzip.decompress(raw)
-    payload = json.loads(raw.decode("utf-8"))
+    try:
+        payload = strict_json_loads(raw)
+    except ValueError as exc:
+        raise DistancesFormatError(f"invalid distances JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise DistancesFormatError("expected a distances JSON object")
     if payload.get("format") != DISTANCES_FORMAT:
         raise DistancesFormatError(f"unexpected format marker: {payload.get('format')!r}")
-    if payload.get("format_version") != DISTANCES_FORMAT_VERSION:
+    if type(payload.get("format_version")) is not int or payload["format_version"] != DISTANCES_FORMAT_VERSION:
         raise DistancesFormatError(f"unsupported format_version: {payload.get('format_version')!r}")
     distances = InstanceDistances(
         base_name=str(payload["base_name"]),
         benchmark_name=str(payload["benchmark_name"]),
         metric=str(payload["metric"]),
-        num_customers=int(payload["num_customers"]),
-        values=[list(row) for row in payload["values"]],
+        num_customers=payload["num_customers"],
+        values=payload["values"],
         generator=dict(payload.get("generator", {})),
     )
     _validate_distances(distances)
