@@ -27,7 +27,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from mamut_routing_lib.artifacts import load_bks, save_bks
+from mamut_routing_lib.artifacts import load_bks, write_bks_file
 from mamut_routing_lib.models import BenchmarkBKS
 from mamut_routing_lib.td.artifacts import (
     ATFFormatError,
@@ -290,7 +290,7 @@ def reprice_td_bks(
         result.action = "would-reprice"
         return result
     repriced = BenchmarkBKS(**{**bks.model_dump(mode="json"), "cost": new_cost, "metadata": metadata})
-    save_bks(repriced, path)
+    write_bks_file(repriced, path)
     result.action = "repriced"
     return result
 

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from mamut_routing_lib.models import BenchmarkInstance, BenchmarkInstanceCVRP
+from mamut_routing_lib.models import BenchmarkInstanceVRPTW, BenchmarkInstanceCVRP
 
 
 _TOY_METADATA_CVRP = {
@@ -60,8 +60,8 @@ def toy_cvrp_instance() -> BenchmarkInstanceCVRP:
 
 
 @pytest.fixture
-def toy_vrptw_instance() -> BenchmarkInstance:
-    return BenchmarkInstance(
+def toy_vrptw_instance() -> BenchmarkInstanceVRPTW:
+    return BenchmarkInstanceVRPTW(
         instance_name="poryos-n2-testvrptw",
         instance_origin="OsmCvrpGen",
         benchmark_name="Poryos2026",

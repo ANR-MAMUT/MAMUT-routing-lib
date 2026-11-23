@@ -67,6 +67,18 @@ BKS submission evaluates the candidate and the incumbent under the same profile 
 
 A Kayros optimality claim names the contract under which the solver made it. Repricing the same routes under the v0.13 TD profile preserves the historical target, usually `td-fold/1`. If a better submission displaces an annotated incumbent, the store keeps the original BKS bytes under `.bks-history/<sha256>.json`. The new submission can carry its own solver claim.
 
+## Migrating Python code to v0.13
+
+| Previous API | v0.13 API | Meaning |
+| --- | --- | --- |
+| `BenchmarkInstance` | `BenchmarkInstanceVRPTW` | The static VRPTW model with an embedded matrix. The JSON Schema title uses the new name. The instance JSON fields keep their spelling. |
+| `save_bks_if_improved(..., bks=record)` | `save_bks_if_improved(..., candidate_bks=record)` | Recompute the candidate and incumbent, then write a strict improvement. Positional calls still work. |
+| `save_bks(record, path)` | `write_bks_file(record, path)` | Serialize the model to the given path, overwriting an existing file. Use `submit_bks` for checked submission. |
+| `exact_cost_value(number)` | `shortest_decimal_cost_value(number)` | Recover the rational value of the shortest decimal spelling of the parsed number. |
+| `compute_exact_solution_cost(instance, routes)` | `compute_shortest_decimal_solution_cost(instance, routes)` | Sum the static arc costs using that historical decimal interpretation. For the v0.13 binary64 profile use `evaluate_exact(instance, routes).cost`. |
+
+During v0.13, importing `BenchmarkInstance` from the package or its `models` module returns the same class with a `DeprecationWarning`. The other renamed APIs use the new spellings. Type annotations can distinguish `LoadedStaticInstance` (CVRP or VRPTW with a matrix), `AnyStaticBenchmarkInstance` (also includes static collection descriptors), and `AnyBenchmarkInstance` (also includes TDVRP and TDVRPTW). All 3 unions are available at the package root.
+
 ## Local Loading
 
 ```python
@@ -374,7 +386,7 @@ Caveats:
 
 ## Replaying historical records
 
-The static compatibility helpers `check_solution` and `compute_exact_solution_cost` retain the released arithmetic for historical callers. The latter interprets shortest decimal spellings. Use `evaluate_exact` for the v0.13 binary64 rational cost.
+The static compatibility helpers `check_solution` and `compute_shortest_decimal_solution_cost` retain the released arithmetic for historical callers. The latter interprets shortest decimal spellings. Use `evaluate_exact` for the v0.13 binary64 rational cost.
 
 The v0.12 entry point `mamut_routing_lib.td.check_td_solution` uses `TD_CHECKER_CONTRACT` (`td-fold/2`). Its `bks reprice-td` command is retained for working with legacy records. To preview its effects on a historical checkout, run `mamut-routing bks reprice-td benchmarks --dry-run --jobs 8 --report reprice.json`. Use the exact entry points above for v0.13 submissions. The historical repricer refuses a record that carries exact evaluation or certification metadata.
 

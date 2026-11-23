@@ -26,7 +26,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from mamut_routing_lib.checker import exact_cost_value, get_objective_tuple
+from mamut_routing_lib.checker import shortest_decimal_cost_value, get_objective_tuple
 from mamut_routing_lib.enums import ObjectiveFunction
 
 _TD_STRICT = "TDVRPTW"
@@ -160,14 +160,14 @@ def check_relaxation_pair(strict_bks_path: str | Path, *, priced: bool = False) 
     objective_function = ObjectiveFunction(objective)
     strict_routes = strict_payload["routes"]
     relaxed_key = get_objective_tuple(
-        relaxed_payload["routes"], exact_cost_value(result.relaxed_cost), objective_function
+        relaxed_payload["routes"], shortest_decimal_cost_value(result.relaxed_cost), objective_function
     )
-    if relaxed_key > get_objective_tuple(strict_routes, exact_cost_value(result.strict_cost), objective_function):
+    if relaxed_key > get_objective_tuple(strict_routes, shortest_decimal_cost_value(result.strict_cost), objective_function):
         result.inverted = True
     if priced:
         result.priced_cost = _price_on_relaxation(relaxed_instance, strict_routes, objective)
         if result.priced_cost is not None and relaxed_key > get_objective_tuple(
-            strict_routes, exact_cost_value(result.priced_cost), objective_function
+            strict_routes, shortest_decimal_cost_value(result.priced_cost), objective_function
         ):
             result.inverted = True
     return result

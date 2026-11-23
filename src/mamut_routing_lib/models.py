@@ -1,7 +1,7 @@
 """Pydantic models of the static benchmark contract (CVRP, VRPTW).
 
 Every artifact is validated on load with ``extra="forbid"``: an instance file
-(``BenchmarkInstance`` for VRPTW, ``BenchmarkInstanceCVRP`` for CVRP, both
+(``BenchmarkInstanceVRPTW`` for VRPTW, ``BenchmarkInstanceCVRP`` for CVRP, both
 with an embedded ``(n+1) x (n+1)`` ``arc_costs`` matrix), a slim *collection*
 instance (``BenchmarkInstanceCVRPCollection`` / ``BenchmarkInstanceVRPTWCollection``,
 whose matrix comes from an ``arc_costs_source``: a sha-pinned distances
@@ -16,7 +16,7 @@ in ``mamut_routing_lib.td.models``.
 from __future__ import annotations
 
 from math import isfinite
-from typing import Annotated, Any, Literal, TypeAlias
+from typing import TYPE_CHECKING, Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, field_validator
 
@@ -156,13 +156,13 @@ class _InstanceValidationMixin(BaseModel):
         return value
 
 
-class BenchmarkInstance(_InstanceValidationMixin):
+class BenchmarkInstanceVRPTW(_InstanceValidationMixin):
     """A VRPTW instance with an embedded arc-cost matrix.
 
     Adds per-node ``service_times`` and ``time_windows`` (``[ready, due]``,
     depot included) to the CVRP core. Historic families (Sintef2008, Dimacs2021,
-    Ortec2022) and hydrated collection instances use this model; the checker
-    prices waiting at ``ready`` and rejects arrival after ``due``.
+    Ortec2022) and hydrated collection instances use this model; service
+    starts at or after ``ready`` and at or before ``due``.
     """
     instance_name: str
     instance_origin: InstanceOrigin
@@ -188,8 +188,8 @@ class BenchmarkInstance(_InstanceValidationMixin):
         return value
 
     @classmethod
-    def from_legacy_dict(cls, legacy_instance: dict[str, Any]) -> "BenchmarkInstance":
-        """Build a BKS from the pre-contract dict shape (``routes`` + ``cost``) under ``objective_function``."""
+    def from_legacy_dict(cls, legacy_instance: dict[str, Any]) -> "BenchmarkInstanceVRPTW":
+        """Load a legacy VRPTW descriptor, renaming its arc_travel_times matrix to arc_costs."""
         if "arc_costs" in legacy_instance:
             raise ValueError("Legacy instance already contains 'arc_costs'")
         if "arc_travel_times" not in legacy_instance:
@@ -322,7 +322,9 @@ class BenchmarkInstanceVRPTWCollection(_SlimInstanceValidationMixin):
         return value
 
 
-AnyCollectionStaticInstance = BenchmarkInstanceCVRPCollection | BenchmarkInstanceVRPTWCollection
+LoadedStaticInstance: TypeAlias = BenchmarkInstanceCVRP | BenchmarkInstanceVRPTW
+AnyCollectionStaticInstance: TypeAlias = BenchmarkInstanceCVRPCollection | BenchmarkInstanceVRPTWCollection
+AnyStaticBenchmarkInstance: TypeAlias = LoadedStaticInstance | AnyCollectionStaticInstance
 
 
 class OptimalityMetadata(BaseModel):
@@ -432,3 +434,21 @@ class BenchmarkBKS(_SolutionValidationMixin):
         migrated = dict(legacy_bks)
         migrated["objective_function"] = objective_function
         return cls(**migrated)
+
+
+if TYPE_CHECKING:
+    BenchmarkInstance = BenchmarkInstanceVRPTW
+
+
+def _deprecated_model_name(module: str, name: str):
+    if name == "BenchmarkInstance":
+        from warnings import warn
+
+        warn("BenchmarkInstance is deprecated in v0.13. Use BenchmarkInstanceVRPTW.",
+             DeprecationWarning, stacklevel=3)
+        return BenchmarkInstanceVRPTW
+    raise AttributeError(f"module {module!r} has no attribute {name!r}")
+
+
+def __getattr__(name: str):
+    return _deprecated_model_name(__name__, name)

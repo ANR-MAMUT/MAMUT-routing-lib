@@ -7,7 +7,7 @@ rooted collections are parsed relative to their root). ``load_benchmark_instance
 picks the pydantic model from the payload shape (time-dependent, CVRP,
 VRPTW, slim collection); ``hydrate_collection_instance`` turns a slim
 instance into an embedded-matrix one for the checker; ``get_bks_path_for_instance``,
-``load_bks`` and ``save_bks`` handle the BKS file next to the instance.
+``load_bks`` and ``write_bks_file`` handle the BKS file next to the instance.
 
 Roots come from explicit arguments or, failing that, from the environment:
 ``MAMUT_ROUTING_BENCHMARKS_ROOT`` or ``MAMUT_ROUTING_ROOT/benchmarks``. The
@@ -20,19 +20,18 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable
-
-if TYPE_CHECKING:
-    from mamut_routing_lib.td.models import AnyTDBenchmarkInstance
+from typing import Iterable, TypeAlias, overload
 
 from mamut_routing_lib.enums import BenchmarkName, MetricVariant, ObjectiveFunction, ProblemType
 from mamut_routing_lib.json_utils import load_json_from_file, save_json_to_file
 from mamut_routing_lib.models import (
     AnyCollectionStaticInstance,
+    AnyStaticBenchmarkInstance,
+    LoadedStaticInstance,
     ArcCostsDistancesRef,
     ArcCostsEuclidean,
     BenchmarkBKS,
-    BenchmarkInstance,
+    BenchmarkInstanceVRPTW,
     BenchmarkInstanceCVRP,
     BenchmarkInstanceCVRPCollection,
     BenchmarkInstanceVRPTWCollection,
@@ -52,9 +51,6 @@ RELEASE_STAGING_DIRNAME = ".mamut-staging"
 
 DEFAULT_MAMUT_ROUTING_ROOT_ENV = "MAMUT_ROUTING_ROOT"
 DEFAULT_BENCHMARKS_ROOT_ENV = "MAMUT_ROUTING_BENCHMARKS_ROOT"
-
-AnyBenchmarkInstance = BenchmarkInstance | BenchmarkInstanceCVRP | AnyCollectionStaticInstance
-
 
 def _path_from_env(env_name: str) -> Path | None:
     value = os.getenv(env_name)
@@ -144,7 +140,7 @@ class DiscoveredBenchmarkInstance:
     subinstance: str | None = None
     tw_set: str | None = None
 
-    def load(self) -> "AnyBenchmarkInstance | AnyTDBenchmarkInstance":
+    def load(self) -> AnyBenchmarkInstance:
         """Load the instance file (``load_benchmark_instance``)."""
         return load_benchmark_instance(self.instance_path)
 
@@ -470,7 +466,7 @@ def discover_benchmark_instances(
     return discovered
 
 
-def load_benchmark_instance(instance_path: str | Path) -> "AnyBenchmarkInstance | AnyTDBenchmarkInstance":
+def load_benchmark_instance(instance_path: str | Path) -> AnyBenchmarkInstance:
     """Load and validate an instance file, choosing the model from its payload.
 
     A ``td`` block selects the time-dependent models; ``arc_costs_source`` a
@@ -494,10 +490,10 @@ def load_benchmark_instance(instance_path: str | Path) -> "AnyBenchmarkInstance 
         # workbench instances generated before the Mamut2026 -> Poryos2026 rename are embedded
         # CVRP payloads that still say "Mamut2026".
         return BenchmarkInstanceCVRP(**payload)
-    return BenchmarkInstance(**payload)
+    return BenchmarkInstanceVRPTW(**payload)
 
 
-def instance_problem_type(instance: "AnyBenchmarkInstance | AnyTDBenchmarkInstance") -> ProblemType:
+def instance_problem_type(instance: AnyBenchmarkInstance) -> ProblemType:
     """The problem type of a loaded instance, from its model class.
 
     Time-dependent models resolve to TDVRPTW/TDVRP (their metadata does not
@@ -511,7 +507,7 @@ def instance_problem_type(instance: "AnyBenchmarkInstance | AnyTDBenchmarkInstan
         return ProblemType.TDVRP
     if isinstance(instance, (BenchmarkInstanceCVRP, BenchmarkInstanceCVRPCollection)):
         return ProblemType.CVRP
-    if isinstance(instance, (BenchmarkInstance, BenchmarkInstanceVRPTWCollection)):
+    if isinstance(instance, (BenchmarkInstanceVRPTW, BenchmarkInstanceVRPTWCollection)):
         return ProblemType.VRPTW
     raise TypeError(f"unsupported instance model: {type(instance).__name__}")
 
@@ -568,9 +564,25 @@ def resolve_arc_costs(
     raise ValueError(f"unsupported arc_costs_source model: {source!r}")
 
 
-def is_collection_instance(instance: AnyBenchmarkInstance) -> bool:
+def is_collection_instance(instance: AnyStaticBenchmarkInstance) -> bool:
     """True for the slim collection models (arc costs by ``arc_costs_source``)."""
     return isinstance(instance, (BenchmarkInstanceCVRPCollection, BenchmarkInstanceVRPTWCollection))
+
+
+@overload
+def hydrate_collection_instance(
+    instance: AnyStaticBenchmarkInstance,
+    instance_path: str | Path | None = None,
+    arc_costs: list[list[int]] | list[list[float]] | None = None,
+) -> LoadedStaticInstance: ...
+
+
+@overload
+def hydrate_collection_instance(
+    instance: AnyTDBenchmarkInstance,
+    instance_path: str | Path | None = None,
+    arc_costs: list[list[int]] | list[list[float]] | None = None,
+) -> AnyTDBenchmarkInstance: ...
 
 
 def hydrate_collection_instance(
@@ -580,12 +592,12 @@ def hydrate_collection_instance(
 ) -> AnyBenchmarkInstance:
     """An embedded-matrix view of a slim collection instance, usable with the checker.
 
-    Non-collection instances pass through unchanged. For a collection
+    Instances outside the static collection formats pass through unchanged. For a collection
     instance the matrix is ``arc_costs`` if given, else resolved from the
     instance's ``arc_costs_source`` (``resolve_arc_costs``, which needs
     ``instance_path`` for sidecar sources). Hydration preserves fractional service times and windows.
     """
-    if not is_collection_instance(instance):
+    if not isinstance(instance, AnyCollectionStaticInstance):
         return instance
     if arc_costs is None:
         if instance_path is None:
@@ -608,14 +620,14 @@ def hydrate_collection_instance(
         "metadata": dict(instance.metadata),
     }
     if isinstance(instance, BenchmarkInstanceVRPTWCollection):
-        return BenchmarkInstance(**common, service_times=instance.service_times, time_windows=instance.time_windows)
+        return BenchmarkInstanceVRPTW(**common, service_times=instance.service_times, time_windows=instance.time_windows)
     return BenchmarkInstanceCVRP(**common)
 
 
 def has_structured_metadata(instance: AnyBenchmarkInstance) -> bool:
     """Return True if the instance carries a validated InstanceMetadata payload.
 
-    BenchmarkInstanceCVRP always does. Unified BenchmarkInstance does for Poryos2026
+    BenchmarkInstanceCVRP always does. Unified BenchmarkInstanceVRPTW does for Poryos2026
     (pydantic Union resolves to InstanceMetadata when the structured fields match);
     historical Sintef/Dimacs instances carry a plain dict.
     """
@@ -637,6 +649,15 @@ def load_bks(bks_path: str | Path) -> BenchmarkBKS:
     return BenchmarkBKS(**load_json_from_file(bks_path))
 
 
-def save_bks(bks: BenchmarkBKS, bks_path: str | Path) -> None:
-    """Write a BKS as canonical JSON (creating parent directories)."""
+def write_bks_file(bks: BenchmarkBKS, bks_path: str | Path) -> None:
+    """Serialize a BKS model to JSON, replacing the file and creating parent directories.
+
+    Use submit_bks or save_bks_if_improved to evaluate routes and compare an incumbent.
+    """
     save_json_to_file(bks.model_dump(mode="json"), bks_path)
+
+
+# TD's public namespace exposes BKS functions that use the file helpers above.
+from mamut_routing_lib.td.models import AnyTDBenchmarkInstance
+
+AnyBenchmarkInstance: TypeAlias = AnyStaticBenchmarkInstance | AnyTDBenchmarkInstance

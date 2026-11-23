@@ -1,4 +1,5 @@
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
+from typing import TYPE_CHECKING
 
 try:
     __version__ = _pkg_version("mamut-routing-lib")
@@ -6,6 +7,7 @@ except PackageNotFoundError:
     __version__ = "0.0.0+unknown"
 
 from mamut_routing_lib.artifacts import (
+    AnyBenchmarkInstance,
     BenchmarkLayoutResolver,
     DEFAULT_BENCHMARKS_ROOT_ENV,
     DEFAULT_MAMUT_ROUTING_ROOT_ENV,
@@ -23,7 +25,7 @@ from mamut_routing_lib.artifacts import (
     load_bks,
     parse_collection_layout,
     resolve_arc_costs,
-    save_bks,
+    write_bks_file,
 )
 from mamut_routing_lib.distances import (
     DISTANCES_FORMAT,
@@ -72,10 +74,10 @@ from mamut_routing_lib.checker import (
     check_solution,
     canonical_route_order,
     check_vrptw_solution,
-    compute_exact_solution_cost,
+    compute_shortest_decimal_solution_cost,
     compute_route_cost,
     compute_solution_cost,
-    exact_cost_value,
+    shortest_decimal_cost_value,
     is_better_exact,
     is_better_solution,
 )
@@ -103,11 +105,13 @@ from mamut_routing_lib.enums import (
 from mamut_routing_lib.json_utils import get_custom_json_string, load_json_from_file, save_json_to_file
 from mamut_routing_lib.objectives import base_objective, default_objective
 from mamut_routing_lib.models import (
+    AnyStaticBenchmarkInstance,
+    LoadedStaticInstance,
     ArcCostsDistancesRef,
     ArcCostsEuclidean,
     ArtifactPaths,
     BenchmarkBKS,
-    BenchmarkInstance,
+    BenchmarkInstanceVRPTW,
     BenchmarkInstanceCVRP,
     BenchmarkInstanceCVRPCollection,
     BenchmarkInstanceVRPTWCollection,
@@ -180,7 +184,10 @@ __all__ = [
     "ArtifactPaths",
     "BKSUpdateResult",
     "BenchmarkBKS",
+    "BenchmarkInstanceVRPTW",
     "BenchmarkInstance",
+    "LoadedStaticInstance",
+    "AnyStaticBenchmarkInstance",
     "BenchmarkInstanceCVRP",
     "BenchmarkInstanceCVRPCollection",
     "BenchmarkInstanceVRPTWCollection",
@@ -197,6 +204,7 @@ __all__ = [
     "DEFAULT_RELEASE_REPO_ENV",
     "DISTANCES_FORMAT",
     "DISTANCES_FORMAT_VERSION",
+    "AnyBenchmarkInstance",
     "DiscoveredBenchmarkInstance",
     "DistancesFormatError",
     "ExportResult",
@@ -231,14 +239,14 @@ __all__ = [
     "check_vrptw_solution",
     "compute_distances_sha256",
     "compute_geo_sha256",
-    "compute_exact_solution_cost",
+    "compute_shortest_decimal_solution_cost",
     "compute_route_cost",
     "compute_sha256",
     "compute_solution_cost",
     "create_bks_from_solution",
     "discover_benchmark_instances",
     "distances_to_canonical_json_bytes",
-    "exact_cost_value",
+    "shortest_decimal_cost_value",
     "export_instance_file",
     "find_collection_root",
     "find_collection_roots",
@@ -268,7 +276,7 @@ __all__ = [
     "require_collection_root",
     "resolve_arc_costs",
     "resolve_sidecar_ref",
-    "save_bks",
+    "write_bks_file",
     "save_bks_if_improved",
     "save_collection_marker",
     "save_instance_distances",
@@ -277,3 +285,13 @@ __all__ = [
     "save_solution_as_bks_if_improved",
     "verify_sha256",
 ]
+
+
+if TYPE_CHECKING:
+    from mamut_routing_lib.models import BenchmarkInstanceVRPTW as BenchmarkInstance
+
+
+def __getattr__(name: str):
+    from mamut_routing_lib.models import _deprecated_model_name
+
+    return _deprecated_model_name(__name__, name)

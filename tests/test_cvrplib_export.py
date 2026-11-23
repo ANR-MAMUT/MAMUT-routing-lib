@@ -24,7 +24,7 @@ from mamut_routing_lib.cvrplib import (
 from mamut_routing_lib.artifacts import load_benchmark_instance
 from mamut_routing_lib.distances import InstanceDistances, save_instance_distances
 from mamut_routing_lib.json_utils import save_json_to_file
-from mamut_routing_lib.models import BenchmarkInstance, BenchmarkInstanceCVRPCollection, BenchmarkInstanceVRPTWCollection
+from mamut_routing_lib.models import BenchmarkInstanceVRPTW, BenchmarkInstanceCVRPCollection, BenchmarkInstanceVRPTWCollection
 from mamut_routing_lib.sidecars import CollectionMarker, save_collection_marker
 
 from td_utils import write_toy_instance_files
@@ -275,7 +275,7 @@ def test_euc_2d_drops_the_matrix_for_euclidean_instances_only(tmp_path: Path) ->
 
 
 def test_solomon_golden_and_rejections(toy_cvrp_instance) -> None:
-    instance = BenchmarkInstance(
+    instance = BenchmarkInstanceVRPTW(
         instance_name="C101",
         instance_origin="Solomon1987",
         benchmark_name="Sintef2008",
@@ -359,9 +359,9 @@ def _hypot_matrix(coordinates, transform=lambda d: d):
     return [[transform(math.hypot(xi - xj, yi - yj)) for xj, yj in coordinates] for xi, yi in coordinates]
 
 
-def _solomon_vrptw(*, benchmark_name: str, arc_costs, times_scale: int = 1) -> BenchmarkInstance:
+def _solomon_vrptw(*, benchmark_name: str, arc_costs, times_scale: int = 1) -> BenchmarkInstanceVRPTW:
     coordinates = [(40, 50), (45, 68), (45, 70)]
-    return BenchmarkInstance(
+    return BenchmarkInstanceVRPTW(
         instance_name="C101",
         instance_origin="Solomon1987",
         benchmark_name=benchmark_name,

@@ -247,3 +247,16 @@ def test_solver_claim_requires_an_explicit_matching_target():
     result = create_bks_from_solution(instance, solution, ObjectiveFunction.MONO_COST,
                                       authors=AUTHORS, metadata={"optimality": claim}, backend="python")
     assert result.metadata["optimality"] == claim
+
+
+def test_save_bks_if_improved_accepts_only_the_candidate_keyword(tmp_path):
+    instance = _instance(MATRIX_ORDER)
+    path = tmp_path / "toy.vrp.json"
+    incumbent = _candidate(instance, [[1, 2], [3, 4]])
+    assert save_bks_if_improved(instance, candidate_bks=incumbent, instance_path=path, backend="python").action == "created"
+    before = (tmp_path / "toy.bks.MonoCost.json").read_bytes()
+    reordered = _candidate(instance, [[3, 4], [1, 2]])
+    assert save_bks_if_improved(instance, candidate_bks=reordered, instance_path=path, backend="python").tie
+    with pytest.raises(TypeError, match="unexpected keyword argument 'bks'"):
+        save_bks_if_improved(instance, bks=reordered, instance_path=path, backend="python")
+    assert (tmp_path / "toy.bks.MonoCost.json").read_bytes() == before

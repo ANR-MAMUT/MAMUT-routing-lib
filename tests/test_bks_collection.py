@@ -74,3 +74,28 @@ def test_save_solution_as_bks_if_improved_hydrates_collection_instances(slim_ins
         BenchmarkSolution(instance_name=name, routes=[[2], [1]]), authors="tests",
     )
     assert worse.action == "kept_existing" and load_bks(bks_path).cost == 20.0
+
+
+def test_matrix_cost_helpers_require_materialization_even_for_empty_routes(slim_instance_path, tmp_path):
+    from mamut_routing_lib import compute_route_cost, compute_shortest_decimal_solution_cost, compute_solution_cost
+    from td_utils import write_toy_instance_files
+
+    for instance in (
+        load_benchmark_instance(slim_instance_path),
+        load_benchmark_instance(write_toy_instance_files(tmp_path / "td")),
+    ):
+        for helper in (compute_route_cost, compute_shortest_decimal_solution_cost, compute_solution_cost):
+            with pytest.raises(TypeError, match="loaded static instance"):
+                helper(instance, [])
+
+
+def test_shortest_decimal_helpers_interpret_a_float_spelling(toy_cvrp_instance):
+    from fractions import Fraction
+    from mamut_routing_lib import compute_shortest_decimal_solution_cost, shortest_decimal_cost_value
+
+    matrix = [[0, 0.1, 0], [0, 0, 0.2], [0, 0, 0]]
+    instance = toy_cvrp_instance.model_copy(update={"arc_costs": matrix})
+    assert shortest_decimal_cost_value(float("0.10000000000000001")) == Fraction(1, 10)
+    assert shortest_decimal_cost_value(2**63 + 1) == 2**63 + 1
+    assert compute_shortest_decimal_solution_cost(instance, [[1, 2]]) == Fraction(3, 10)
+    assert Fraction.from_float(0.1) + Fraction.from_float(0.2) != Fraction(3, 10)

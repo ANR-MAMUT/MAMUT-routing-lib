@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import warnings
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -7,7 +10,7 @@ from mamut_routing_lib.enums import MetricVariant, ObjectiveFunction, ProblemTyp
 from mamut_routing_lib.models import (
     ArtifactPaths,
     BenchmarkBKS,
-    BenchmarkInstance,
+    BenchmarkInstanceVRPTW,
     BenchmarkInstanceCVRP,
     InstanceMetadata,
     OptimalityMetadata,
@@ -102,7 +105,7 @@ def make_valid_vrptw_instance_kwargs() -> dict:
 
 
 def test_historical_benchmark_instance_accepts_arc_costs() -> None:
-    instance = BenchmarkInstance(**make_valid_historical_instance_kwargs())
+    instance = BenchmarkInstanceVRPTW(**make_valid_historical_instance_kwargs())
     assert instance.arc_costs[0][2] == 2
 
 
@@ -114,7 +117,7 @@ def test_historical_benchmark_instance_rejects_malformed_arc_costs_matrix() -> N
     ]
 
     with pytest.raises(ValidationError):
-        BenchmarkInstance(**payload)
+        BenchmarkInstanceVRPTW(**payload)
 
 
 def test_cvrp_instance_accepts_structured_metadata_and_float_coordinates() -> None:
@@ -128,7 +131,7 @@ def test_cvrp_instance_accepts_structured_metadata_and_float_coordinates() -> No
 
 
 def test_vrptw_instance_accepts_time_fields_and_relative_paths() -> None:
-    instance = BenchmarkInstance(**make_valid_vrptw_instance_kwargs())
+    instance = BenchmarkInstanceVRPTW(**make_valid_vrptw_instance_kwargs())
 
     assert isinstance(instance.metadata, InstanceMetadata)
     assert instance.metadata.problem_type == ProblemType.VRPTW
@@ -139,14 +142,14 @@ def test_benchmark_instance_metadata_union_resolves_to_dict_for_historical() -> 
     payload = make_valid_historical_instance_kwargs()
     payload["metadata"] = {"foo": "bar"}
 
-    instance = BenchmarkInstance(**payload)
+    instance = BenchmarkInstanceVRPTW(**payload)
 
     assert isinstance(instance.metadata, dict)
     assert instance.metadata == {"foo": "bar"}
 
 
 def test_benchmark_instance_metadata_union_resolves_to_structured_for_poryos2026() -> None:
-    instance = BenchmarkInstance(**make_valid_vrptw_instance_kwargs())
+    instance = BenchmarkInstanceVRPTW(**make_valid_vrptw_instance_kwargs())
 
     assert isinstance(instance.metadata, InstanceMetadata)
     assert instance.metadata.place_slug == "brest"
@@ -252,3 +255,40 @@ def test_solution_metadata_without_optimality_is_untouched() -> None:
     metadata = {"authors": "someone", "source": "somewhere", "seed": 3}
     bks = _bks_with_metadata(metadata)
     assert bks.metadata == metadata
+
+
+def test_vrptw_public_class_and_deprecated_imports(tmp_path):
+    import mamut_routing_lib as library
+    from mamut_routing_lib import models
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        from mamut_routing_lib import BenchmarkInstanceVRPTW as public_class
+        from mamut_routing_lib.models import BenchmarkInstanceVRPTW as model_class
+
+    assert public_class is model_class
+    assert public_class.model_json_schema()["title"] == "BenchmarkInstanceVRPTW"
+    assert public_class.__name__ == "BenchmarkInstanceVRPTW"
+    instance = public_class.model_validate(make_valid_historical_instance_kwargs())
+    path = tmp_path / "C101.vrp.json"
+    path.write_text(instance.model_dump_json())
+    assert type(library.load_benchmark_instance(path)) is public_class
+    for module in (library, models):
+        with pytest.warns(DeprecationWarning, match="Use BenchmarkInstanceVRPTW") as notice:
+            old_class = module.BenchmarkInstance
+        assert old_class is public_class
+        assert Path(notice[0].filename).resolve() == Path(__file__).resolve()
+
+    assert isinstance(instance, library.LoadedStaticInstance)
+    assert isinstance(instance, library.AnyStaticBenchmarkInstance)
+    assert isinstance(instance, library.AnyBenchmarkInstance)
+
+
+def test_general_instance_type_includes_time_dependent_instances():
+    from mamut_routing_lib import AnyBenchmarkInstance, AnyStaticBenchmarkInstance
+    from mamut_routing_lib.td.models import BenchmarkInstanceTDVRPTW
+    from td_utils import toy_instance_payload
+
+    td = BenchmarkInstanceTDVRPTW.model_validate(toy_instance_payload())
+    assert isinstance(td, AnyBenchmarkInstance)
+    assert not isinstance(td, AnyStaticBenchmarkInstance)

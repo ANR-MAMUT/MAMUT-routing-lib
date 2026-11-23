@@ -33,7 +33,6 @@ except ImportError as exc:  # pragma: no cover - exercised via test_cli_solve mi
     ) from exc
 
 from mamut_routing_lib.artifacts import (
-    AnyBenchmarkInstance,
     get_instance_identifier,
     hydrate_collection_instance,
     resolve_arc_costs,
@@ -46,7 +45,8 @@ from mamut_routing_lib.bks import (
 from mamut_routing_lib.checker import check_solution
 from mamut_routing_lib.enums import ObjectiveFunction
 from mamut_routing_lib.models import (
-    BenchmarkInstance,
+    AnyStaticBenchmarkInstance,
+    BenchmarkInstanceVRPTW,
     BenchmarkInstanceCVRP,
     BenchmarkInstanceCVRPCollection,
     BenchmarkInstanceVRPTWCollection,
@@ -101,16 +101,16 @@ class MethodResult:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-def _is_vrptw_like(instance: AnyBenchmarkInstance) -> bool:
-    return isinstance(instance, (BenchmarkInstance, BenchmarkInstanceVRPTWCollection))
+def _is_vrptw_like(instance: AnyStaticBenchmarkInstance) -> bool:
+    return isinstance(instance, (BenchmarkInstanceVRPTW, BenchmarkInstanceVRPTWCollection))
 
 
-def _is_collection(instance: AnyBenchmarkInstance) -> bool:
+def _is_collection(instance: AnyStaticBenchmarkInstance) -> bool:
     return isinstance(instance, (BenchmarkInstanceCVRPCollection, BenchmarkInstanceVRPTWCollection))
 
 
 def _hydrated_arc_costs(
-    instance: AnyBenchmarkInstance,
+    instance: AnyStaticBenchmarkInstance,
     instance_path: str | Path | None,
 ) -> list[list[int]] | list[list[float]]:
     """Inline arc costs, or the sidecar/euclidean-resolved matrix for slim
@@ -126,7 +126,7 @@ def _hydrated_arc_costs(
 
 
 def to_vrplib_dict(
-    instance: AnyBenchmarkInstance,
+    instance: AnyStaticBenchmarkInstance,
     arc_costs: list[list[int]] | list[list[float]] | None = None,
 ) -> dict[str, Any]:
     """Convert a benchmark instance into a VRPLIB-shaped dict consumable by PyVRP's parser."""
@@ -157,7 +157,7 @@ def to_vrplib_dict(
 
 
 def to_pyvrp_problem(
-    instance: AnyBenchmarkInstance,
+    instance: AnyStaticBenchmarkInstance,
     round_func: str | _RoundingFunc = "none",
     arc_costs: list[list[int]] | list[list[float]] | None = None,
 ) -> ProblemData:
@@ -200,7 +200,7 @@ def _get_vehicle_fixed_cost(
 
 
 def _build_method_metadata(
-    instance: AnyBenchmarkInstance,
+    instance: AnyStaticBenchmarkInstance,
     objective_function: ObjectiveFunction,
     *,
     seed: int,
@@ -219,7 +219,7 @@ def _build_method_metadata(
 
 
 def _conversion_plan(
-    instance: AnyBenchmarkInstance,
+    instance: AnyStaticBenchmarkInstance,
     instance_path: str | Path | None,
     arc_costs: list[list[int]] | list[list[float]] | None = None,
 ) -> tuple[list[list[int]] | list[list[float]], str, int]:
@@ -235,7 +235,7 @@ def _conversion_plan(
 
 
 def conversion_plan(
-    instance: AnyBenchmarkInstance,
+    instance: AnyStaticBenchmarkInstance,
     instance_path: str | Path | None,
 ) -> tuple[list[list[int]] | list[list[float]], str, int]:
     """Public name of ``_conversion_plan``: (arc costs, round_func, cost scale)."""
@@ -346,7 +346,7 @@ def solve_cvrp(
 
 
 def solve_vrptw(
-    instance: BenchmarkInstance | BenchmarkInstanceVRPTWCollection,
+    instance: BenchmarkInstanceVRPTW | BenchmarkInstanceVRPTWCollection,
     *,
     objective_function: ObjectiveFunction,
     time_limit_s: int,
@@ -472,7 +472,7 @@ def solve_vrptw(
 
 
 def solve_instance(
-    instance: AnyBenchmarkInstance,
+    instance: AnyStaticBenchmarkInstance,
     *,
     time_limit_s: int,
     seed: int = 42,
@@ -521,7 +521,7 @@ def solve_instance(
 
 
 def solve_and_update_bks(
-    instance: AnyBenchmarkInstance,
+    instance: AnyStaticBenchmarkInstance,
     *,
     instance_path: str | Path,
     time_limit_s: int,

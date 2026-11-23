@@ -13,26 +13,29 @@ from pathlib import Path
 from typing import Any
 
 from mamut_routing_lib.artifacts import (
-    AnyBenchmarkInstance,
     get_bks_path_for_instance,
     get_instance_identifier,
     hydrate_collection_instance,
     load_benchmark_instance,
     load_bks,
-    save_bks,
+    write_bks_file,
 )
 from mamut_routing_lib.enums import ObjectiveFunction
 from mamut_routing_lib.exact_static import PreparedStatic, prepare_static
 from mamut_routing_lib.exact_store import preserve_claim_record, standard_metadata, verify_stored
 from mamut_routing_lib.exact_types import ExactBackend, ExactEvaluation, ExactRouteError
-from mamut_routing_lib.models import BenchmarkBKS, BenchmarkSolution, SolverReportedOptimality
+from mamut_routing_lib.models import BenchmarkBKS, BenchmarkSolution, LoadedStaticInstance, SolverReportedOptimality
 
 DEFAULT_BKS_AUTHORS = "Florian Rascoussier (0nyr) and Adrien Pichon (Anzury)"
 
 
 @dataclass(frozen=True)
 class BKSUpdateResult:
-    """Outcome and candidate display cost. Exact display overflow gives None."""
+    """The candidate's display cost and route count, even when the incumbent wins.
+
+    A display overflow gives None. If an incumbent existed, previous_path is
+    its store path, including when that path now holds the replacement.
+    """
 
     action: str
     path: Path
@@ -84,7 +87,7 @@ def _candidate(
 
 
 def create_bks_from_solution(
-    instance: AnyBenchmarkInstance,
+    instance: LoadedStaticInstance,
     solution: BenchmarkSolution,
     objective_function: ObjectiveFunction,
     *,
@@ -94,50 +97,56 @@ def create_bks_from_solution(
 ) -> BenchmarkBKS:
     """Create a canonical exact BKS from a solution and a materialized instance."""
     prepared = prepare_static(instance, backend=backend, objective_function=objective_function)
-    candidate, _ = _candidate(prepared, get_instance_identifier(instance), solution, authors,
-                              metadata)
-    return candidate
+    candidate_bks, _ = _candidate(prepared, get_instance_identifier(instance), solution, authors, metadata)
+    return candidate_bks
 
 
-def _store(path: Path, prepared: PreparedStatic, candidate: BenchmarkBKS, evaluation: ExactEvaluation) -> BKSUpdateResult:
+def _store(
+    path: Path, prepared: PreparedStatic, candidate_bks: BenchmarkBKS, candidate_evaluation: ExactEvaluation,
+) -> BKSUpdateResult:
     previous = None
     action = "created"
     tie = False
     if path.exists():
         previous = path
-        existing = load_bks(path)
-        if existing.instance_name != candidate.instance_name or existing.objective_function != candidate.objective_function:
+        incumbent_bks = load_bks(path)
+        if (incumbent_bks.instance_name != candidate_bks.instance_name
+                or incumbent_bks.objective_function != candidate_bks.objective_function):
             raise ValueError(f"Stored BKS has a different instance or objective at {path}")
         try:
-            incumbent = prepared.evaluate(existing.routes)
-            verify_stored(existing, incumbent)
+            incumbent_evaluation = prepared.evaluate(incumbent_bks.routes)
+            verify_stored(incumbent_bks, incumbent_evaluation)
         except ValueError as exc:
             raise ValueError(f"Stored BKS is invalid at {path}: {exc}") from exc
-        if evaluation.objective_key < incumbent.objective_key:
-            if "standard" in existing.metadata:
+        candidate_objective_key = candidate_evaluation.objective_key
+        incumbent_objective_key = incumbent_evaluation.objective_key
+        if candidate_objective_key < incumbent_objective_key:
+            if "standard" in incumbent_bks.metadata:
                 raise ValueError("Cannot replace a manifest-bound incumbent without verifying its family manifest")
-            preserve_claim_record(path, existing)
+            preserve_claim_record(path, incumbent_bks)
             action = "replaced"
         else:
-            tie = evaluation.objective_key == incumbent.objective_key
+            tie = candidate_objective_key == incumbent_objective_key
             action = "kept_existing"
     if action != "kept_existing":
-        save_bks(candidate, path)
-    return BKSUpdateResult(action, path, previous, evaluation.display_cost, len(evaluation.routes), tie)
+        write_bks_file(candidate_bks, path)
+    return BKSUpdateResult(action, path, previous, candidate_evaluation.display_cost, len(candidate_evaluation.routes), tie)
 
 
 def save_bks_if_improved(
-    instance: AnyBenchmarkInstance,
-    bks: BenchmarkBKS,
+    instance: LoadedStaticInstance,
+    candidate_bks: BenchmarkBKS,
     instance_path: str | Path,
     *,
     backend: ExactBackend = "native",
 ) -> BKSUpdateResult:
     """Recheck the candidate and incumbent and replace only on a strict improvement."""
-    prepared = prepare_static(instance, backend=backend, objective_function=bks.objective_function)
-    candidate, evaluation = _candidate(prepared, get_instance_identifier(instance), bks,
-                                       bks.metadata.get("authors"), bks.metadata)
-    return _store(get_bks_path_for_instance(instance_path, prepared.objective), prepared, candidate, evaluation)
+    prepared = prepare_static(instance, backend=backend, objective_function=candidate_bks.objective_function)
+    candidate_bks, candidate_evaluation = _candidate(
+        prepared, get_instance_identifier(instance), candidate_bks, candidate_bks.metadata.get("authors"),
+        candidate_bks.metadata,
+    )
+    return _store(get_bks_path_for_instance(instance_path, prepared.objective), prepared, candidate_bks, candidate_evaluation)
 
 
 def save_solution_as_bks_if_improved(
@@ -152,6 +161,7 @@ def save_solution_as_bks_if_improved(
     """Load and prepare the instance once, check both submissions and store the winner."""
     instance = hydrate_collection_instance(load_benchmark_instance(instance_path), instance_path)
     prepared = prepare_static(instance, backend=backend, objective_function=objective_function)
-    candidate, evaluation = _candidate(prepared, get_instance_identifier(instance), solution, authors,
-                                       metadata)
-    return _store(get_bks_path_for_instance(instance_path, prepared.objective), prepared, candidate, evaluation)
+    candidate_bks, candidate_evaluation = _candidate(
+        prepared, get_instance_identifier(instance), solution, authors, metadata,
+    )
+    return _store(get_bks_path_for_instance(instance_path, prepared.objective), prepared, candidate_bks, candidate_evaluation)

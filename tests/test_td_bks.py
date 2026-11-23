@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from mamut_routing_lib.artifacts import get_bks_path_for_instance, load_bks, save_bks
+from mamut_routing_lib.artifacts import get_bks_path_for_instance, load_bks, write_bks_file
 from mamut_routing_lib.enums import ObjectiveFunction
 from mamut_routing_lib.models import BenchmarkBKS, BenchmarkSolution, OptimalityMetadata
 from mamut_routing_lib.td import (
@@ -143,7 +143,7 @@ def _store_legacy(loaded, solution):
     price = check_td_solution(loaded, solution).routing_cost
     bks = BenchmarkBKS(instance_name=solution.instance_name, objective_function=ObjectiveFunction.DURATION,
                        routes=solution.routes, cost=price, metadata={'authors': AUTHORS})
-    save_bks(bks, get_bks_path_for_instance(loaded.instance_path, ObjectiveFunction.DURATION))
+    write_bks_file(bks, get_bks_path_for_instance(loaded.instance_path, ObjectiveFunction.DURATION))
 
 
 def test_annotate_optimality_stamps_and_round_trips(toy_loaded):
@@ -236,7 +236,7 @@ def test_exact_candidate_and_legacy_proof_display_collision(tmp_path):
     store = get_bks_path_for_instance(path, ObjectiveFunction.DURATION)
     incumbent = BenchmarkBKS(instance_name=loaded.instance.instance_name, routes=[[1, 2]], cost=huge,
                              objective_function=ObjectiveFunction.DURATION, metadata={'authors': AUTHORS, 'optimality': _optimality()})
-    save_bks(incumbent, store)
+    write_bks_file(incumbent, store)
     original = store.read_bytes()
     def submit(routes):
         return save_td_solution_as_bks_if_improved(loaded, _solution(loaded, routes), authors=AUTHORS, backend='python')
@@ -249,7 +249,7 @@ def test_exact_candidate_and_legacy_proof_display_collision(tmp_path):
     assert (store.parent / '.bks-history' / (sha256(original).hexdigest()+'.json')).read_bytes() == original
     assert submit([[1, 2]]).action == 'kept_existing'
     stored.metadata['exact_evaluation']['route_evaluations'][0]['duration']['numerator'] = '0'
-    save_bks(stored, store)
+    write_bks_file(stored, store)
     with pytest.raises(ValueError, match='route_evaluations'):
         submit([[2, 1]])
 
@@ -271,7 +271,7 @@ def test_legacy_reprice_refuses_exact_record_before_loading_artifacts(toy_loaded
     bks = create_td_bks_from_solution(toy_loaded, _solution(toy_loaded, [[1], [2]]), authors=AUTHORS, backend='python')
     bks.metadata[marker] = bks.metadata.pop('exact_evaluation')
     path = get_bks_path_for_instance(toy_loaded.instance_path, bks.objective_function)
-    save_bks(bks, path)
+    write_bks_file(bks, path)
     original = path.read_bytes()
     for dry_run in (True, False):
         report = reprice_td_bks(path, dry_run=dry_run)

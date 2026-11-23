@@ -9,7 +9,7 @@ from mamut_routing_lib.checker import SolutionCheckStatus
 from mamut_routing_lib.enums import ObjectiveFunction
 from mamut_routing_lib.exact_static import prepare_static
 from mamut_routing_lib.exact_types import ExactRouteError
-from mamut_routing_lib.models import BenchmarkInstance, BenchmarkInstanceCVRP
+from mamut_routing_lib.models import BenchmarkInstanceVRPTW, BenchmarkInstanceCVRP
 
 
 @pytest.fixture(params=["python", "native"])
@@ -29,7 +29,7 @@ def instance(matrix, *, windows=None, services=None, **fields):
     data.update(fields)
     if windows is None:
         return BenchmarkInstanceCVRP.model_construct(**data)
-    return BenchmarkInstance.model_construct(**data, time_windows=windows, service_times=services)
+    return BenchmarkInstanceVRPTW.model_construct(**data, time_windows=windows, service_times=services)
 
 
 def test_binary64_operands_and_canonical_routes(backend):

@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from mamut_routing_lib.artifacts import get_bks_path_for_instance, load_bks, save_bks
+from mamut_routing_lib.artifacts import get_bks_path_for_instance, load_bks, write_bks_file
 from mamut_routing_lib.bks import BKSUpdateResult
 from mamut_routing_lib.enums import ObjectiveFunction
 from mamut_routing_lib.models import BenchmarkBKS, BenchmarkSolution, OptimalityMetadata, SolverReportedOptimality
@@ -103,33 +103,35 @@ def save_td_solution_as_bks_if_improved(
 
     loaded = _as_loaded(loaded)
     checker = _checker(loaded, objective_function, backend)
-    bks, candidate = _candidate(loaded, checker, solution, authors, metadata)
+    candidate_bks, candidate_evaluation = _candidate(loaded, checker, solution, authors, metadata)
     path = get_bks_path_for_instance(loaded.instance_path, checker.objective)
     previous = None
     tie = False
     action = 'created'
     if path.exists():
         previous = path
-        incumbent = load_bks(path)
-        if incumbent.instance_name != bks.instance_name or incumbent.objective_function != checker.objective:
+        incumbent_bks = load_bks(path)
+        if incumbent_bks.instance_name != candidate_bks.instance_name or incumbent_bks.objective_function != checker.objective:
             raise ValueError(f'Stored BKS identifies a different instance or objective at {path}')
         try:
-            existing = checker.evaluate(incumbent.routes)
-            verify_stored(incumbent, existing)
+            incumbent_evaluation = checker.evaluate(incumbent_bks.routes)
+            verify_stored(incumbent_bks, incumbent_evaluation)
         except ValueError as error:
             raise ValueError(f'Stored BKS is invalid at {path}: {error}') from error
-        tie = candidate.objective_key == existing.objective_key
-        if candidate.objective_key < existing.objective_key:
-            if 'standard' in incumbent.metadata:
+        candidate_objective_key = candidate_evaluation.objective_key
+        incumbent_objective_key = incumbent_evaluation.objective_key
+        tie = candidate_objective_key == incumbent_objective_key
+        if candidate_objective_key < incumbent_objective_key:
+            if 'standard' in incumbent_bks.metadata:
                 raise ValueError('cannot replace a metadata.standard incumbent until its family manifest can be verified')
-            preserve_claim_record(path, incumbent)
+            preserve_claim_record(path, incumbent_bks)
             action = 'replaced'
         else:
             action = 'kept_existing'
     if action != 'kept_existing':
-        save_bks(bks, path)
+        write_bks_file(candidate_bks, path)
     return BKSUpdateResult(action=action, path=path, previous_path=previous, tie=tie,
-                           candidate_cost=candidate.display_cost, candidate_num_routes=len(candidate.routes))
+                           candidate_cost=candidate_evaluation.display_cost, candidate_num_routes=len(candidate_evaluation.routes))
 
 
 # Historical annotations compare solver-reported numbers with a rounded legacy cost.
@@ -189,5 +191,5 @@ def annotate_td_bks_optimality(
     if record != bks.metadata.get('optimality'):
         stamped = BenchmarkBKS(**{**bks.model_dump(), 'metadata': {**bks.metadata, 'optimality': record}})
         preserve_claim_record(path, bks)
-        save_bks(stamped, path)
+        write_bks_file(stamped, path)
     return path

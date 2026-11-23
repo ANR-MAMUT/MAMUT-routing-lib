@@ -10,7 +10,7 @@ from mamut_routing_lib.artifacts import get_bks_path_for_instance, load_bks
 from mamut_routing_lib.cli import app
 from mamut_routing_lib.enums import ObjectiveFunction
 from mamut_routing_lib.json_utils import save_json_to_file
-from mamut_routing_lib.models import BenchmarkInstance
+from mamut_routing_lib.models import BenchmarkInstanceVRPTW
 
 
 pytest.importorskip("pyvrp")
@@ -28,7 +28,7 @@ def _write_instance(tmp_path: Path, instance) -> Path:
     return target
 
 
-def _write_historical_instance(benchmarks_dir: Path, instance: BenchmarkInstance) -> Path:
+def _write_historical_instance(benchmarks_dir: Path, instance: BenchmarkInstanceVRPTW) -> Path:
     target = (
         benchmarks_dir
         / "VRPTW"
@@ -40,8 +40,8 @@ def _write_historical_instance(benchmarks_dir: Path, instance: BenchmarkInstance
     return target
 
 
-def _make_historical_vrptw(*, benchmark_name: str) -> BenchmarkInstance:
-    return BenchmarkInstance(
+def _make_historical_vrptw(*, benchmark_name: str) -> BenchmarkInstanceVRPTW:
+    return BenchmarkInstanceVRPTW(
         instance_name="C101",
         instance_origin="Solomon1987",
         benchmark_name=benchmark_name,

@@ -7,7 +7,7 @@ import math
 import pytest
 
 from mamut_routing_lib import (
-    BenchmarkInstance,
+    BenchmarkInstanceVRPTW,
     BenchmarkInstanceCVRPCollection,
     BenchmarkInstanceVRPTWCollection,
     MetricVariant,
@@ -68,7 +68,7 @@ class TestCollectionDiscovery:
         assert item.base_instance_name is None
         assert item.metric_variant is None and item.place_slug is None and item.subset is None
         assert item.instance_id == "vrptw-sintef2008-n2-toy-h1"
-        assert isinstance(item.load(), BenchmarkInstance)
+        assert isinstance(item.load(), BenchmarkInstanceVRPTW)
 
     def test_instance_ids_are_unique(self, benchmarks_root):
         items = discover_benchmark_instances(benchmarks_root)

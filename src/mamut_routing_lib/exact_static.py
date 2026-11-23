@@ -13,7 +13,7 @@ from mamut_routing_lib.exact_types import (
     STATIC_PROFILE, ExactBackend, ExactEvaluation, ExactRouteError, binary64_operand,
     canonical_checked_routes, exact_resource, nonnegative_integer,
 )
-from mamut_routing_lib.models import BenchmarkInstance, BenchmarkInstanceCVRP
+from mamut_routing_lib.models import BenchmarkInstanceVRPTW, BenchmarkInstanceCVRP
 from mamut_routing_lib.objectives import base_objective, require_supported_objective
 
 Routes = tuple[tuple[int, ...], ...]
@@ -79,7 +79,7 @@ class PreparedStatic:
 
 
 def prepare_static(
-    instance: BenchmarkInstance | BenchmarkInstanceCVRP,
+    instance: BenchmarkInstanceVRPTW | BenchmarkInstanceCVRP,
     *,
     backend: ExactBackend = "native",
     objective_function: ObjectiveFunction | str | None = None,
@@ -89,7 +89,7 @@ def prepare_static(
     The native backend stores exact cost and temporal operands on a common
     integer scale. The Python reference stores their exact binary64 fractions.
     """
-    if not isinstance(instance, (BenchmarkInstance, BenchmarkInstanceCVRP)):
+    if not isinstance(instance, (BenchmarkInstanceVRPTW, BenchmarkInstanceCVRP)):
         raise ValueError("prepare_static requires a materialized static instance with an arc matrix")
     objective = base_objective(instance) if objective_function is None else ObjectiveFunction(objective_function)
     require_supported_objective(instance, objective)
@@ -111,7 +111,7 @@ def prepare_static(
         raise ValueError("invalid arc matrix dimensions")
 
     opens, closes, services = [], [], []
-    if isinstance(instance, BenchmarkInstance):
+    if isinstance(instance, BenchmarkInstanceVRPTW):
         windows = instance.time_windows
         if not isinstance(windows, (list, tuple)) or len(windows) != vertices:
             raise ValueError("invalid time window dimensions")

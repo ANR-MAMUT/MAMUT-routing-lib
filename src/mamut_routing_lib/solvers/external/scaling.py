@@ -4,13 +4,13 @@ Most literature solvers work in integers, or round distances to integers, and
 have numeric limits (HGS-CVRP refuses distances above 1e5, AILS-II keeps its
 acceptance threshold in an ``int``, LKH-3 multiplies costs by ``PRECISION``
 inside 32-bit integers). This module picks a scale factor ``s`` per solver and
-instance and says whether the scaled problem is *exactly* the published one.
+instance. For an explicit matrix, an exact scale preserves each operand's shortest decimal spelling. The BKS checker separately evaluates the submitted routes on the materialized binary64 operands.
 
 Explicit matrices (:func:`plan_explicit_scale`):
 
 - **Exact**: ``s = 10**K`` where ``K`` is the largest number of decimals among
-  arc costs, time windows and service times, as the checker reads them
-  (``checker.exact_cost_value``, asked rather than restated). Mamut2026 and
+  the shortest decimal spellings of arc costs, time windows and service times
+  (``checker.shortest_decimal_cost_value``). Mamut2026 and
   Poryos2026 matrices have 3 decimals, so ``s = 1000``; Dimacs2021 is already
   integral (``s = 1``). Used when the scaled largest arc, star bound and
   largest due date fit the solver's limits. The solver's reported cost then
@@ -18,8 +18,8 @@ Explicit matrices (:func:`plan_explicit_scale`):
 - **Approximate**: otherwise (full-precision Sintef2008 doubles, or limits too
   tight), the largest ``s = 10**k`` that fits. CVRP rounds to nearest. VRPTW
   rounds *conservatively*: travel times, service times and ready times up, due
-  dates down, so any schedule the solver finds feasible is feasible for the
-  checker on the published data.
+  dates down under this decimal reading. The BKS checker independently verifies
+  the solution against the benchmark's evaluation profile.
 
 Coordinates (:func:`plan_coordinate_scale`, for solvers that compute Euclidean
 distances themselves): the first candidate factor from the solver's list whose
@@ -112,18 +112,14 @@ class ScalePlan:
 
 
 def _exact_value(value: int | float) -> Fraction:
-    """The exact value the checker and the BKS store give a published number.
-
-    Asked of ``checker.exact_cost_value`` at each call rather than restated here, so that the
-    scaler calls a matrix exact by the same definition the store prices it with.
-    """
+    """Interpret a matrix operand on the adapter's shortest-decimal scale."""
     from mamut_routing_lib import checker
 
-    return checker.exact_cost_value(value)
+    return checker.shortest_decimal_cost_value(value)
 
 
 def decimal_places(value: int | float, *, limit: int = MAX_DECIMALS) -> int | None:
-    """Decimals of the value as the checker reads it (``0.125`` -> 3, ``7`` -> 0), ``None`` above ``limit``."""
+    """Decimals in the shortest spelling (``0.125`` -> 3, ``7`` -> 0), ``None`` above ``limit``."""
     denominator = _exact_value(value).denominator
     twos = fives = 0
     while denominator % 2 == 0:
@@ -142,8 +138,8 @@ def max_decimals(values: Any, *, limit: int = MAX_DECIMALS) -> int | None:
     A round trip, not a tolerance: ``0.123`` has 3 decimals; a full-precision
     double such as ``265.88719412562915`` (Sintef2008) or float noise such as
     ``0.30000000000000004`` has none within the limit. The round trip is a fast
-    stand-in for the checker's exact reading; the answer is confirmed against
-    that reading (:func:`agrees_with_checker`) and is ``None`` when they differ.
+    estimate of the shortest-decimal reading. Confirm the answer against
+    that reading with :func:`agrees_with_checker` and return ``None`` on disagreement.
     """
     flat = _flatten(values)
     if not flat:
@@ -168,11 +164,11 @@ def max_decimals(values: Any, *, limit: int = MAX_DECIMALS) -> int | None:
 
 
 def agrees_with_checker(values: Any, places: int, *, sample: int = 4096) -> bool:
-    """Whether the checker reads every sampled value as a multiple of ``10**-places``.
+    """Whether each sampled shortest decimal value is a multiple of ``10**-places``.
 
     ``max_decimals`` decides by a float round trip, and collections declare their
     decimals (``cvrplib.collection_cost_decimals``); an exact scale is only sound if
-    the checker's exact reading agrees. ``sample`` values, evenly strided through
+    its shortest-decimal reading agrees. ``sample`` values, evenly strided through
     ``values`` (a flat sequence or rows), are checked with that reading.
     """
     rows = values if isinstance(values, (list, tuple)) else ([] if values is None else list(values))
@@ -186,11 +182,11 @@ def agrees_with_checker(values: Any, places: int, *, sample: int = 4096) -> bool
 
 
 def _declared_or_measured(values: Any, declared: int | None) -> int | None:
-    """The declared decimals when every value has them and the checker agrees, else ``max_decimals``.
+    """The declared decimals when every value fits and sampled shortest decimals agree, else ``max_decimals``.
 
     A declaration is a claim about the data, not a fact: every value is read (a float round
-    trip, as ``max_decimals`` does) before the result is called exact, and the checker's exact
-    reading is then asked on a sample. One value with more decimals than declared makes the
+    trip, as ``max_decimals`` does) before the result is called exact, and the shortest decimals
+    are checked on a sample. One value with more decimals than declared makes the
     data be measured instead, so an exact plan never rests on rounded input.
     """
     if declared is not None:
@@ -379,7 +375,7 @@ def plan_float_matrix_scale(
     The matrix is written in decimal (``format_float_matrix``), so no integer rounding happens:
     at factor 1 the solver reads exactly the published doubles; at ``10**-k`` the scaled values
     are exact decimals when the data have finitely many decimals (``decimals_hint`` or
-    ``max_decimals``), so the scaled problem is the published one up to a constant factor.
+    ``max_decimals``), so scaling preserves the shortest-decimal values exactly.
     """
     largest_arc = _max_arc(arc_costs)
     star = star_bound(arc_costs, depot)

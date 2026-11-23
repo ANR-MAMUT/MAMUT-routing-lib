@@ -42,12 +42,12 @@ def test_max_decimals_is_a_round_trip_not_a_tolerance() -> None:
 
 
 def test_the_round_trip_matches_the_checkers_reading_on_published_data() -> None:
-    from mamut_routing_lib.checker import exact_cost_value
+    from mamut_routing_lib.checker import shortest_decimal_cost_value
 
     rng = random.Random(5)
     values = [round(rng.uniform(0, 2e5), 3) for _ in range(2000)]  # Mamut2026 / Poryos2026 style
     assert max_decimals(values) == 3
-    assert all((exact_cost_value(value) * 1000).denominator == 1 for value in values)
+    assert all((shortest_decimal_cost_value(value) * 1000).denominator == 1 for value in values)
     assert agrees_with_checker([values[:1000], values[1000:]], 3) and not agrees_with_checker(values, 2)
 
 
@@ -63,14 +63,14 @@ def test_declared_decimals_are_checked_on_every_value() -> None:
     assert scaled_matrix[0][1] == 12345
 
 
-def test_exactness_is_whatever_the_checker_says(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The scaler asks ``checker.exact_cost_value`` what a value is exactly; it never restates it."""
+def test_scale_uses_shared_shortest_decimal_reading(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The adapter delegates interpretation of each sampled value to the named decimal helper."""
     from mamut_routing_lib import checker
 
     matrix = [[0, 12.345, 7.1], [12.344, 0, 3.003], [7.1, 3.0, 0]]
     assert plan_explicit_scale(matrix).exact
     # A checker that read floats as their binary values: non-dyadic decimals become full precision.
-    monkeypatch.setattr(checker, "exact_cost_value", lambda value: Fraction(value))
+    monkeypatch.setattr(checker, "shortest_decimal_cost_value", lambda value: Fraction(value))
     assert decimal_places(0.125) == 3 and decimal_places(0.1) is None
     assert max_decimals(matrix) is None
     assert not plan_explicit_scale(matrix, limits=Limits(max_arc_cost=1e6)).exact

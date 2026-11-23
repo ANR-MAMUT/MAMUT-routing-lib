@@ -5,7 +5,7 @@ from pathlib import Path
 from mamut_routing_lib.sidecars import CollectionMarker, save_collection_marker
 
 from mamut_routing_lib import (
-    BenchmarkInstance,
+    BenchmarkInstanceVRPTW,
     BenchmarkInstanceCVRP,
     BenchmarkSolution,
     DEFAULT_BKS_AUTHORS,
@@ -56,8 +56,8 @@ def make_cvrp_instance() -> BenchmarkInstanceCVRP:
     )
 
 
-def make_vrptw_instance() -> BenchmarkInstance:
-    return BenchmarkInstance(
+def make_vrptw_instance() -> BenchmarkInstanceVRPTW:
+    return BenchmarkInstanceVRPTW(
         instance_name="poryos-n2-testvrptw",
         instance_origin="OsmCvrpGen",
         benchmark_name="Poryos2026",

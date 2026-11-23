@@ -7,7 +7,7 @@ from typer.testing import CliRunner
 from mamut_routing_lib.cli import app, _local_instance_record
 from mamut_routing_lib.enums import MetricVariant
 from mamut_routing_lib.json_utils import save_json_to_file
-from mamut_routing_lib.models import BenchmarkInstance
+from mamut_routing_lib.models import BenchmarkInstanceVRPTW
 
 
 def _runner() -> CliRunner:
@@ -20,8 +20,8 @@ def _write(tmp_path: Path, instance) -> Path:
     return target
 
 
-def _make_historical_vrptw_with_metric_metadata() -> BenchmarkInstance:
-    return BenchmarkInstance(
+def _make_historical_vrptw_with_metric_metadata() -> BenchmarkInstanceVRPTW:
+    return BenchmarkInstanceVRPTW(
         instance_name="C101",
         instance_origin="Solomon1987",
         benchmark_name="Sintef2008",

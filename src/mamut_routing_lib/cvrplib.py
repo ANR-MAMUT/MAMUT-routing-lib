@@ -56,15 +56,15 @@ from pathlib import Path
 from typing import Any, Callable, Literal, Sequence
 
 from mamut_routing_lib.artifacts import (
-    AnyBenchmarkInstance,
     instance_problem_type,
     load_benchmark_instance,
     resolve_arc_costs,
 )
 from mamut_routing_lib.enums import BenchmarkName, MetricVariant, ProblemType
 from mamut_routing_lib.models import (
+    AnyStaticBenchmarkInstance,
     ArcCostsEuclidean,
-    BenchmarkInstance,
+    BenchmarkInstanceVRPTW,
     BenchmarkInstanceCVRPCollection,
     BenchmarkInstanceVRPTWCollection,
 )
@@ -319,7 +319,7 @@ def _is_collection(instance: Any) -> bool:
 
 
 def _is_vrptw(instance: Any) -> bool:
-    return isinstance(instance, (BenchmarkInstance, BenchmarkInstanceVRPTWCollection))
+    return isinstance(instance, (BenchmarkInstanceVRPTW, BenchmarkInstanceVRPTWCollection))
 
 
 def _reject_time_dependent(instance: Any) -> None:
@@ -330,7 +330,7 @@ def _reject_time_dependent(instance: Any) -> None:
         )
 
 
-def instance_metric_variant(instance: AnyBenchmarkInstance) -> MetricVariant | None:
+def instance_metric_variant(instance: AnyStaticBenchmarkInstance) -> MetricVariant | None:
     """The metric of an instance: ``metric_variant`` (collection) or the
     ``metadata.metric_variant`` that enriched historical instances carry."""
     value = getattr(instance, "metric_variant", None)
@@ -350,7 +350,7 @@ def _arc_within_rounding(cost: float, distance: float) -> bool:
 
 
 def coordinates_define_arc_costs(
-    instance: AnyBenchmarkInstance,
+    instance: AnyStaticBenchmarkInstance,
     arc_costs: Sequence[Sequence[Any]] | None = None,
 ) -> bool:
     """True when a coordinates-only export (``EUC_2D``, Solomon) reproduces the instance.
@@ -413,7 +413,7 @@ def is_symmetric_matrix(arc_costs: Sequence[Sequence[Any]]) -> bool:
 
 
 def _require_coordinate_costs(
-    instance: AnyBenchmarkInstance,
+    instance: AnyStaticBenchmarkInstance,
     what: str,
     arc_costs: Sequence[Sequence[Any]] | None,
 ) -> None:
@@ -431,7 +431,7 @@ def _require_coordinate_costs(
         )
 
 
-def collection_cost_decimals(instance: AnyBenchmarkInstance) -> int | None:
+def collection_cost_decimals(instance: AnyStaticBenchmarkInstance) -> int | None:
     """Fixed decimals of a collection matrix (``None`` for embedded matrices)."""
     if not _is_collection(instance):
         return None
@@ -441,7 +441,7 @@ def collection_cost_decimals(instance: AnyBenchmarkInstance) -> int | None:
     return DEFAULT_COST_DECIMALS
 
 
-def format_vrp_comment(instance: AnyBenchmarkInstance, *, edge_weight_type: EdgeWeightType = "EXPLICIT") -> str:
+def format_vrp_comment(instance: AnyStaticBenchmarkInstance, *, edge_weight_type: EdgeWeightType = "EXPLICIT") -> str:
     """The default COMMENT, reconstructed from the instance JSON alone.
 
     Collection instances reproduce the comment of the committed family
@@ -474,7 +474,7 @@ def format_vrp_comment(instance: AnyBenchmarkInstance, *, edge_weight_type: Edge
 
 
 def _explicit_matrix(
-    instance: AnyBenchmarkInstance,
+    instance: AnyStaticBenchmarkInstance,
     arc_costs: Sequence[Sequence[Any]] | None,
     instance_path: str | Path | None,
     collection_root: str | Path | None,
@@ -493,7 +493,7 @@ def _explicit_matrix(
 
 
 def instance_to_vrp_text(
-    instance: AnyBenchmarkInstance,
+    instance: AnyStaticBenchmarkInstance,
     arc_costs: Sequence[Sequence[Any]] | None = None,
     *,
     instance_path: str | Path | None = None,

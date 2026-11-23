@@ -21,7 +21,7 @@ import pytest
 
 from mamut_routing_lib import (
     BenchmarkBKS,
-    BenchmarkInstance,
+    BenchmarkInstanceVRPTW,
     BenchmarkSolution,
     BenchmarkName,
     ObjectiveFunction,
@@ -29,7 +29,7 @@ from mamut_routing_lib import (
     discover_benchmark_instances,
     load_benchmark_instance,
     load_bks,
-    save_bks,
+    write_bks_file,
     save_json_to_file,
 )
 from mamut_routing_lib.artifacts import build_instance_id, parse_collection_layout
@@ -164,14 +164,14 @@ def test_instance_metadata_license_defaults_to_none() -> None:
 # --- end-to-end with synthetic Ortec-shaped instance + BKS ----------------
 
 
-def _ortec_shaped_instance() -> BenchmarkInstance:
+def _ortec_shaped_instance() -> BenchmarkInstanceVRPTW:
     """Tiny VRPTW instance using the Ortec2022 dict-metadata shape.
 
     Asymmetric arc_costs, num_vehicles=None (unlimited), free-form metadata
     carrying authors/license/subset/provider — same field structure the
     migration script will produce.
     """
-    return BenchmarkInstance(
+    return BenchmarkInstanceVRPTW(
         instance_name="ORTEC-VRPTW-ASYM-test-d1-n2-k2",
         instance_origin="Ortec2022",
         benchmark_name="Ortec2022",
@@ -237,7 +237,7 @@ def test_ortec_shaped_bks_validates_and_round_trips_via_load_bks(tmp_path: Path)
         },
     )
     bks_path = instance_path.parent / f"{instance.instance_name}.bks.MonoCost.json"
-    save_bks(bks, bks_path)
+    write_bks_file(bks, bks_path)
     assert bks_path.is_file()
 
     reloaded = load_bks(bks_path)
@@ -311,7 +311,7 @@ def test_load_benchmark_instance_round_trips_ortec_dict_metadata(tmp_path: Path)
 
     reloaded = load_benchmark_instance(instance_path)
     # Ortec instances use the dict-metadata branch of the union.
-    assert isinstance(reloaded, BenchmarkInstance)
+    assert isinstance(reloaded, BenchmarkInstanceVRPTW)
     assert reloaded.metadata["license"] == "CC BY-NC 4.0"
     assert reloaded.metadata["subset"] == "final"
     assert reloaded.num_vehicles is None

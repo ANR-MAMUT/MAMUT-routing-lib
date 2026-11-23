@@ -1,26 +1,9 @@
-"""The static solution checker: the authority on what a CVRP/VRPTW solution costs.
+"""Historical static checking and objective comparison helpers.
 
-``check_solution`` validates a solution against an embedded-matrix instance
-(customer indices, single service, capacity, time windows with waiting at
-``ready`` and hard ``due`` dates, fleet size) and prices it by summing the
-instance's ``arc_costs`` along each route, depot to depot, in plain Python
-arithmetic (ints stay ints, floats accumulate left to right). Every stored BKS
-cost is this value. Slim collection instances must be hydrated first
-(``artifacts.hydrate_collection_instance``); time-dependent instances use
-``mamut_routing_lib.td.checker``.
-
-``is_better_solution`` defines the order of each objective: ``MonoCost``,
-``Duration`` and ``FleetCostDuration`` compare the cost alone,
-``HierarchicalVehicleCost`` compares the route count first.
-
-The float total depends on the order in which arcs are added, so the same
-route set listed in another order, reversed on a symmetric matrix, or a
-different route set with the same exact cost can price a few ulps apart. The
-BKS store therefore never ranks solutions on float totals: it compares
-``compute_exact_solution_cost`` (the exact rational sum of the decimal arc
-costs written in the instance, see ``exact_cost_value``) with
-``is_better_exact``, so a tie is a tie. Stored BKS keep their routes in
-``canonical_route_order`` and their ``cost`` is the float total in that order.
+The compatibility checker follows the released Python summation and time-window
+recurrences on an embedded CVRP or VRPTW matrix. External integer-scaled solver
+adapters can also compute rational costs from shortest decimal spellings. The
+v0.13 BKS store uses the binary64-exact evaluation in ``exact_static``.
 """
 
 from __future__ import annotations
@@ -31,9 +14,8 @@ from numbers import Integral
 
 from pydantic import BaseModel, ConfigDict
 
-from mamut_routing_lib.artifacts import AnyBenchmarkInstance
 from mamut_routing_lib.enums import ObjectiveFunction
-from mamut_routing_lib.models import BenchmarkBKS, BenchmarkInstance, BenchmarkInstanceCVRP, BenchmarkSolution
+from mamut_routing_lib.models import BenchmarkBKS, BenchmarkInstanceVRPTW, BenchmarkInstanceCVRP, BenchmarkSolution, LoadedStaticInstance
 
 
 class SolutionCheckStatus(str, Enum):
@@ -85,8 +67,15 @@ def _iter_routes(solution_or_routes: BenchmarkSolution | BenchmarkBKS | list[lis
     return solution_or_routes.routes
 
 
-def compute_route_cost(instance: AnyBenchmarkInstance, route: list[int]) -> int | float:
+def _require_static_matrix(instance: LoadedStaticInstance) -> None:
+    if not isinstance(instance, LoadedStaticInstance):
+        raise TypeError("Expected a loaded static instance with an arc matrix. Hydrate slim collection "
+                        "instances first. Time-dependent instances require the TD checker and ATFs.")
+
+
+def compute_route_cost(instance: LoadedStaticInstance, route: list[int]) -> int | float:
     """Cost of one route: ``depot -> route[0] -> ... -> route[-1] -> depot`` over ``instance.arc_costs`` (no feasibility check)."""
+    _require_static_matrix(instance)
     total_cost: int | float = 0
     previous_node = instance.depot
     for customer in route:
@@ -97,10 +86,11 @@ def compute_route_cost(instance: AnyBenchmarkInstance, route: list[int]) -> int 
 
 
 def compute_solution_cost(
-    instance: AnyBenchmarkInstance,
+    instance: LoadedStaticInstance,
     solution_or_routes: BenchmarkSolution | BenchmarkBKS | list[list[int]],
 ) -> int | float:
     """Sum of ``compute_route_cost`` over the routes of a solution, BKS or plain route list."""
+    _require_static_matrix(instance)
     return sum(compute_route_cost(instance, route) for route in _iter_routes(solution_or_routes))
 
 
@@ -109,14 +99,11 @@ def canonical_route_order(routes: list[list[int]]) -> list[list[int]]:
     return sorted(routes, key=lambda route: route[0])
 
 
-def exact_cost_value(value: int | float) -> Fraction:
-    """The exact decimal value a stored cost denotes.
+def shortest_decimal_cost_value(value: int | float) -> Fraction:
+    """Keep integers exact and interpret a float's shortest round-trip decimal spelling.
 
-    Integers map to themselves; a float maps to the decimal number its
-    shortest ``repr`` spells (``0.1`` is one tenth, not the nearest binary
-    double). That is the value written in the instance or BKS JSON, and the map
-    is injective and strictly increasing on finite doubles, so it never merges
-    two distinct costs or swaps their order.
+    For example, the float 0.1 maps to 1/10. Multiple source decimal tokens
+    can round to that same float, so the spelling alone cannot recover them.
     """
     if isinstance(value, bool):
         raise TypeError("a cost cannot be a boolean")
@@ -125,28 +112,29 @@ def exact_cost_value(value: int | float) -> Fraction:
     return Fraction(repr(float(value)))
 
 
-def compute_exact_solution_cost(
-    instance: AnyBenchmarkInstance,
+def compute_shortest_decimal_solution_cost(
+    instance: LoadedStaticInstance,
     solution_or_routes: BenchmarkSolution | BenchmarkBKS | list[list[int]],
 ) -> Fraction:
-    """Exact rational routing cost: the sum of ``exact_cost_value`` over every arc, depot to depot.
+    """Exact rational routing cost: the sum of ``shortest_decimal_cost_value`` over every arc, depot to depot.
 
     Independent of route order and, on a symmetric matrix, of route direction.
     No feasibility check.
     """
+    _require_static_matrix(instance)
     total = Fraction(0)
     depot = instance.depot
     for route in _iter_routes(solution_or_routes):
         previous_node = depot
         for customer in route:
-            total += exact_cost_value(instance.arc_costs[previous_node][customer])
+            total += shortest_decimal_cost_value(instance.arc_costs[previous_node][customer])
             previous_node = customer
-        total += exact_cost_value(instance.arc_costs[previous_node][depot])
+        total += shortest_decimal_cost_value(instance.arc_costs[previous_node][depot])
     return total
 
 
-def _check_common_route_constraints(
-    instance: AnyBenchmarkInstance,
+def _evaluate_static_routes(
+    instance: LoadedStaticInstance,
     routes: list[list[int]],
     *,
     validate_time_windows: bool,
@@ -184,7 +172,7 @@ def _check_common_route_constraints(
             total_cost += travel_cost
 
             if validate_time_windows:
-                assert isinstance(instance, BenchmarkInstance)
+                assert isinstance(instance, BenchmarkInstanceVRPTW)
                 arrival_time = current_time + travel_cost
                 ready_time, due_date = instance.time_windows[customer]
                 if arrival_time < ready_time:
@@ -201,7 +189,7 @@ def _check_common_route_constraints(
         total_cost += instance.arc_costs[previous_node][instance.depot]
 
         if validate_time_windows:
-            assert isinstance(instance, BenchmarkInstance)
+            assert isinstance(instance, BenchmarkInstanceVRPTW)
             arrival_time = current_time + instance.arc_costs[previous_node][instance.depot]
             depot_ready_time, depot_due_date = instance.time_windows[instance.depot]
             if arrival_time < depot_ready_time:
@@ -233,7 +221,9 @@ def check_cvrp_solution(
     solution: BenchmarkSolution | BenchmarkBKS,
 ) -> SolutionCheckResult:
     """Validate and price a solution on a CVRP instance (capacity, coverage, fleet; no timing)."""
-    result = _check_common_route_constraints(instance, solution.routes, validate_time_windows=False)
+    if not isinstance(instance, BenchmarkInstanceCVRP):
+        raise TypeError("check_cvrp_solution requires an embedded CVRP matrix.")
+    result = _evaluate_static_routes(instance, solution.routes, validate_time_windows=False)
     if result.is_valid() and solution.cost is not None and solution.cost != result.routing_cost:
         return SolutionCheckResult.make_invalid(
             SolutionCheckStatus.OBJECTIVE_VALUE_MISMATCH,
@@ -243,11 +233,13 @@ def check_cvrp_solution(
 
 
 def check_vrptw_solution(
-    instance: BenchmarkInstance,
+    instance: BenchmarkInstanceVRPTW,
     solution: BenchmarkSolution | BenchmarkBKS,
 ) -> SolutionCheckResult:
     """Validate and price a solution on a VRPTW instance (capacity, coverage, fleet, time windows with waiting)."""
-    result = _check_common_route_constraints(instance, solution.routes, validate_time_windows=True)
+    if not isinstance(instance, BenchmarkInstanceVRPTW):
+        raise TypeError("check_vrptw_solution requires an embedded VRPTW matrix with time windows.")
+    result = _evaluate_static_routes(instance, solution.routes, validate_time_windows=True)
     if result.is_valid() and solution.cost is not None and solution.cost != result.routing_cost:
         return SolutionCheckResult.make_invalid(
             SolutionCheckStatus.OBJECTIVE_VALUE_MISMATCH,
@@ -257,7 +249,7 @@ def check_vrptw_solution(
 
 
 def check_solution(
-    instance: AnyBenchmarkInstance,
+    instance: LoadedStaticInstance,
     solution: BenchmarkSolution | BenchmarkBKS,
 ) -> SolutionCheckResult:
     """Validate and price ``solution`` on a static instance; the single entry point.
@@ -266,11 +258,7 @@ def check_solution(
     instances (use ``mamut_routing_lib.td.check_td_solution``) and for slim
     collection instances (hydrate them first).
     """
-    if not isinstance(instance, (BenchmarkInstance, BenchmarkInstanceCVRP)):
-        raise TypeError(
-            "Time-dependent instances require the ATF sidecar; "
-            "use mamut_routing_lib.td.check_td_solution instead."
-        )
+    _require_static_matrix(instance)
     if isinstance(instance, BenchmarkInstanceCVRP):
         return check_cvrp_solution(instance, solution)
     return check_vrptw_solution(instance, solution)
@@ -304,7 +292,7 @@ def is_better_solution(
     """True when the candidate strictly precedes the existing solution under ``objective_function`` (see ``get_objective_tuple``).
 
     Compares the float costs as given, so it is order-sensitive at the ulp
-    level; the BKS store uses :func:`is_better_exact` instead.
+    level. The BKS store compares recomputed exact objective keys.
     """
     return get_objective_tuple(candidate_routes, candidate_cost, objective_function) < get_objective_tuple(
         existing_routes,
@@ -320,7 +308,7 @@ def is_better_exact(
     existing_exact_cost: Fraction,
     objective_function: ObjectiveFunction,
 ) -> bool:
-    """``is_better_solution`` on exact costs (``compute_exact_solution_cost``): ties are never improvements."""
+    """Compare the given rational costs under the objective, retaining the incumbent on a tie."""
     return get_objective_tuple(candidate_routes, candidate_exact_cost, objective_function) < get_objective_tuple(
         existing_routes,
         existing_exact_cost,

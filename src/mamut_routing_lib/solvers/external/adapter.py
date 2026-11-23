@@ -501,10 +501,10 @@ class ExternalSolver:
         # HGS-CVRP prints six significant digits, so its integral-looking costs are rounded.
         if exact_cost is not None and self.capabilities.integer_costs:
             try:
-                from mamut_routing_lib.checker import compute_exact_solution_cost
+                from mamut_routing_lib.checker import compute_shortest_decimal_solution_cost
 
-                checker_exact = compute_exact_solution_cost(prepared.checkable, routes)
-                provenance["reported_cost_matches_checker"] = checker_exact == exact_cost
+                shortest_decimal_cost = compute_shortest_decimal_solution_cost(prepared.checkable, routes)
+                provenance["reported_cost_matches_checker"] = shortest_decimal_cost == exact_cost
             except Exception:  # noqa: BLE001 - the checker will reject the routes anyway
                 provenance["reported_cost_matches_checker"] = False
         status = "timeout" if outcome.termination == "timeout" else "feasible"
