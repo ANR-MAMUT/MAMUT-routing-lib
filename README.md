@@ -272,7 +272,10 @@ get coordinates in a unit that fits their limits (FILO2 millimetres). The
 solver runs in its own process group with a hard timeout (budget + grace) and is
 killed with its children on cancellation. A run that ends without a solution
 file reports the last lines the solver printed (an unpatched build rejecting the
-input, a missing library), since the scratch directory is gone by then.
+input, a missing library), since the scratch directory is gone by then. When an
+integer solver on an exact scale reports another cost than the checker's for its
+own routes, the result says so next to the instance: the routes and the checker's
+cost are kept, and the solver worked on other costs than the instance's.
 Provenance (command, executable and input sha256, scale, version, machine) goes
 into the run result and into a BKS stored from it.
 

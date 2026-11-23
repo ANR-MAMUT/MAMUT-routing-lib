@@ -27,6 +27,8 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
+from decimal import Decimal
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -81,6 +83,14 @@ class PreparedInput:
 
 def _fmt_seconds(value: float) -> str:
     return str(int(value)) if float(value).is_integer() else f"{float(value):g}"
+
+
+def _cost_text(value: Fraction) -> str:
+    """An exact cost as a decimal with every digit: ``1234.5``, never ``2469/2`` or a rounded float."""
+    if value.denominator == 1:
+        return str(value.numerator)
+    text = format(Decimal(value.numerator) / Decimal(value.denominator), "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
 
 
 def _last_log_lines(log_tail: str, *, lines: int = 3, width: int = 200) -> str:
@@ -509,6 +519,8 @@ class ExternalSolver:
         except SolutionFormatError as error:
             return SolveResult(**common, status="failed", error=f"unreadable solution file: {error}")
         solver_cost, exact_cost = unscale_cost(raw_cost, plan)
+        # What a caller has to be told about a result that still has routes to check.
+        remarks: list[str] = []
         # Only integer-cost solvers report a cost that can match the checker's exact decimal cost;
         # HGS-CVRP prints six significant digits, so its integral-looking costs are rounded.
         if exact_cost is not None and self.capabilities.integer_costs:
@@ -516,11 +528,25 @@ class ExternalSolver:
                 from mamut_routing_lib.checker import compute_exact_solution_cost
 
                 checker_exact = compute_exact_solution_cost(prepared.checkable, routes)
-                provenance["reported_cost_matches_checker"] = checker_exact == exact_cost
             except Exception:  # noqa: BLE001 - the checker will reject the routes anyway
                 provenance["reported_cost_matches_checker"] = False
+            else:
+                matches = checker_exact == exact_cost
+                provenance["reported_cost_matches_checker"] = matches
+                if not matches:
+                    # The checker's cost stays the cost of the routes. The solver searched with other numbers.
+                    remarks.append(
+                        f"{self.label} reports a cost of {_cost_text(exact_cost)} and the checker prices its routes at "
+                        f"{_cost_text(checker_exact)}, on an exact integer scale: the solver worked on other costs than this instance's"
+                    )
         status = "timeout" if outcome.termination == "timeout" else "feasible"
-        error = None
         if outcome.returncode not in (0, None) and status == "feasible":
-            error = f"the solver exited with code {outcome.returncode} after writing a solution"
-        return SolveResult(**common, status=status, routes=routes, solver_cost=solver_cost, solver_cost_raw=raw_cost, error=error)
+            remarks.append(f"the solver exited with code {outcome.returncode} after writing a solution")
+        return SolveResult(
+            **common,
+            status=status,
+            routes=routes,
+            solver_cost=solver_cost,
+            solver_cost_raw=raw_cost,
+            error="; ".join(remarks) or None,
+        )

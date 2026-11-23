@@ -192,6 +192,15 @@ def test_a_wrong_reported_cost_is_flagged_and_ignored(collection: Path, monkeypa
     assert solved.valid
     assert solved.result.provenance["reported_cost_matches_checker"] is False
     assert solved.cost == pytest.approx(solved.result.solver_cost - 1.0)  # 1000 scaled units = 1.0
+    # The routes are kept (the checker priced them), and the result says that the solver's number is another one.
+    assert solved.result.status == "feasible"
+    assert "the solver worked on other costs than this instance's" in solved.result.error
+    assert f"the checker prices its routes at {solved.cost:.12g}" in solved.result.error
+
+
+def test_a_matching_reported_cost_leaves_no_remark(collection: Path) -> None:
+    solved = run_solver(ExternalSolver(FAKE_LKH), _variant(collection, "CVRP", "fastest"), time_limit_s=5)
+    assert solved.result.provenance["reported_cost_matches_checker"] is True and solved.result.error is None
 
 
 def test_nonzero_exit_with_a_solution_keeps_the_solution(collection: Path, monkeypatch) -> None:

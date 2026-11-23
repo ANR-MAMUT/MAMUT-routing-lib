@@ -81,6 +81,18 @@ def test_solve_with_a_configured_external_solver_and_kept_artifacts(tmp_path: Pa
     assert bks["metadata"]["solver"] == "fake" and bks["metadata"]["input_sha256"]
 
 
+def test_solve_says_when_the_solver_worked_on_other_costs(tmp_path: Path, toy_cvrp_instance, monkeypatch) -> None:
+    """A cost that differs from the checker's on an exact integer scale used to be written to the provenance only."""
+    monkeypatch.setenv("FAKE_MODE", "wrong-cost")
+    result = CliRunner().invoke(
+        app,
+        ["solve", str(_instance(toy_cvrp_instance, tmp_path)), "--solver", "fake", "--solvers-config", str(_config(tmp_path)),
+         "--time-limit-s", "5"],
+    )
+    assert result.exit_code == 0, result.output  # the routes are valid, and COST is the checker's
+    assert "the solver worked on other costs than this instance's" in result.stderr
+
+
 def test_solve_with_an_unavailable_external_solver_is_a_usage_error(tmp_path: Path, toy_cvrp_instance, monkeypatch) -> None:
     monkeypatch.setenv("PATH", "/nonexistent")
     result = CliRunner().invoke(app, ["solve", str(_instance(toy_cvrp_instance, tmp_path)), "--solver", "lkh3"])
