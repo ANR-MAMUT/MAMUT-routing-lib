@@ -10,6 +10,12 @@ Three sources, in increasing precedence:
    (``solvers.external.config``: overrides of built-in external solvers and new
    external solvers).
 
+A built-in is replaced on purpose only. Installing a package is not a purpose:
+an entry point that carries a built-in name is ignored with a warning, and so
+is a second entry point of a name that another package already provides.
+``register_solver`` takes a built-in name with ``replace=True``, and the user
+config overrides the built-in external solvers by design.
+
 Importing this module never imports PyVRP or KAYROS: solvers whose extra is
 missing are listed and report ``availability().available == False``. The user
 config cannot define in-process solvers, so ``get_solver("pyvrp")`` and
@@ -66,6 +72,8 @@ def register_solver(solver: SolverSource, *, name: str | None = None, replace: b
         raise ValueError("register_solver needs a name (the solver has no 'name' attribute)")
     if key in _REGISTERED and not replace:
         raise ValueError(f"a solver named {key!r} is already registered (pass replace=True)")
+    if key in BUILTIN_SOLVERS and not replace:
+        raise ValueError(f"{key!r} is a built-in solver (pass replace=True to replace it on purpose)")
     _REGISTERED[key] = solver
     _CACHE.clear()
 
@@ -110,10 +118,26 @@ def _entry_point_sources() -> dict[str, SolverSource]:
         except Exception:  # noqa: BLE001 - a broken environment must not break listing  # pragma: no cover
             entries = ()
         for entry in entries:
+            package = getattr(getattr(entry, "dist", None), "name", None)
+            origin = f" of {package}" if package else ""
+            if entry.name in BUILTIN_SOLVERS:
+                # Installing a package must not change what `--solver pyvrp` runs and credits.
+                warnings.warn(
+                    f"solver entry point {entry.name!r}{origin} is ignored: {entry.name!r} is a built-in solver, "
+                    "and a plugin needs a name of its own",
+                    stacklevel=2,
+                )
+                continue
+            if entry.name in found:
+                warnings.warn(
+                    f"solver entry point {entry.name!r}{origin} is ignored: another package already provides a solver of that name",
+                    stacklevel=2,
+                )
+                continue
             try:
                 found[entry.name] = entry.load()
             except Exception as error:  # noqa: BLE001 - one broken plugin must not hide the others
-                warnings.warn(f"solver entry point {entry.name!r} failed to load: {error}", stacklevel=2)
+                warnings.warn(f"solver entry point {entry.name!r}{origin} failed to load: {error}", stacklevel=2)
         _ENTRY_POINTS = found
     return _ENTRY_POINTS
 
