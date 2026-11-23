@@ -214,7 +214,8 @@ def test_manifest_bound_incumbent_requires_manifest_verification(tmp_path):
     record.metadata["standard"] = {**record.metadata.pop("exact_evaluation"), "manifest_sha256": "f"*64}
     save_json_to_file(record.model_dump(mode="json"), store)
     before = store.read_bytes()
-    assert save_bks_if_improved(instance, _candidate(instance, routes), path).tie
+    with pytest.raises(ValueError, match="manifest"):
+        save_bks_if_improved(instance, _candidate(instance, routes), path)
     with pytest.raises(ValueError, match="manifest"):
         save_bks_if_improved(instance, _candidate(instance, [[1, 2], [3, 4]]), path)
     assert store.read_bytes() == before

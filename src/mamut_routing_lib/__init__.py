@@ -81,6 +81,7 @@ from mamut_routing_lib.checker import (
     is_better_exact,
     is_better_solution,
 )
+from mamut_routing_lib.manifests import VerifiedManifest, manifest_path_for, verify_manifest
 from mamut_routing_lib.exact import evaluate_exact, prepare_exact
 from mamut_routing_lib.exact_static import prepare_static
 from mamut_routing_lib.exact_td import prepare_td
@@ -153,6 +154,7 @@ from mamut_routing_lib.solvers import (
 )
 
 __all__ = [
+    "VerifiedManifest", "manifest_path_for", "verify_manifest",
     "evaluate_exact",
     "prepare_exact",
     "prepare_static",

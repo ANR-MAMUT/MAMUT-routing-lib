@@ -191,9 +191,7 @@ def _parse_json_solution(text: str) -> tuple[list[list[int]], float | None, dict
     cost = None if declared is None else _finite_cost(declared)
     metadata = metadata if isinstance(metadata, dict) else None
     marked = None
-    if metadata is not None and "standard" in metadata:
-        raise SolutionFormatError("Cannot verify metadata.standard without an authenticated family manifest.")
-    if metadata is not None and "exact_evaluation" in metadata:
+    if metadata is not None and ("exact_evaluation" in metadata or "standard" in metadata):
         if "cost" not in payload:
             raise SolutionFormatError("An exact BKS must explicitly store its cost projection (number or null).")
         try:
@@ -418,8 +416,8 @@ def load_checkable(instance: Any, instance_path: str | Path | None) -> Any:
 def _require_marked_target(marked: BenchmarkBKS, instance: Any, routes, objective: ObjectiveFunction) -> None:
     from mamut_routing_lib.artifacts import get_instance_identifier
 
-    if "standard" in marked.metadata or "exact_evaluation" not in marked.metadata:
-        raise ValueError("Expected an exact evaluation without an unauthenticated family manifest.")
+    if "standard" not in marked.metadata and "exact_evaluation" not in marked.metadata:
+        raise ValueError("Expected a marked evaluation or certified record.")
     if marked.instance_name != get_instance_identifier(instance) or marked.objective_function != objective:
         raise ValueError("Marked BKS identifies a different instance or objective.")
     if marked.routes != routes:
@@ -442,7 +440,11 @@ def check_routes(
     from mamut_routing_lib.exact import prepare_exact
     from mamut_routing_lib.td.checker import TDRouteEvaluation, TDSolutionCheckResult
 
-    if checkable is None:
+    from mamut_routing_lib.manifests import adjacent_manifest
+    manifest = adjacent_manifest(instance_path, objective_function, routes=routes)
+    if manifest is not None:
+        checkable = manifest.checkable
+    elif checkable is None:
         checkable = load_checkable(instance, instance_path)
     else:
         _require_same_instance(instance, checkable, Path(instance_path))
@@ -457,7 +459,7 @@ def check_routes(
         from mamut_routing_lib.exact_store import verify_stored
         try:
             _require_marked_target(marked_input, instance, routes, exact.objective)
-            verify_stored(marked_input, exact)
+            verify_stored(marked_input, exact, manifest)
         except ValueError as error:
             return result_type.make_invalid(SolutionCheckStatus.OBJECTIVE_VALUE_MISMATCH, str(error))
     if declared_cost is not None and declared_cost != exact.display_cost:
@@ -526,10 +528,10 @@ def submit_bks(
         _require_marked_target(marked_input, loaded, routes, objective)
         solution = marked_input
     if is_time_dependent(loaded):
-        from mamut_routing_lib.td import load_td_instance, save_td_solution_as_bks_if_improved
+        from mamut_routing_lib.td import save_td_solution_as_bks_if_improved
 
         return save_td_solution_as_bks_if_improved(
-            checkable if checkable is not None else load_td_instance(path),
+            checkable if checkable is not None else path,
             solution,
             authors=authors,
             metadata=dict(metadata or {}),
@@ -538,7 +540,8 @@ def submit_bks(
         )
     from mamut_routing_lib.bks import create_bks_from_solution, save_bks_if_improved, save_solution_as_bks_if_improved
 
-    if checkable is None:
+    from mamut_routing_lib.manifests import manifest_path_for
+    if checkable is None or manifest_path_for(path).exists():
         return save_solution_as_bks_if_improved(path, objective, solution, authors=authors, metadata=dict(metadata or {}), backend=backend)
     # The same two steps as save_solution_as_bks_if_improved, on the instance already in hand.
     bks = create_bks_from_solution(checkable, solution, objective, authors=authors, metadata=dict(metadata or {}), backend=backend)
@@ -584,14 +587,23 @@ def preview_bks_update(
     path = Path(instance_path)
     loaded = instance if instance is not None else load_benchmark_instance(path)
     objective = require_supported_objective(loaded, objective_function or base_objective(loaded))
-    if checkable is None:
+    from mamut_routing_lib.manifests import adjacent_manifest
+    bks_path = get_bks_path_for_instance(path, objective)
+    summary = dict(objective_function=objective.value, path=str(bks_path), candidate_cost=None,
+                   candidate_num_routes=None, existing_cost=None, existing_num_routes=None, tie=False)
+    try:
+        existing = load_bks(bks_path) if bks_path.exists() else None
+    except ValueError as error:
+        return {**summary, "action": "stored_invalid", "error": str(error)}
+    all_routes = [*routes, *existing.routes] if existing is not None else routes
+    manifest = adjacent_manifest(path, objective, routes=all_routes)
+    if manifest is not None:
+        checkable = manifest.checkable
+    elif checkable is None:
         checkable = load_checkable(loaded, path)
     else:
         _require_same_instance(loaded, checkable, path)
     prepared = prepare_exact(checkable, backend=backend, objective_function=objective)
-    bks_path = get_bks_path_for_instance(path, objective)
-    summary = dict(objective_function=objective.value, path=str(bks_path), candidate_cost=None,
-                   candidate_num_routes=None, existing_cost=None, existing_num_routes=None, tie=False)
     try:
         candidate = prepared.evaluate(routes)
     except ExactRouteError as error:
@@ -599,23 +611,20 @@ def preview_bks_update(
     if marked_input is not None:
         try:
             _require_marked_target(marked_input, loaded, routes, objective)
-            verify_stored(marked_input, candidate)
+            verify_stored(marked_input, candidate, manifest)
         except ValueError as error:
             return {**summary, "action": "invalid", "error": str(error)}
     summary.update(candidate_cost=candidate.display_cost, candidate_num_routes=len(candidate.routes))
-    if not bks_path.exists():
+    if existing is None:
         return {**summary, "action": "would_create"}
     try:
-        existing = load_bks(bks_path)
         if existing.instance_name != get_instance_identifier(loaded):
             raise ValueError("Stored BKS belongs to a different instance.")
         incumbent = prepared.evaluate(existing.routes)
-        verify_stored(existing, incumbent)
+        verify_stored(existing, incumbent, manifest)
         summary.update(existing_cost=incumbent.display_cost, existing_num_routes=len(incumbent.routes))
     except ValueError as error:
         return {**summary, "action": "stored_invalid", "error": str(error)}
     if candidate.objective_key < incumbent.objective_key:
-        if "standard" in existing.metadata:
-            return {**summary, "action": "stored_invalid", "error": "Verify the certified incumbent's family manifest before replacement."}
         return {**summary, "action": "would_replace"}
     return {**summary, "action": "would_keep", "tie": candidate.objective_key == incumbent.objective_key}

@@ -2035,6 +2035,11 @@ def _load_external_solution(instance_path: Path, solution_path: Path, ids: str) 
     except (SolutionFormatError, OSError) as error:
         typer.echo(f"Error: {solution_path}: {error}", err=True)
         raise typer.Exit(code=2) from error
+    if parsed.marked_input is not None and "standard" in parsed.marked_input.metadata:
+        from mamut_routing_lib.manifests import manifest_path_for
+        if not manifest_path_for(instance_path).is_file():
+            typer.echo("Error: a certified result requires its instance manifest.", err=True)
+            raise typer.Exit(code=2)
     if ids == "auto" and parsed.ids == "zero-based":
         typer.secho(
             f"Note: {solution_path.name} numbers its stops 0..{instance.num_customers - 1}: read as 0-based customer ids "
@@ -2116,6 +2121,23 @@ def _meta_pairs(pairs: list[str] | None) -> dict[str, Any]:
     return values
 
 
+@app.command("verify-manifest")
+def verify_instance_manifest(
+    instance_path: Annotated[Path, typer.Argument(help="The instance descriptor next to its edition manifest.")],
+    expected_sha256: Annotated[Optional[str], typer.Option("--sha256", help="Expected manifest file digest.")] = None,
+    atf_cache_root: Annotated[Optional[Path], typer.Option("--atf-cache-root", help="Root of regenerated ATF sidecars.")] = None,
+) -> None:
+    """Verify an edition's inputs and complete binary64 materialization."""
+    from mamut_routing_lib.manifests import verify_manifest
+
+    try:
+        verified = verify_manifest(instance_path, expected_sha256=expected_sha256, routes=(), atf_cache_root=atf_cache_root)
+    except (ValueError, OSError) as error:
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(code=1) from error
+    typer.echo(json.dumps(verified.result_identity(), indent=2))
+
+
 @app.command("check")
 def check_external_solution(
     instance_path: Annotated[Path, typer.Argument(help="The instance (.vrp.json), static or time-dependent.")],
@@ -2139,13 +2161,16 @@ def check_external_solution(
     not trusted. Exit status 0 when valid, 1 when the checker rejects the routes,
     2 when the file cannot be read or does not fit the instance.
     """
-    from mamut_routing_lib.solutions import check_routes, load_checkable
+    from mamut_routing_lib.solutions import check_routes
 
     instance, parsed = _load_external_solution(instance_path, solution_path, ids)
     resolved = _resolve_objective(instance, objective or (parsed.marked_input.objective_function if parsed.marked_input else None))
-    checkable = load_checkable(instance, instance_path)
-    result = check_routes(instance, instance_path, parsed.routes, resolved, checkable=checkable, backend=backend,
-                          marked_input=parsed.marked_input)
+    try:
+        result = check_routes(instance, instance_path, parsed.routes, resolved, backend=backend,
+                              marked_input=parsed.marked_input)
+    except (OSError, ValueError) as error:
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(code=2) from error
     valid = result.is_valid()
     mismatch = (
         valid
@@ -2244,8 +2269,12 @@ def bks_submit(
     instance, parsed = _load_external_solution(instance_path, solution_path, ids)
     resolved = _resolve_objective(instance, objective or (parsed.marked_input.objective_function if parsed.marked_input else None))
     if dry_run:
-        preview = preview_bks_update(instance_path, parsed.routes, objective_function=resolved, instance=instance, backend=backend,
-                                     marked_input=parsed.marked_input)
+        try:
+            preview = preview_bks_update(instance_path, parsed.routes, objective_function=resolved, instance=instance, backend=backend,
+                                         marked_input=parsed.marked_input)
+        except (OSError, ValueError) as error:
+            typer.echo(f"Error: {error}", err=True)
+            raise typer.Exit(code=2) from error
         typer.echo(json.dumps(preview, indent=1))
         if preview["action"] in ("invalid", "stored_invalid"):
             raise typer.Exit(code=1)
@@ -2275,6 +2304,9 @@ def bks_submit(
             instance=instance,
             marked_input=parsed.marked_input,
         )
+    except OSError as error:
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(code=2) from error
     except ValueError as error:
         typer.echo(f"Error: {error}", err=True)
         raise typer.Exit(code=1) from error

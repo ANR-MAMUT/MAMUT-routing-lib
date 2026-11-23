@@ -30,8 +30,8 @@ def _checker(loaded, objective_function, backend):
     return prepare_td(loaded.instance, loaded.atfs, objective_function=_validate_td_objective(objective_function), backend=backend)
 
 
-def _candidate(loaded, checker, solution, authors, metadata):
-    from mamut_routing_lib.exact_store import standard_metadata, verify_stored
+def _candidate(loaded, checker, solution, authors, metadata, manifest=None):
+    from mamut_routing_lib.exact_store import assert_candidate_metadata, evaluation_metadata
     from mamut_routing_lib.exact_types import ExactRouteError
 
     if not isinstance(authors, str) or not authors.strip():
@@ -48,26 +48,24 @@ def _candidate(loaded, checker, solution, authors, metadata):
         raise ValueError(f'Provided cost {solution.cost!r} does not match computed {checker.objective.value} '
                          f'{evaluation.display_cost!r}.')
     merged = dict(metadata or {})
-    if 'standard' in merged or 'standard' in solution.metadata:
-        raise ValueError('cannot write metadata.standard without verifying its family manifest')
-    if 'exact_evaluation' in solution.metadata:
-        if 'exact_evaluation' in merged and merged['exact_evaluation'] != solution.metadata['exact_evaluation']:
-            raise ValueError('conflicting supplied exact evaluation records')
-        merged['exact_evaluation'] = solution.metadata['exact_evaluation']
-    if 'exact_evaluation' in merged:
-        source = BenchmarkBKS(instance_name=solution.instance_name, routes=solution.routes, cost=solution.cost,
-                              objective_function=checker.objective, metadata={**merged, 'authors': authors})
-        verify_stored(source, evaluation)
+    assert_candidate_metadata(solution, merged, evaluation, manifest)
     if 'optimality' in merged:
         claim = SolverReportedOptimality.model_validate(merged['optimality'])
         if claim.target_profile != evaluation.profile:
             raise ValueError('claim target_profile differs from the evaluated TD profile')
     merged.update(authors=authors, validated_cost=evaluation.display_cost, validated_num_routes=len(evaluation.routes),
-                  exact_evaluation=standard_metadata(evaluation))
+                  **evaluation_metadata(evaluation, manifest))
     merged.setdefault('date', datetime.now(UTC).replace(tzinfo=None).isoformat(timespec='seconds'))
     bks = BenchmarkBKS(instance_name=loaded.instance.instance_name, objective_function=checker.objective,
                        routes=[list(route) for route in evaluation.routes], cost=evaluation.display_cost, metadata=merged)
     return bks, evaluation
+
+
+def _published_inputs(loaded, objective, routes):
+    from mamut_routing_lib.manifests import adjacent_manifest
+    path = loaded.instance_path if isinstance(loaded, LoadedTDInstance) else loaded
+    manifest = adjacent_manifest(path, objective, routes=routes)
+    return (manifest.checkable if manifest else _as_loaded(loaded)), manifest
 
 
 def create_td_bks_from_solution(
@@ -80,9 +78,9 @@ def create_td_bks_from_solution(
     backend: str = 'native',
 ) -> BenchmarkBKS:
     """Price a candidate, check any declared cost and bind exact witnesses to canonical routes."""
-    loaded = _as_loaded(loaded)
+    loaded, manifest = _published_inputs(loaded, objective_function, solution.routes)
     checker = _checker(loaded, objective_function, backend)
-    return _candidate(loaded, checker, solution, authors, metadata)[0]
+    return _candidate(loaded, checker, solution, authors, metadata, manifest)[0]
 
 
 def save_td_solution_as_bks_if_improved(
@@ -101,29 +99,29 @@ def save_td_solution_as_bks_if_improved(
     """
     from mamut_routing_lib.exact_store import preserve_claim_record, verify_stored
 
-    loaded = _as_loaded(loaded)
+    instance_path = loaded.instance_path if isinstance(loaded, LoadedTDInstance) else loaded
+    path = get_bks_path_for_instance(instance_path, _validate_td_objective(objective_function))
+    incumbent_bks = load_bks(path) if path.exists() else None
+    all_routes = [*solution.routes, *incumbent_bks.routes] if incumbent_bks is not None else solution.routes
+    loaded, manifest = _published_inputs(loaded, objective_function, all_routes)
     checker = _checker(loaded, objective_function, backend)
-    candidate_bks, candidate_evaluation = _candidate(loaded, checker, solution, authors, metadata)
-    path = get_bks_path_for_instance(loaded.instance_path, checker.objective)
+    candidate_bks, candidate_evaluation = _candidate(loaded, checker, solution, authors, metadata, manifest)
     previous = None
     tie = False
     action = 'created'
-    if path.exists():
+    if incumbent_bks is not None:
         previous = path
-        incumbent_bks = load_bks(path)
         if incumbent_bks.instance_name != candidate_bks.instance_name or incumbent_bks.objective_function != checker.objective:
             raise ValueError(f'Stored BKS identifies a different instance or objective at {path}')
         try:
             incumbent_evaluation = checker.evaluate(incumbent_bks.routes)
-            verify_stored(incumbent_bks, incumbent_evaluation)
+            verify_stored(incumbent_bks, incumbent_evaluation, manifest)
         except ValueError as error:
             raise ValueError(f'Stored BKS is invalid at {path}: {error}') from error
         candidate_objective_key = candidate_evaluation.objective_key
         incumbent_objective_key = incumbent_evaluation.objective_key
         tie = candidate_objective_key == incumbent_objective_key
         if candidate_objective_key < incumbent_objective_key:
-            if 'standard' in incumbent_bks.metadata:
-                raise ValueError('cannot replace a metadata.standard incumbent until its family manifest can be verified')
             preserve_claim_record(path, incumbent_bks)
             action = 'replaced'
         else:
@@ -154,23 +152,22 @@ def annotate_td_bks_optimality(
     from mamut_routing_lib.exact_store import preserve_claim_record, verify_stored
     from mamut_routing_lib.exact_types import TD_PROFILE
 
-    loaded = _as_loaded(loaded)
     objective_function = _validate_td_objective(objective_function)
-    path = get_bks_path_for_instance(loaded.instance_path, objective_function)
+    instance_path = loaded.instance_path if isinstance(loaded, LoadedTDInstance) else loaded
+    path = get_bks_path_for_instance(instance_path, objective_function)
     if not path.exists():
         raise FileNotFoundError(f'No stored {objective_function.value} BKS to annotate at {path}')
     bks = load_bks(path)
+    loaded, manifest = _published_inputs(loaded, objective_function, bks.routes)
     if bks.instance_name != loaded.instance.instance_name or bks.objective_function != objective_function:
         raise ValueError(f'Stored BKS identifies a different instance or objective at {path}')
     payload = optimality if isinstance(optimality, dict) else optimality.model_dump(mode='json', exclude_none=True)
-    if 'standard' in bks.metadata:
-        raise ValueError('cannot rewrite metadata.standard until its family manifest can be verified')
-    if 'exact_evaluation' in bks.metadata:
+    if 'exact_evaluation' in bks.metadata or 'standard' in bks.metadata:
         claim = SolverReportedOptimality.model_validate(payload)
         if claim.target_profile != TD_PROFILE:
             raise ValueError('solver claim must target the profile of the stored TD result')
         checker = _checker(loaded, objective_function, backend)
-        verify_stored(bks, checker.evaluate(bks.routes))
+        verify_stored(bks, checker.evaluate(bks.routes), manifest)
     else:
         claim = OptimalityMetadata.model_validate(payload)
         target = claim.target_profile

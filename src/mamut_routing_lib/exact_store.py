@@ -4,6 +4,7 @@ from functools import lru_cache
 from hashlib import sha256
 from importlib import import_module
 from pathlib import Path
+import re
 from platform import python_implementation, python_version
 
 from mamut_routing_lib.exact_types import ExactEvaluation, TD_PROFILE
@@ -53,7 +54,30 @@ def standard_metadata(evaluation: ExactEvaluation) -> dict:
     return record
 
 
-def verify_stored(bks: BenchmarkBKS, evaluation: ExactEvaluation) -> None:
+def evaluation_metadata(evaluation, manifest=None) -> dict:
+    record = standard_metadata(evaluation)
+    if manifest is None:
+        return {"exact_evaluation": record}
+    if manifest.objective != evaluation.objective:
+        raise ValueError("Evaluation objective differs from the verified manifest")
+    return {"standard": {**record, **manifest.result_identity()}}
+
+
+def assert_candidate_metadata(solution, supplied, evaluation, manifest=None):
+    """Check all caller-supplied numeric assertions before replacing them with checker output."""
+    for key in ("standard", "exact_evaluation"):
+        if key not in supplied and key not in solution.metadata:
+            continue
+        if key in supplied and key in solution.metadata and supplied[key] != solution.metadata[key]:
+            raise ValueError(f"Conflicting supplied {key} records")
+        marked = BenchmarkBKS(instance_name=solution.instance_name, objective_function=evaluation.objective,
+                              routes=solution.routes, cost=solution.cost,
+                              metadata={key: supplied.get(key, solution.metadata.get(key))})
+        verify_stored(marked, evaluation, manifest)
+        supplied.pop(key, None)
+
+
+def verify_stored(bks: BenchmarkBKS, evaluation: ExactEvaluation, manifest=None) -> None:
     """Compare recomputed values with the claims of a record that names an exact profile."""
     if bks.objective_function != evaluation.objective:
         raise ValueError("Stored BKS objective does not match the instance objective.")
@@ -64,6 +88,20 @@ def verify_stored(bks: BenchmarkBKS, evaluation: ExactEvaluation) -> None:
         if not isinstance(stored, dict):
             raise ValueError(f"Invalid stored BKS metadata.{key}")
         expected = standard_metadata(evaluation)
+        if key == "standard":
+            if manifest is None:
+                raise ValueError("A certified record requires its verified instance manifest")
+            provenance = stored.get("evaluation")
+            if not isinstance(provenance, dict) or any(not provenance.get(f) for f in ("checker", "backend", "runtime")):
+                raise ValueError("Certified evaluation lacks a checker, backend or runtime identity")
+            fingerprint = provenance.get("implementation_sha256") or provenance.get("source_sha256")
+            if not isinstance(fingerprint, str) or re.fullmatch(r"[a-f0-9]{64}", fingerprint) is None:
+                raise ValueError("Certified evaluation lacks an immutable checker artifact hash")
+            if provenance.get("verification_status") != "incumbent-verified":
+                raise ValueError("Certified evaluation lacks an incumbent verification")
+            expected.update(manifest.result_identity())
+            if manifest.objective != evaluation.objective:
+                raise ValueError("The certified objective disagrees with the manifest")
         for field, value in expected.items():
             if field == "evaluation":
                 continue  # An independent replay can use another backend.
