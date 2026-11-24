@@ -5,13 +5,21 @@ writes, its numeric limits and its capabilities; ``ExternalSolver`` does the
 rest. Built-ins live in ``catalog``; users add or override descriptors in the
 solvers config (``config``).
 
-argv placeholders: ``{executable}`` (absolute path), ``{java}``, ``{jar}``,
+argv placeholders: ``{executable}`` (absolute path: the native executable, or
+the script of a ``runtime = "python"`` solver), ``{java}``, ``{jar}``,
 ``{python}`` (this interpreter), ``{problem}``, ``{params}``, ``{solution}``,
 ``{workdir}`` (absolute paths), ``{seed}``, ``{time_limit_s}`` (``30`` or
 ``12.5``), ``{time_limit_int}`` (whole seconds, at least 1), ``{vehicles}``.
 ``fleet_args`` are appended (formatted) when the instance has a fixed fleet,
 then ``extra_args`` -- except with ``input_format = "lkh"``, where ``extra_args``
-are literal lines appended to the parameter file, whatever the argv.
+are literal lines appended to the parameter file, whatever the argv. Such a
+line cannot set a parameter that the runner writes for the run (the files, the
+seed, the time limit, the precision): the descriptor is refused.
+
+``id_convention`` says how a ``cvrplib-sol`` solution file numbers its stops. It
+is declared, not guessed: a file ``Route #1: 0 1 2`` for 3 customers is complete
+if customers are numbered from 0, and misses customer 3 if they are numbered
+from 1 with the depot written as 0.
 """
 
 from __future__ import annotations
@@ -21,7 +29,9 @@ import json
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Literal, Mapping
 
+from mamut_routing_lib.solutions import IdConvention
 from mamut_routing_lib.solvers.base import SolverCapabilities
+from mamut_routing_lib.solvers.external.problem import check_lkh_extra_lines
 from mamut_routing_lib.solvers.external.scaling import Limits
 
 __all__ = ["ExternalSolverDescriptor", "InputFormat", "OutputFormat"]
@@ -39,6 +49,8 @@ class ExternalSolverDescriptor:
     input_format: InputFormat
     output_format: OutputFormat
     capabilities: SolverCapabilities
+    #: The solver file: a native executable, or the script of a ``runtime = "python"`` solver (run as
+    #: ``{python} {executable}``). It is what ``executable_sha256`` hashes; a Java solver's is its ``jar``.
     executable: str | None = None
     executable_names: tuple[str, ...] = ()
     runtime: Literal["native", "java", "python"] = "native"
@@ -47,6 +59,12 @@ class ExternalSolverDescriptor:
     java_options: tuple[str, ...] = ()
     #: Solution path relative to the work directory (``{seed}`` is substituted).
     solution_file: str = "solution.sol"
+    #: How a ``cvrplib-sol`` file numbers its stops: ``one-based`` (customers 1..n, a 0 is the depot:
+    #: what CVRPLIB writes), ``zero-based`` (customers 0..n-1), or ``auto``, which reads a file that
+    #: covers 0..n-1 exactly once as zero-based and anything else as one-based. ``auto`` reads a
+    #: one-based file that writes the depot once and misses customer n as a complete zero-based
+    #: one, so it is a choice and never the default. ``lkh-mtsp`` files have one numbering.
+    id_convention: IdConvention = field(default="one-based", kw_only=True)
     #: How the solver measures distances on coordinates: ``nint`` rounds to integers.
     distance_model: Literal["float", "nint", "integer"] = "float"
     coordinate_scales: tuple[float, ...] = (1.0,)
@@ -69,6 +87,12 @@ class ExternalSolverDescriptor:
     homepage: str | None = None
     #: Where the descriptor came from: ``builtin`` or the config file that defined/overrode it.
     source: str = "builtin"
+
+    def __post_init__(self) -> None:
+        if self.id_convention not in ("auto", "one-based", "zero-based"):
+            raise ValueError(f"Invalid id_convention: {self.id_convention!r}")
+        if self.input_format == "lkh":
+            check_lkh_extra_lines(self.extra_args)  # ValueError: a line that would contradict the recorded run
 
     def with_overrides(self, **values: Any) -> "ExternalSolverDescriptor":
         return replace(self, **values)

@@ -76,6 +76,36 @@ def test_entry_point_plugins_are_loaded(monkeypatch) -> None:
     assert isinstance(registry.get_solver("plugin"), _Dummy)
 
 
+def test_a_plugin_cannot_take_the_name_of_a_builtin(monkeypatch) -> None:
+    """Installing a package must not change what `--solver pyvrp` or `--solver lkh3` runs."""
+    entries = [
+        SimpleNamespace(name="pyvrp", load=lambda: _Dummy, dist=SimpleNamespace(name="some-package")),
+        SimpleNamespace(name="lkh3", load=lambda: _Dummy),
+        SimpleNamespace(name="plugin", load=lambda: _Dummy),
+        SimpleNamespace(name="plugin", load=lambda: object, dist=SimpleNamespace(name="other-package")),
+    ]
+    monkeypatch.setattr(registry.metadata, "entry_points", lambda group: entries)
+    registry.reload_solvers()
+    with pytest.warns(UserWarning) as caught:
+        names = registry.solver_names()
+    messages = [str(warning.message) for warning in caught]
+    assert any("'pyvrp' of some-package is ignored: 'pyvrp' is a built-in solver" in message for message in messages)
+    assert any("'lkh3' is ignored" in message for message in messages)
+    assert any("'plugin' of other-package is ignored: another package already provides" in message for message in messages)
+    assert names[:6] == list(registry.BUILTIN_SOLVERS)
+    assert type(registry.get_solver("pyvrp")).__name__ == "PyVRPSolver"
+    assert type(registry.get_solver("lkh3")).__name__ == "ExternalSolver"
+    assert isinstance(registry.get_solver("plugin"), _Dummy)  # the first one
+
+
+def test_register_solver_replaces_a_builtin_on_purpose_only() -> None:
+    with pytest.raises(ValueError, match="'pyvrp' is a built-in solver"):
+        registry.register_solver(_Dummy, name="pyvrp")
+    assert type(registry.get_solver("pyvrp")).__name__ == "PyVRPSolver"
+    registry.register_solver(_Dummy, name="pyvrp", replace=True)
+    assert isinstance(registry.get_solver("pyvrp"), _Dummy)
+
+
 def test_a_broken_plugin_warns_instead_of_hiding_the_others(monkeypatch) -> None:
     def explode():
         raise RuntimeError("boom")

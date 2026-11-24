@@ -8,6 +8,8 @@ import time
 import tomllib
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from decimal import Decimal
+from fractions import Fraction
 from importlib import metadata
 from pathlib import Path
 from typing import Annotated, Any, Callable, Iterator, Optional, TypeVar
@@ -153,7 +155,7 @@ class SolveSummaryRow:
     #: Gap to the BKS stored before this solve, under the run's objective ("" when not computed).
     gap: str = ""
     #: Negative gap: the solution beats the stored BKS (or there is none to beat).
-    improves: bool = False
+    improves: bool | None = False
     solution_path: Path | None = None
 
 
@@ -714,9 +716,9 @@ def _run_with_time_progress(
 
     desc = record.instance_id if len(record.instance_id) <= 48 else f"{record.instance_id[:45]}..."
     with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(operation)
-        started_at = time.monotonic()
         try:
+            future = executor.submit(operation)
+            started_at = time.monotonic()
             _show_time_progress(future, desc=desc, time_limit_s=time_limit_s, started_at=started_at)
         except KeyboardInterrupt:
             # Stop the solve before the executor's exit waits for it, or Ctrl-C hangs until the budget runs out.
@@ -787,36 +789,89 @@ def _artifact_workdirs(records: list[LocalInstanceRecord], root: Path | None, le
     return {key: base / name / leaf for key, name in _unique_record_names(records).items()}
 
 
-def _stored_bks(record: LocalInstanceRecord, objective: ObjectiveFunction) -> tuple[float | None, int | None] | None:
-    """(cost, routes) of the BKS stored for ``objective``; ``None`` when there is none."""
+def _rational_cost(evaluation: dict) -> Fraction:
+    pair = evaluation["authoritative_cost"]
+    n, d = pair["numerator"], pair["denominator"]
+    if not all(isinstance(value, str) and value.isascii() and value.isdecimal() for value in (n, d)):
+        raise ValueError("Invalid authoritative_cost")
+    # Decimal accepts the long integer strings that a TD certificate can contain.
+    return Fraction(int(Decimal(n)), int(Decimal(d)))
+
+
+def _stored_bks(
+    record: LocalInstanceRecord, objective: ObjectiveFunction, evaluated: dict, manifest_sha256: str | None,
+) -> tuple[Fraction | None, int | None] | None:
+    """Read a comparable exact incumbent for the solve summary. The BKS store checks submissions independently."""
+    from hashlib import sha256
+
     from mamut_routing_lib.artifacts import get_bks_path_for_instance, load_bks
+    from mamut_routing_lib.exact_store import routes_sha256
+    from mamut_routing_lib.manifests import manifest_path_for
 
     path = get_bks_path_for_instance(record.path, objective)
     if not path.is_file():
         return None
+    unknown = (None, None)
     try:
         bks = load_bks(path)
-    except Exception:  # noqa: BLE001 - an unreadable BKS only blanks the gap
-        return (None, None)
-    return (float(bks.cost) if bks.cost is not None else None, bks.num_routes)
+        if bks.instance_name != record.instance.instance_name or bks.objective_function != objective:
+            return unknown
+        standard = bks.metadata.get("standard")
+        if standard is None:
+            # The checker has just priced these same routes, even on an unpublished instance.
+            if sorted(bks.routes) != evaluated["routes"]:
+                return unknown
+            claim = bks.metadata.get("exact_evaluation")
+            if claim is not None and any(claim[key] != evaluated[key] for key in ("profile", "objective", "authoritative_cost")):
+                return unknown
+            return _rational_cost(evaluated), len(bks.routes)
+
+        if not manifest_sha256 or standard.get("manifest_sha256") != manifest_sha256:
+            return unknown
+        raw = manifest_path_for(record.path).read_bytes()
+        if sha256(raw).hexdigest() != manifest_sha256:
+            return unknown  # the inputs changed while this solve was running
+        manifest = json.loads(raw)
+        if (manifest["objective"] != objective.value or manifest["default_profile"] != evaluated["profile"]
+                or standard["benchmark_revision"] != manifest["benchmark_revision"]
+                or standard["specification"] != manifest["specification"]
+                or standard["profile"] != evaluated["profile"] or standard["objective"] != objective.value
+                or standard["evaluation"]["verification_status"] != "incumbent-verified"
+                or standard["num_routes"] != len(bks.routes) or standard["routes_sha256"] != routes_sha256(bks.routes)):
+            return unknown
+        cost = _rational_cost(standard)
+        try:
+            display = float(cost)
+        except OverflowError:
+            display = None
+        if bks.cost != display or standard["display_overflow"] is not (display is None):
+            return unknown
+        return cost, len(bks.routes)
+    except (ArithmeticError, KeyError, OSError, TypeError, ValueError):
+        return unknown
 
 
 def _gap_to_bks(
-    cost: float, routes: int, reference: tuple[float | None, int | None] | None, objective: ObjectiveFunction
-) -> tuple[str, bool]:
-    """("+1.23%", improves) against the stored BKS; hierarchical objectives compare routes first."""
+    cost: Fraction, routes: int, reference: tuple[Fraction | None, int | None] | None, objective: ObjectiveFunction,
+) -> tuple[str, bool | None]:
+    """Compare exact objectives, rounding only the percentage shown in the table."""
     if reference is None:
         return "no BKS", True
     bks_cost, bks_routes = reference
-    if objective == ObjectiveFunction.HIERARCHICAL_VEHICLE_COST and bks_routes is not None and routes != bks_routes:
+    if bks_cost is None or bks_routes is None:
+        return "?", None
+    if objective == ObjectiveFunction.HIERARCHICAL_VEHICLE_COST and routes != bks_routes:
         return f"{routes - bks_routes:+d} veh", routes < bks_routes
-    if bks_cost is None or bks_cost == 0:
-        return "?", False
     if cost == bks_cost:
         return "0.00%", False
-    gap = (float(cost) - bks_cost) / abs(bks_cost) * 100.0
-    text = f"{gap:+.2f}%" if abs(gap) >= 0.005 else ("-<0.01%" if gap < 0 else "+<0.01%")
-    return text, gap < 0
+    improves = cost < bks_cost
+    if bks_cost == 0:
+        return ("lower" if improves else "higher"), improves
+    gap = (Fraction(cost) - Fraction(bks_cost)) * 100 / abs(Fraction(bks_cost))
+    if abs(gap) < Fraction(1, 200):
+        return ("-<0.01%" if improves else "+<0.01%"), improves
+    shown = Decimal(gap.numerator) / Decimal(gap.denominator)
+    return (f"{shown:+.2E}%" if abs(shown) >= 10**7 else f"{shown:+.2f}%"), improves
 
 
 def _write_solution_file(path: Path, record: LocalInstanceRecord, solved: Any, objective: ObjectiveFunction) -> None:
@@ -1101,8 +1156,10 @@ def solve_instances(
     binary64 rational costs, keeping ties) next to the instance. PyVRP needs
     the 'pyvrp' extra: pip install "mamut-routing-lib\\[pyvrp]".
     """
+    from mamut_routing_lib.manifests import manifest_path_for
     from mamut_routing_lib.objectives import default_objective
     from mamut_routing_lib.solutions import submit_bks
+    from mamut_routing_lib.solvers.provenance import file_sha256
     from mamut_routing_lib.solvers import (
         InstanceNotSupportedError,
         SolveMonitor,
@@ -1113,7 +1170,7 @@ def solve_instances(
         run_solver,
     )
     from mamut_routing_lib.solvers.external.config import SolverConfigError
-    from mamut_routing_lib.solvers.external.process import terminate_all
+    from mamut_routing_lib.solvers.external.process import TerminationSignal, interrupt_on_termination, terminate_all
 
     state: CLIState = ctx.obj
 
@@ -1285,6 +1342,7 @@ def solve_instances(
 
     monitors: list[Any] = []
     interrupted = threading.Event()
+    written_bks: list[Path] = []
     workdirs = _artifact_workdirs(selected, keep_artifacts, f"{solver_obj.name}-seed{seed}")
     solution_paths: dict[int, Path] = {}
     if output_dir is not None:
@@ -1296,18 +1354,33 @@ def solve_instances(
     def _stop_everything() -> None:
         # Solvers in their own process group never see the terminal's Ctrl-C: stop them all now,
         # before any executor waits for its running solves.
+        if interrupted.is_set():
+            return
         interrupted.set()
         for monitor in list(monitors):
             monitor.request_stop()
         terminate_all()
+
+    def _interrupted_row(record: LocalInstanceRecord, wall_time: float = 0.0) -> SolveSummaryRow:
+        return SolveSummaryRow(
+            instance_id=record.instance_id,
+            instance_name=record.instance_name,
+            status="error",
+            cost=None,
+            route_count=0,
+            wall_time=wall_time,
+            bks_label="-",
+            detail="interrupted",
+        )
 
     def _solve_record(record: LocalInstanceRecord) -> SolveSummaryRow:
         run_objective = objectives[id(record)]
         monitor = SolveMonitor(None, interval_s=3600.0)
         monitors.append(monitor)
         if interrupted.is_set():
-            monitor.request_stop()
+            return _interrupted_row(record)
         workdir = workdirs.get(id(record))
+        manifest_sha256 = file_sha256(manifest_path_for(record.path))
 
         def _solve_selected_instance() -> Any:
             return run_solver(
@@ -1337,16 +1410,7 @@ def solve_instances(
 
         result = solved.result
         if result.status == "cancelled" or interrupted.is_set():
-            return SolveSummaryRow(
-                instance_id=record.instance_id,
-                instance_name=record.instance_name,
-                status="error",
-                cost=None,
-                route_count=0,
-                wall_time=result.wall_time,
-                bks_label="-",
-                detail="interrupted",
-            )
+            return _interrupted_row(record, result.wall_time)
         if result.status == "failed":
             return SolveSummaryRow(
                 instance_id=record.instance_id,
@@ -1363,7 +1427,9 @@ def solve_instances(
         if solved.valid:
             status = "feasible"
             detail = result.error or ""  # e.g. a nonzero exit after writing a solution
-            gap, improves = _gap_to_bks(solved.cost, len(result.routes), _stored_bks(record, run_objective), run_objective)
+            exact = solved.check.exact_evaluation
+            reference = _stored_bks(record, run_objective, exact, manifest_sha256)
+            gap, improves = _gap_to_bks(_rational_cost(exact), len(result.routes), reference, run_objective)
         else:
             status = "infeasible"
             if solved.check is not None:
@@ -1381,6 +1447,8 @@ def solve_instances(
             solution_path = None
         bks_label = "-" if save_bks else "not saved"
         if save_bks and solved.valid:
+            if interrupted.is_set():
+                return _interrupted_row(record, result.wall_time)
             update = submit_bks(
                 record.path,
                 result.routes,
@@ -1390,6 +1458,17 @@ def solve_instances(
                 instance=record.instance,
                 checkable=solved.checkable,
             )
+            stored_improvement = update.action in ("created", "replaced")
+            if improves is None or improves != stored_improvement:
+                if update.action == "created":
+                    gap = "no BKS"
+                elif update.tie:
+                    gap = "0.00%"
+                else:
+                    gap = "lower" if stored_improvement else "higher"
+            improves = stored_improvement
+            if stored_improvement:
+                written_bks.append(update.path)
             bks_label = f"{update.action} (tie)" if update.tie else update.action
         return SolveSummaryRow(
             instance_id=record.instance_id,
@@ -1425,41 +1504,46 @@ def solve_instances(
             detail=detail,
         )
 
-    try:
-        if multi_instance:
-            future_indices = {}
-            with ThreadPoolExecutor(max_workers=effective_jobs) as executor:
-                for index, record in enumerate(selected):
-                    future_indices[executor.submit(_solve_record_safe, record)] = index
-                try:
-                    with tqdm(
-                        total=len(selected),
-                        desc=f"Solving ({effective_jobs} jobs)",
-                        unit="run",
-                        leave=True,
-                        dynamic_ncols=True,
-                        file=sys.stderr,
-                    ) as bar:
-                        for future in as_completed(future_indices):
-                            index = future_indices[future]
-                            rows[index] = future.result()
-                            bar.update(1)
-                except KeyboardInterrupt:
-                    for future in future_indices:
-                        future.cancel()
-                    _stop_everything()
-                    raise
-        elif selected:
-            rows[0] = _solve_record_safe(selected[0])
-    except KeyboardInterrupt:
-        _stop_everything()
-        finished = [row for row in rows if row is not None and row.detail != "interrupted"]
-        message = "Interrupted: every running solve was stopped and wrote no BKS."
-        written = [row for row in finished if row.bks_label.startswith(("created", "replaced"))]
-        if written:
-            message += f" {len(written)} solve(s) that finished before the interrupt wrote their BKS."
-        typer.echo(message, err=True)
-        raise typer.Exit(code=130)
+    # SIGTERM and SIGHUP (`timeout 60 mamut-routing solve`, a systemd stop, a closed terminal) end the
+    # command the way Ctrl-C does: the solvers are stopped and the summary says what was written.
+    with interrupt_on_termination():
+        try:
+            if multi_instance:
+                future_indices = {}
+                with ThreadPoolExecutor(max_workers=effective_jobs) as executor:
+                    try:
+                        for index, record in enumerate(selected):
+                            future_indices[executor.submit(_solve_record_safe, record)] = index
+                        with tqdm(
+                            total=len(selected),
+                            desc=f"Solving ({effective_jobs} jobs)",
+                            unit="run",
+                            leave=True,
+                            dynamic_ncols=True,
+                            file=sys.stderr,
+                        ) as bar:
+                            for future in as_completed(future_indices):
+                                index = future_indices[future]
+                                rows[index] = future.result()
+                                bar.update(1)
+                    except KeyboardInterrupt:
+                        _stop_everything()
+                        # A signal can arrive after submit enqueues work but before it returns a future.
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        raise
+            elif selected:
+                rows[0] = _solve_record_safe(selected[0])
+        except KeyboardInterrupt as stop:
+            _stop_everything()
+            # The exit code is the shell's for a signal: 130 for Ctrl-C, 143 for SIGTERM, 129 for SIGHUP.
+            by_signal = stop if isinstance(stop, TerminationSignal) else None
+            reason = f"Stopped by {by_signal.name}" if by_signal else "Interrupted"
+            if written_bks:
+                message = f"{reason}: stopped all running solves. BKS files written: {len(written_bks)}."
+            else:
+                message = f"{reason}: every running solve was stopped and wrote no BKS."
+            typer.echo(message, err=True)
+            raise typer.Exit(code=128 + by_signal.signum if by_signal else 130)
 
     solved_rows = [row for row in rows if row is not None] + error_rows
     any_failure = any(row.status != "feasible" for row in solved_rows)
@@ -1491,6 +1575,8 @@ def solve_instances(
     written = [row for row in solved_rows if row.solution_path is not None]
     if written:
         typer.echo(f"Solutions: {len(written)} written to {output_dir.resolve() if output_dir else ''}")
+    if any(row.improves is None for row in solved_rows):
+        typer.echo("GAP ? means the incumbent could not be compared under the current exact profile.", err=True)
     if not save_bks:
         better = [row for row in solved_rows if row.status == "feasible" and row.improves]
         if better:

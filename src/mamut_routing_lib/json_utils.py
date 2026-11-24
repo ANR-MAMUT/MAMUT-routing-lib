@@ -3,7 +3,7 @@ from __future__ import annotations
 import enum
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 def custom_json_encode(
@@ -119,7 +119,9 @@ def get_custom_json_string(
     )
 
 
-def strict_json_loads(data: str | bytes) -> Any:
+def strict_json_loads(
+    data: str | bytes, *, parse_float: Callable[[str], Any] = float, parse_int: Callable[[str], Any] = int,
+) -> Any:
     """Parse JSON without silently selecting one of two identically named members."""
     def unique_members(pairs):
         members = {}
@@ -132,7 +134,8 @@ def strict_json_loads(data: str | bytes) -> Any:
     def invalid_constant(value):
         raise ValueError(f"Invalid JSON numeric constant: {value}")
 
-    return json.loads(data, object_pairs_hook=unique_members, parse_constant=invalid_constant)
+    return json.loads(data, object_pairs_hook=unique_members, parse_constant=invalid_constant,
+                      parse_float=parse_float, parse_int=parse_int)
 
 
 def load_json_from_file(filepath: str | Path) -> Any:

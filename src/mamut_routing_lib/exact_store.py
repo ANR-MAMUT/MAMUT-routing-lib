@@ -28,17 +28,22 @@ def _implementation_digest(backend: str) -> str:
     return digest.hexdigest()
 
 
+def routes_sha256(routes) -> str:
+    """Digest of the standard's ordered route encoding."""
+    digest = sha256(f"MAMUT-ROUTES-v1\n{len(routes)}\n".encode("ascii"))
+    for route in routes:
+        digest.update(f"{len(route)}:{','.join(map(str, route))}\n".encode("ascii"))
+    return digest.hexdigest()
+
+
 def standard_metadata(evaluation: ExactEvaluation) -> dict:
     """The evaluator's portion of a standard record, independent of the family manifest."""
     result = evaluation.as_dict()
-    routes = sha256(f"MAMUT-ROUTES-v1\n{len(evaluation.routes)}\n".encode("ascii"))
-    for route in evaluation.routes:
-        routes.update(f"{len(route)}:{','.join(map(str, route))}\n".encode("ascii"))
     record = {
         "profile": evaluation.profile,
         "objective": evaluation.objective.value,
         "num_routes": len(evaluation.routes),
-        "routes_sha256": routes.hexdigest(),
+        "routes_sha256": routes_sha256(evaluation.routes),
         "authoritative_cost": result["authoritative_cost"],
         "display_overflow": result["display_overflow"],
         "evaluation": {

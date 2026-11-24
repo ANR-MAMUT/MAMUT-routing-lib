@@ -82,6 +82,7 @@ def test_extends_makes_a_named_variant(tmp_path: Path) -> None:
         ('[solvers.filo2]\nsymmetric_only = "false"\n', "true or false"),
         ('[solvers.filo2]\nlive_progress = "always"\n', "live_progress must be one of"),
         ('[solvers.filo2]\nruntime = "jvm"\n', "runtime must be one of"),
+        ('[solvers.filo2]\nid_convention = "0-based"\n', "id_convention must be one of one-based, zero-based, auto"),
         ('[solvers.filo2]\nwarm_start = true\n', "no warm start"),
         ('[solvers.filo2]\nargv = ["{executable}", "{problme}"]\n', "did you mean 'problem'"),
         ('[solvers.filo2]\nargv = ["{executable", "{problem}"]\n', "literal braces"),
@@ -95,6 +96,13 @@ def test_extends_makes_a_named_variant(tmp_path: Path) -> None:
         ("[other]\nkey = 1\n", "top-level"),
         ('[solvers.filo2]\nsolution_file = "/home/user/notes.txt"\n', "inside the work directory"),
         ('[solvers.filo2]\nsolution_file = "../../x.sol"\n', "inside the work directory"),
+        ('[solvers.lkh3]\nextra_args = ["RUNS = 10\\nSEED = 1"]\n', "one physical parameter line"),
+        ('[solvers.lkh3]\nextra_args = ["SCALE = 10"]\n', "sets SCALE"),
+        ('[solvers.lkh3]\nextra_args = ["SEED = 1"]\n', r"lkh3\.extra_args: 'SEED = 1' sets SEED, the seed of the run"),
+        ('[solvers.lkh3]\nextra_args = ["RUNS = 10", "time_limit=9999"]\n', "sets TIME_LIMIT, the time limit of the run"),
+        ('[solvers.long]\nextends = "lkh3"\nextra_args = ["PRECISION 10"]\n', r"long\.extra_args: .* sets PRECISION"),
+        ('[solvers.lkh3]\nextra_args = ["  MTSP_SOLUTION_FILE = /tmp/other.sol"]\n', "sets MTSP_SOLUTION_FILE"),
+        ('[solvers.lkh3]\nextra_args = ["PROBLEM_FILE=/tmp/other.vrp"]\n', "sets PROBLEM_FILE"),
     ],
 )
 def test_configuration_errors_are_loud(tmp_path: Path, text: str, message: str) -> None:
@@ -233,6 +241,46 @@ def test_relative_paths_are_read_from_the_config_folder(tmp_path: Path, monkeypa
     assert descriptors["ails2"].java == str(config_dir.resolve() / "jdk" / "bin" / "java")
 
 
+def test_the_script_of_a_python_solver_is_a_file_of_the_config_folder(tmp_path: Path, monkeypatch) -> None:
+    """A bare name is a command on PATH for a native solver, and a file next to the config for a Python one."""
+    config_dir = tmp_path / "conf"
+    config_dir.mkdir()
+    monkeypatch.chdir(tmp_path)
+    path = _config(
+        config_dir,
+        '[solvers.mine]\nruntime = "python"\nexecutable = "solve.py"\nargv = ["{python}", "{executable}", "{problem}", "{solution}"]\n'
+        'input_format = "cvrplib-explicit"\noutput_format = "cvrplib-sol"\nproblem_types = ["CVRP"]\n'
+        '[solvers.lkh3]\nexecutable = "LKH"\n',
+    )
+    descriptors = configured_descriptors(path)
+    assert descriptors["mine"].executable == str(config_dir.resolve() / "solve.py")
+    assert descriptors["lkh3"].executable == "LKH"
+    solver = get_solver("mine", config=path)
+    assert not solver.availability().available and "script not found" in solver.availability().reason
+    (config_dir / "solve.py").write_text("")
+    registry.reload_solvers()
+    assert get_solver("mine", config=path).availability().available
+
+
+def test_the_id_convention_is_one_based_unless_declared(tmp_path: Path) -> None:
+    new_solver = (
+        '[solvers.{name}]\nargv = ["x", "{{problem}}", "{{solution}}"]\ninput_format = "cvrplib-explicit"\n'
+        'output_format = "cvrplib-sol"\nproblem_types = ["CVRP"]\n'
+    )
+    text = (
+        new_solver.format(name="plain")
+        + new_solver.format(name="from-zero") + 'id_convention = "zero-based"\n'
+        + '[solvers.guess]\nextends = "from-zero"\nid_convention = "auto"\n'
+        + '[solvers.child]\nextends = "from-zero"\n'
+    )
+    descriptors = configured_descriptors(_config(tmp_path, text))
+    assert descriptors["plain"].id_convention == "one-based"
+    assert descriptors["from-zero"].id_convention == "zero-based"
+    assert descriptors["guess"].id_convention == "auto"
+    assert descriptors["child"].id_convention == "zero-based"  # inherited
+    assert descriptors["plain"].sha256() != descriptors["plain"].with_overrides(id_convention="auto").sha256()
+
+
 def test_lkh_extra_args_are_literal_parameter_lines(tmp_path: Path) -> None:
     path = _config(tmp_path, '[solvers.lkh3]\nextra_args = ["SPECIAL = {not a placeholder}"]\n')
     assert configured_descriptors(path)["lkh3"].extra_args == ("SPECIAL = {not a placeholder}",)
@@ -244,6 +292,11 @@ def test_lkh_extra_args_are_literal_parameter_lines(tmp_path: Path) -> None:
         name="wrapped.toml",
     )
     assert configured_descriptors(wrapped)["lkh-pinned"].extra_args == ("SPECIAL = {not a placeholder}",)
+    # Tuning lines are kept, and so are a comment and a parameter whose name only starts like one of the run's.
+    tuned = _config(
+        tmp_path, '[solvers.lkh3]\nextra_args = ["RUNS = 10", "MAX_TRIALS = 500", "# SEED = 1", "SEEDS = 3"]\n', name="tuned.toml"
+    )
+    assert configured_descriptors(tuned)["lkh3"].extra_args == ("RUNS = 10", "MAX_TRIALS = 500", "# SEED = 1", "SEEDS = 3")
     # Any other format formats its extra_args as command-line tokens, placeholders checked.
     with pytest.raises(SolverConfigError, match="extra_args"):
         configured_descriptors(

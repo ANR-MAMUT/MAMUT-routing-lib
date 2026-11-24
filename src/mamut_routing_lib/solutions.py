@@ -30,8 +30,10 @@ from __future__ import annotations
 
 import math
 import re
+import sys
 from collections import Counter
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
@@ -115,7 +117,37 @@ class ParsedSolution:
 # --------------------------------------------------------------------------- #
 
 
-def parse_solution_text(text: str, *, filename: str = "") -> tuple[list[list[int]], float | None]:
+# A route set has at most two arcs per customer. Its integer weights cannot
+# exceed the largest binary64 operand divided by the smallest positive one.
+# Larger written exponents remain compact Decimal diagnostics.
+_MAX_REPORT_EXPONENT = Decimal(2 * sys.maxsize * int(sys.float_info.max) * math.ulp(0.0).as_integer_ratio()[1]).adjusted()
+
+
+def _reported_number(token: str | int | float | Decimal, exact: bool) -> int | float | Decimal:
+    if not exact:
+        return _finite_cost(token)
+    if isinstance(token, str) and not re.fullmatch(_NUMBER, token):
+        raise SolutionFormatError(f"Expected a finite numerical cost, got {token!r}.")
+    try:
+        number = Decimal(token)
+    except InvalidOperation as error:
+        raise SolutionFormatError("Unrepresentable decimal cost.") from error
+    if not number.is_finite():
+        raise SolutionFormatError("Expected a finite numerical cost.")
+    if number.is_zero():
+        return 0
+    if number.adjusted() <= _MAX_REPORT_EXPONENT and number == number.to_integral_value():
+        return int(number)
+    return number
+
+
+def _report_json_integer(token: str) -> int | Decimal:
+    # Route identifiers are integers. A vastly larger literal can only be
+    # useful as a cost diagnostic, retained at its written precision.
+    return int(Decimal(token)) if len(token.lstrip("-")) <= _MAX_REPORT_EXPONENT + 1 else Decimal(token)
+
+
+def parse_solution_text(text: str, *, filename: str = "", exact_report: bool = False) -> tuple[list[list[int]], int | float | Decimal | None]:
     """Routes (raw stop ids) and declared cost from a CVRPLIB ``.sol`` or a JSON solution.
 
     Accepts ``Route #k: a b c`` lines with an optional ``Cost <value>`` line, or
@@ -127,11 +159,11 @@ def parse_solution_text(text: str, *, filename: str = "") -> tuple[list[list[int
         raise SolutionFormatError("The solution is empty.")
 
     if stripped[0] in "[{" or filename.lower().endswith(".json"):
-        routes, declared, _, _ = _parse_json_solution(stripped)
+        routes, declared, _, _ = _parse_json_solution(stripped, exact_report=exact_report)
         return routes, declared
 
     routes = []
-    declared_cost: float | None = None
+    declared_cost = None
     for line in stripped.splitlines():
         match = _ROUTE_LINE.match(line)
         if match:
@@ -142,7 +174,7 @@ def parse_solution_text(text: str, *, filename: str = "") -> tuple[list[list[int
             continue
         cost_match = _COST_LINE.match(line)
         if cost_match:
-            declared_cost = _finite_cost(cost_match.group(1))
+            declared_cost = _reported_number(cost_match.group(1), exact_report)
     if not routes and not _COST_LINE.fullmatch(stripped):
         raise SolutionFormatError(
             "No 'Route #k: ...' lines found. Provide a CVRPLIB .sol file or JSON routes."
@@ -150,7 +182,7 @@ def parse_solution_text(text: str, *, filename: str = "") -> tuple[list[list[int
     return routes, declared_cost
 
 
-def _finite_cost(value: int | float | str) -> float:
+def _finite_cost(value: int | float | str | Decimal) -> float:
     if isinstance(value, str) and not re.fullmatch(_NUMBER, value):
         raise SolutionFormatError(f"Expected a finite numerical cost, got {value!r}.")
     try:
@@ -162,10 +194,13 @@ def _finite_cost(value: int | float | str) -> float:
     return cost
 
 
-def _parse_json_solution(text: str) -> tuple[list[list[int]], float | None, dict | None, BenchmarkBKS | None]:
+def _parse_json_solution(
+    text: str, *, exact_report: bool = False,
+) -> tuple[list[list[int]], int | float | Decimal | None, dict | None, BenchmarkBKS | None]:
     try:
-        payload = strict_json_loads(text)
-    except ValueError as exc:
+        payload = (strict_json_loads(text, parse_float=Decimal, parse_int=_report_json_integer)
+                   if exact_report else strict_json_loads(text))
+    except (ValueError, InvalidOperation) as exc:
         raise SolutionFormatError(f"Not valid JSON: {exc}") from exc
     declared = metadata = None
     if isinstance(payload, list):
@@ -186,12 +221,16 @@ def _parse_json_solution(text: str) -> tuple[list[list[int]], float | None, dict
             raise SolutionFormatError("JSON routes cannot contain an empty route.")
         if any(type(stop) is not int for stop in route):
             raise SolutionFormatError("Route stops must be integers.")
-    if declared is not None and type(declared) not in (int, float):
+    if declared is not None and type(declared) not in (int, float, Decimal):
         raise SolutionFormatError(f"JSON 'cost' must be a number, got {declared!r}.")
-    cost = None if declared is None else _finite_cost(declared)
+    cost = None if declared is None else _reported_number(declared, exact_report)
     metadata = metadata if isinstance(metadata, dict) else None
     marked = None
     if metadata is not None and ("exact_evaluation" in metadata or "standard" in metadata):
+        if exact_report:
+            # Marked BKS fields and metadata retain their published JSON types.
+            _, _, metadata, marked = _parse_json_solution(text)
+            return routes, cost, metadata, marked
         if "cost" not in payload:
             raise SolutionFormatError("An exact BKS must explicitly store its cost projection (number or null).")
         try:
@@ -201,7 +240,9 @@ def _parse_json_solution(text: str) -> tuple[list[list[int]], float | None, dict
     return routes, cost, metadata, marked
 
 
-def parse_lkh_mtsp_solution(text: str) -> tuple[list[list[int]], float | None, float | None]:
+def parse_lkh_mtsp_solution(
+    text: str, *, exact_report: bool = False,
+) -> tuple[list[list[int]], int | float | Decimal | None, int | float | Decimal | None]:
     """Routes (1-based node ids, depot node 1 removed), penalty and cost of an LKH-3 MTSP solution file.
 
     LKH-3 writes each vehicle as ``1 a b c 1 (#3)  Cost: X`` and empty vehicles as
@@ -214,7 +255,8 @@ def parse_lkh_mtsp_solution(text: str) -> tuple[list[list[int]], float | None, f
     penalty = cost = None
     header = _LKH_HEADER.search(lines[0])
     if header:
-        penalty, cost = _finite_cost(header.group(1)), _finite_cost(header.group(2))
+        penalty = _reported_number(header.group(1), exact_report)
+        cost = _reported_number(header.group(2), exact_report)
     elif re.search(r"Cost:", lines[0], re.IGNORECASE):
         raise SolutionFormatError("Malformed LKH-3 penalty and cost header.")
     depot_id: int | None = None
@@ -223,7 +265,7 @@ def parse_lkh_mtsp_solution(text: str) -> tuple[list[list[int]], float | None, f
         match = _LKH_ROUTE.match(line)
         if not match:
             continue
-        _finite_cost(match.group(3))
+        _reported_number(match.group(3), exact_report)
         try:
             nodes = [int(part) for part in match.group(1).split()]
         except ValueError as exc:
@@ -247,6 +289,8 @@ def resolve_convention(routes: list[list[int]], num_customers: int, convention: 
     """``zero-based`` or ``one-based``: what ``convention="auto"`` reads these stop ids as."""
     if convention in ("zero-based", "one-based"):
         return convention
+    if convention != "auto":
+        raise SolutionFormatError(f"Invalid id_convention: {convention!r}")
     raw_stops = [stop for route in routes for stop in route]
     covers_zero_to_n_minus_1 = (
         0 in raw_stops and len(raw_stops) == len(set(raw_stops)) and set(raw_stops) == set(range(num_customers))

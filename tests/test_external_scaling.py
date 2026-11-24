@@ -164,6 +164,34 @@ def test_config_limits_keep_their_integer_boundary(tmp_path) -> None:
     assert type(limit) is int and limit == 2**53 + 3
 
 
+def test_wide_raw_reports_and_strict_json_validation() -> None:
+    from decimal import Decimal
+
+    from mamut_routing_lib.solutions import SolutionFormatError, parse_lkh_mtsp_solution, parse_solution_text
+
+    wide = 2**1600 + 1
+    for source in (f"Route #1: 1\nCost {wide}.00", f'{{"routes":[[1]],"cost":{wide}.00}}'):
+        assert parse_solution_text(source, exact_report=True) == ([[1]], wide)
+        with pytest.raises(SolutionFormatError, match="finite binary64"):
+            parse_solution_text(source)
+
+    lkh = f"p, Cost: 0_{wide}\n1 2 1 (#1) Cost: {wide}"
+    assert parse_lkh_mtsp_solution(lkh, exact_report=True) == ([[2]], 0, wide)
+    assert parse_lkh_mtsp_solution(lkh.replace("0_", "1e-1000_"), exact_report=True)[1] != 0
+    for source in ('{"routes":[[1]],"routes":[[2]]}', '{"routes":[[1.0]]}', '{"routes":[[]]}',
+                   '{"routes":[[1]],"cost":true}', '{"routes":[[1]],"cost":NaN}', "Route #1: 1\nCost bad"):
+        with pytest.raises(SolutionFormatError):
+            parse_solution_text(source, exact_report=True)
+    for token in ("1e1000000000", "1e-1000000000", "3.00000000000000000000001"):
+        _, raw = parse_solution_text(f'{{"routes":[[1]],"cost":{token}}}', exact_report=True)
+        assert isinstance(raw, Decimal) and raw == Decimal(token)
+    unit_plan = plan_explicit_scale([[0, 1], [1, 0]])
+    assert unscale_cost(Decimal("1e1000000000"), unit_plan) == (None, None)
+    assert unscale_cost(Decimal("1e-1000000000"), unit_plan) == (0.0, None)
+    tiny_plan = plan_explicit_scale([[0, math.ulp(0.0)], [math.ulp(0.0), 0]])
+    assert unscale_cost(wide, tiny_plan) == (float(Fraction(wide, 2**1074)), Fraction(wide, 2**1074))
+
+
 def test_subnormal_unit_and_display_overflow() -> None:
     from mamut_routing_lib.solvers.base import SolveMonitor
 

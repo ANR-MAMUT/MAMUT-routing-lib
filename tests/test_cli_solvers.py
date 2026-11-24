@@ -81,6 +81,18 @@ def test_solve_with_a_configured_external_solver_and_kept_artifacts(tmp_path: Pa
     assert bks["metadata"]["solver"] == "fake" and bks["metadata"]["input_sha256"]
 
 
+def test_solve_warns_when_the_report_disagrees_with_the_export(tmp_path: Path, toy_cvrp_instance, monkeypatch) -> None:
+    """A mismatched report is visible even when the returned routes pass the benchmark checker."""
+    monkeypatch.setenv("FAKE_MODE", "wrong-cost")
+    result = CliRunner().invoke(
+        app,
+        ["solve", str(_instance(toy_cvrp_instance, tmp_path)), "--solver", "fake", "--solvers-config", str(_config(tmp_path)),
+         "--time-limit-s", "5"],
+    )
+    assert result.exit_code == 0, result.output  # the routes are valid, and COST is the checker's
+    assert "solver units" in result.stderr and "units in the exported matrix" in result.stderr
+
+
 def test_solve_with_an_unavailable_external_solver_is_a_usage_error(tmp_path: Path, toy_cvrp_instance, monkeypatch) -> None:
     monkeypatch.setenv("PATH", "/nonexistent")
     result = CliRunner().invoke(app, ["solve", str(_instance(toy_cvrp_instance, tmp_path)), "--solver", "lkh3"])
@@ -104,8 +116,8 @@ def test_solve_skips_instances_a_solver_cannot_take(tmp_path: Path) -> None:
     assert "skipped (TD) 2" in result.stdout
 
 
-def _interrupt_cli(args: list[str], *, ready, env: dict[str, str], timeout_s: float = 30.0):
-    """Run the CLI in a subprocess, send SIGINT once ``ready()`` holds, return (rc, output, seconds after SIGINT)."""
+def _interrupt_cli(args: list[str], *, ready, env: dict[str, str], timeout_s: float = 30.0, signal_name: str = "SIGINT"):
+    """Run the CLI in a subprocess, send it a signal once ``ready()`` holds, return (rc, output, seconds after the signal)."""
     import os
     import signal
     import subprocess
@@ -125,7 +137,7 @@ def _interrupt_cli(args: list[str], *, ready, env: dict[str, str], timeout_s: fl
             assert time.monotonic() < deadline, "the solves never started"
             time.sleep(0.1)
         time.sleep(0.5)
-        child.send_signal(signal.SIGINT)
+        child.send_signal(getattr(signal, signal_name))
         sent = time.monotonic()
         output, _ = child.communicate(timeout=timeout_s)
         return child.returncode, output.decode(), time.monotonic() - sent
@@ -163,6 +175,116 @@ def test_ctrl_c_stops_running_external_solves_at_once(tmp_path: Path, toy_cvrp_i
     assert after < 10, f"Ctrl-C took {after:.1f}s"
     assert "every running solve was stopped and wrote no BKS" in output
     assert not list(tmp_path.glob("*.bks.*.json"))
+    assert _solver_processes(artifacts) == []
+
+
+@pytest.mark.parametrize("batch", [False, True], ids=["one-instance", "parallel-batch"])
+def test_sigterm_ends_a_solve_the_way_ctrl_c_does(tmp_path: Path, toy_cvrp_instance, toy_vrptw_instance, batch) -> None:
+    """`timeout 60 mamut-routing solve`, a systemd stop: the solvers are stopped and the command says so."""
+    paths = [_instance(toy_cvrp_instance, tmp_path)]
+    if batch:
+        paths.append(_instance(toy_vrptw_instance, tmp_path))
+    artifacts = tmp_path / "artifacts"
+    args = ["solve", *map(str, paths), "--solver", "fake", "--solvers-config", str(_config(tmp_path)),
+            "--time-limit-s", "120", "--keep-artifacts", str(artifacts), "--save-bks", "--authors", "Tester"]
+    if batch:
+        args += ["--jobs", "2"]
+    rc, output, after = _interrupt_cli(
+        args,
+        ready=lambda: len(list(artifacts.rglob("solver.log"))) == len(paths),
+        env={"FAKE_MODE": "sleep"},
+        signal_name="SIGTERM",
+    )
+    assert rc == 143, output  # 128 + SIGTERM, as a shell reports it
+    assert after < 10, f"SIGTERM took {after:.1f}s"
+    assert "Stopped by SIGTERM: every running solve was stopped and wrote no BKS" in output
+    assert not list(tmp_path.glob("*.bks.*.json"))
+    assert _solver_processes(artifacts) == []
+
+
+def test_interrupt_during_batch_submission_stops_workers_before_waiting(
+    tmp_path: Path, toy_cvrp_instance, toy_vrptw_instance, monkeypatch
+) -> None:
+    import signal
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    from types import SimpleNamespace
+
+    from mamut_routing_lib import cli, solvers
+    from mamut_routing_lib.solvers.external.process import TerminationSignal
+
+    running = threading.Event()
+    stopped = threading.Event()
+
+    def solve_until_stopped(*args, monitor, **kwargs):
+        running.set()
+        deadline = time.monotonic() + 3
+        while not monitor.stop_requested and time.monotonic() < deadline:
+            time.sleep(0.01)
+        if monitor.stop_requested:
+            stopped.set()
+        return SimpleNamespace(result=SimpleNamespace(status="cancelled", wall_time=0.0))
+
+    class InterruptSubmission(ThreadPoolExecutor):
+        def submit(self, operation, *args):
+            super().submit(operation, *args)
+            # Queue the job, then deliver the signal before the caller receives its future.
+            assert running.wait(timeout=3)
+            raise TerminationSignal(signal.SIGTERM)
+
+    monkeypatch.setattr(solvers, "run_solver", solve_until_stopped)
+    monkeypatch.setattr(cli, "ThreadPoolExecutor", InterruptSubmission)
+    paths = [_instance(toy_cvrp_instance, tmp_path), _instance(toy_vrptw_instance, tmp_path)]
+    result = CliRunner().invoke(
+        app, ["solve", *map(str, paths), "--jobs", "1", "--solver", "fake", "--solvers-config", str(_config(tmp_path))],
+    )
+    assert result.exit_code == 143, result.output
+    assert stopped.is_set()
+
+
+def test_interrupt_reports_completed_bks_even_before_collecting_futures(
+    tmp_path: Path, toy_cvrp_instance, toy_vrptw_instance, monkeypatch
+) -> None:
+    import signal
+    from concurrent.futures import wait
+
+    from mamut_routing_lib import cli
+    from mamut_routing_lib.solvers.external.process import TerminationSignal
+
+    def interrupt_collection(futures):
+        done, pending = wait(futures, timeout=15)
+        assert len(done) == 2 and not pending
+        raise TerminationSignal(signal.SIGTERM)
+
+    monkeypatch.setattr(cli, "as_completed", interrupt_collection)
+    paths = [_instance(toy_cvrp_instance, tmp_path), _instance(toy_vrptw_instance, tmp_path)]
+    result = CliRunner().invoke(
+        app, ["solve", *map(str, paths), "--jobs", "2", "--solver", "fake", "--solvers-config", str(_config(tmp_path)),
+              "--time-limit-s", "5", "--save-bks", "--authors", "Tester"],
+    )
+    assert result.exit_code == 143, result.output
+    assert len(list(tmp_path.glob("*.bks.*.json"))) == 2
+    assert "BKS files written: 2" in result.stderr
+
+
+def test_a_killed_command_leaves_no_solver_behind(tmp_path: Path, toy_cvrp_instance, toy_vrptw_instance) -> None:
+    """SIGKILL cannot be handled: the guard of each solver stops it once the command is gone."""
+    import time
+
+    paths = [_instance(toy_cvrp_instance, tmp_path), _instance(toy_vrptw_instance, tmp_path)]
+    artifacts = tmp_path / "artifacts"
+    rc, _output, _after = _interrupt_cli(
+        ["solve", *map(str, paths), "--solver", "fake", "--solvers-config", str(_config(tmp_path)),
+         "--time-limit-s", "120", "--keep-artifacts", str(artifacts), "--jobs", "2"],
+        ready=lambda: len(list(artifacts.rglob("solver.log"))) == len(paths),
+        env={"FAKE_MODE": "sleep"},
+        signal_name="SIGKILL",
+    )
+    assert rc == -9
+    deadline = time.monotonic() + 10
+    while _solver_processes(artifacts) and time.monotonic() < deadline:
+        time.sleep(0.1)
     assert _solver_processes(artifacts) == []
 
 
@@ -249,6 +371,54 @@ def test_gap_to_bks_text() -> None:
     assert _gap_to_bks(90.0, 4, (100.0, 3), hier) == ("+1 veh", False)
     assert _gap_to_bks(120.0, 2, (100.0, 3), hier) == ("-1 veh", True)
     assert _gap_to_bks(50.0, 2, None, mono) == ("no BKS", True)
+
+
+def test_gap_handles_zero_underflow_and_overflow_without_losing_the_order():
+    from fractions import Fraction
+
+    from mamut_routing_lib.cli import _gap_to_bks
+    from mamut_routing_lib.enums import ObjectiveFunction
+
+    mono = ObjectiveFunction.MONO_COST
+    assert _gap_to_bks(Fraction(0), 1, (Fraction(0), 1), mono) == ("0.00%", False)
+    assert _gap_to_bks(Fraction(1), 1, (Fraction(0), 1), mono) == ("higher", False)
+    assert _gap_to_bks(Fraction(1), 1, (Fraction(1) + Fraction(1, 2**2000), 1), mono) == ("-<0.01%", True)
+    assert _gap_to_bks(Fraction(10**400), 1, (Fraction(1), 1), mono) == ("+1.00E+402%", False)
+    assert _gap_to_bks(Fraction(1), 1, (None, None), mono) == ("?", None)
+
+
+def test_solve_compares_exact_costs_on_a_display_tie_and_requires_matching_pins(tmp_path, toy_cvrp_instance):
+    from mamut_routing_lib.manifests import SPECIFICATION, file_sha256, manifest_bytes, manifest_path_for, matrix_sha256
+    from mamut_routing_lib.solutions import submit_bks
+
+    costs = [[0, 1, 1], [0, 0, 0], [0, 2**-55, 0]]
+    instance = toy_cvrp_instance.model_copy(update={"arc_costs": costs})
+    path = _instance(instance, tmp_path)
+    manifest = dict(specification=SPECIFICATION, benchmark_revision="r1", family=instance.benchmark_name.value,
+                    instance_name=instance.instance_name, problem="CVRP", objective="MonoCost",
+                    units={"cost": "fixture-unit"}, default_profile="binary64-exact-v1", features=["single-depot"],
+                    instance=dict(path=path.name, sha256=file_sha256(path)), sidecars=[],
+                    materialization=dict(kind="embedded-matrix", interpretation="binary64", matrix_sha256=matrix_sha256(costs)))
+    pins = manifest_path_for(path)
+    pins.write_bytes(manifest_bytes(manifest))
+    submitted = submit_bks(path, [[2, 1]], authors="Fixture")  # exact 1 + 2**-55
+    assert submitted.candidate_cost == 1.0
+    config = _config(tmp_path)
+    config.write_text(CONFIG + "symmetric_only = false\n")
+    args = ["solve", str(path), "--solver", "fake", "--solvers-config", str(config), "--time-limit-s", "5"]
+    # The fake CVRP solver returns [[1, 2]], of exact cost 1.
+    result = CliRunner().invoke(app, args)
+    assert result.exit_code == 0, result.output
+    assert "-<0.01%" in result.stdout and "beat the stored BKS" in result.stderr
+
+    pins.write_bytes(manifest_bytes({**manifest, "benchmark_revision": "r2"}))
+    result = CliRunner().invoke(app, args)
+    assert result.exit_code == 0, result.output
+    assert "GAP ?" in result.stderr and "beat the stored BKS" not in result.stderr
+    pins.write_bytes(manifest_bytes(manifest))
+    result = CliRunner().invoke(app, [*args, "--save-bks", "--authors", "Tester"])
+    assert result.exit_code == 0, result.output
+    assert "-<0.01%" in result.stdout and "replaced" in result.stdout
 
 
 def test_solvers_init_writes_a_starter_and_never_overwrites(tmp_path: Path, monkeypatch) -> None:

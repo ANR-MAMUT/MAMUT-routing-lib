@@ -20,10 +20,13 @@ from mamut_routing_lib.solvers.base import SolveMonitor
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
 
 _FAKE_KAYROS = '''
-"""Stand-in for the kayros package (FAKE_KAYROS_MODE: ok | explode | stall)."""
+"""Stand-in for the kayros package (FAKE_KAYROS_MODE: ok | explode | stall | killed | killed-early | explode-late)."""
 import os
+import signal
+import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass
@@ -50,8 +53,19 @@ def solve(instance, params=None, *, time_limit=None, seed=0, on_incumbent=None):
     mode = os.environ.get("FAKE_KAYROS_MODE", "ok")
     if mode == "explode":
         raise RuntimeError("internal/checker disagreement")
+    if mode == "killed-early":
+        os.kill(os.getpid(), signal.SIGKILL)  # before any incumbent: nothing to recover
     routes = [[1], [2]]
     on_incumbent(_Incumbent(99.0, 0.01, 1, "ils"), routes)
+    if mode in ("killed", "explode-late"):
+        # The worker saves an incumbent a moment after the hook returns: wait for the file.
+        checkpoint = Path(sys.argv[sys.argv.index("--checkpoint") + 1])
+        deadline = time.monotonic() + 20
+        while not checkpoint.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        if mode == "explode-late":
+            raise RuntimeError("internal/checker disagreement")
+        os.kill(os.getpid(), signal.SIGKILL)  # what the kernel does to a process that runs out of memory
     if mode == "stall":
         # The real search once it stops improving: no incumbent, so no way back into Python.
         time.sleep(20)
@@ -176,6 +190,53 @@ def test_kayros_keeps_its_files_in_a_given_workdir(fake_kayros, td_instance: Pat
     assert solved.result.status == "failed"  # never the stale result
     assert solved.result.provenance["artifacts_dir"] == str(workdir)
     assert "disagreement" in (workdir / "kayros.log").read_text()
+
+
+def test_a_worker_killed_by_the_system_keeps_its_last_incumbent(fake_kayros, td_instance: Path) -> None:
+    """Out of memory, the kernel kills the worker: no result file, and the answer of a long run in the checkpoint."""
+    fake_kayros("killed")
+    solved = run_solver("kayros", td_instance, time_limit_s=60)
+    result = solved.result
+    assert result.status == "feasible" and result.stopped_early
+    assert result.routes == [[1], [2]] and result.solver_cost == 99.0
+    assert solved.valid and solved.to_json()["ok"]  # the last incumbent is checked like any result
+    assert "the KAYROS worker was killed by SIGKILL" in result.error and "last incumbent it saved" in result.error
+    assert result.provenance["returncode"] == -9 and result.provenance["recovered_from_checkpoint"] is True
+    assert result.metadata == {"iterations": 1}
+
+
+def test_the_command_line_keeps_the_incumbent_of_a_killed_worker(fake_kayros, td_instance: Path) -> None:
+    """A `failed` result is an error row without routes: the recovered incumbent has to be a solved row."""
+    from typer.testing import CliRunner
+
+    from mamut_routing_lib.cli import app
+
+    fake_kayros("killed")
+    result = CliRunner().invoke(app, ["solve", str(td_instance), "--solver", "kayros", "--time-limit-s", "60"])
+    assert result.exit_code == 0, result.output
+    assert "feasible 1" in result.stdout and "errors 0" in result.stdout
+    assert "the KAYROS worker was killed by SIGKILL" in result.stderr
+
+
+def test_a_worker_killed_before_any_incumbent_is_a_failure(fake_kayros, td_instance: Path, tmp_path: Path) -> None:
+    workdir = tmp_path / "run"
+    workdir.mkdir()
+    # The checkpoint of an earlier run in a reused work directory is never this run's incumbent.
+    (workdir / "kayros-incumbent.json").write_text('{"value": 1.0, "iteration": 7, "routes": [[2], [1]]}')
+    fake_kayros("killed-early")
+    solved = run_solver("kayros", td_instance, time_limit_s=60, workdir=workdir, keep_artifacts=True)
+    assert solved.result.status == "failed" and not solved.result.routes
+    assert "KAYROS was killed by SIGKILL" in solved.result.error and "left no result" in solved.result.error
+    assert "recovered_from_checkpoint" not in solved.result.provenance
+
+
+def test_an_error_that_kayros_reports_is_a_failure_whatever_it_saved(fake_kayros, td_instance: Path) -> None:
+    """A worker that says its search went wrong is believed: its incumbent is not returned as an answer."""
+    fake_kayros("explode-late")
+    solved = run_solver("kayros", td_instance, time_limit_s=60)
+    assert solved.result.status == "failed" and not solved.result.routes
+    assert "disagreement" in solved.result.error
+    assert "recovered_from_checkpoint" not in solved.result.provenance
 
 
 def test_kayros_failure_is_a_result(fake_kayros, td_instance: Path) -> None:

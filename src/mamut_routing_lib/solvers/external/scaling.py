@@ -21,6 +21,7 @@ import itertools
 import math
 import numbers
 from dataclasses import asdict, dataclass
+from decimal import Decimal
 from fractions import Fraction
 from typing import Any, Callable, Iterable, Literal, Sequence
 
@@ -356,13 +357,36 @@ def scale_explicit_data(
     return matrix, windows, [weight(value) for value in (service_times or ())]
 
 
-def unscale_cost(raw: int | float | None, plan: ScalePlan) -> tuple[float | None, Fraction | None]:
+def unscale_cost(raw: int | float | Decimal | None, plan: ScalePlan) -> tuple[float | None, Fraction | None]:
     """Return a display value and, for exact integer exports, the lossless unscaled report."""
     if raw is None:
         return None, None
+    if isinstance(raw, Decimal):
+        # Even the extreme binary64 units shift the display by at most 324
+        # decimal places. Never expand a compact exponent into a huge Fraction.
+        if not raw.is_finite() or raw.adjusted() > 700:
+            return None, None
+        if raw.adjusted() < -700:
+            return -0.0 if raw.is_signed() else 0.0, None
+        if raw.as_tuple().exponent < -2000:
+            # A malformed fractional report can contain arbitrary precision.
+            # Its written text remains available in the run provenance.
+            return None, None
+        unit = plan.cost_unit
+        if unit is None:
+            assert plan.factor is not None
+            unit = 1 / Fraction(plan.factor)
+        try:
+            return float(Fraction(raw) * unit), None
+        except OverflowError:
+            return None, None
     if plan.cost_unit is None:
         assert plan.factor is not None
-        return float(raw) / plan.factor, None
+        try:
+            display = float(raw) / plan.factor
+        except OverflowError:
+            return None, None
+        return (display if math.isfinite(display) else None), None
     report = Fraction(raw)
     value = report * plan.cost_unit
     try:

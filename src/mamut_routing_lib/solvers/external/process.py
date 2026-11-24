@@ -15,6 +15,18 @@
   interpreter exit) kills them, so Ctrl-C in a CLI or a GUI shutdown leaves no
   orphan solver behind -- a solver in its own session does not receive the
   terminal's SIGINT.
+- A parent that is killed runs none of this: SIGKILL, an unhandled SIGTERM
+  (``timeout 60 mamut-routing solve``, a systemd stop) or a crash end it without
+  the exit hook, and the hard timeout lives in its poll loop. Each registered
+  solver therefore has a *guard* (POSIX): a small process that holds the read
+  end of a pipe whose only writer is this process. When this process dies, for
+  whatever reason, the guard reads end of file and kills the solver's process
+  group. A launcher waits for the guard to be ready before it executes solver code.
+  A run that ends normally writes one byte first, and the guard exits
+  without killing. A process forked from this one without ``exec`` while a
+  solve runs inherits the pipe, and the guard then waits for it too.
+- :func:`interrupt_on_termination` turns SIGTERM and SIGHUP into the interrupt
+  that Ctrl-C raises, for a command line that reports what it stopped.
 """
 
 from __future__ import annotations
@@ -23,23 +35,37 @@ import atexit
 import os
 import re
 import signal
+import socket
 import subprocess
 import sys
 import threading
 import time
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Mapping, Sequence
+from typing import Iterator, Literal, Mapping, Sequence
 
 from mamut_routing_lib.solvers.base import SolveMonitor
 
-__all__ = ["ProcessOutcome", "kill_process_tree", "live_process_count", "run_process", "terminate_all"]
+__all__ = [
+    "ProcessOutcome",
+    "TerminationSignal",
+    "interrupt_on_termination",
+    "kill_process_tree",
+    "live_process_count",
+    "run_process",
+    "terminate_all",
+]
 
 _IS_WINDOWS = sys.platform == "win32"
 _LIVE: dict[int, subprocess.Popen] = {}
+#: The guard of each live solver, by the solver's pid.
+_GUARDS: dict[int, subprocess.Popen] = {}
 _LIVE_LOCK = threading.Lock()
 #: Pids that ``terminate_all`` stopped: their run is ``cancelled``, not a solver failure.
 _TERMINATED: set[int] = set()
+
+_LAUNCHER = Path(__file__).with_name("_process_launcher.py").resolve()
 
 
 @dataclass(frozen=True)
@@ -60,14 +86,108 @@ def live_process_count() -> int:
         return len(_LIVE)
 
 
-def _register(process: subprocess.Popen) -> None:
-    with _LIVE_LOCK:
-        _LIVE[process.pid] = process
+def _start_guard(group: int, term_grace_s: float) -> subprocess.Popen:
+    """Start the POSIX parent-death guard and wait until it is listening."""
+    guard = subprocess.Popen(
+        [sys.executable, "-I", "-S", str(_LAUNCHER), "guard", str(group), str(max(0.0, term_grace_s))],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        cwd=os.sep,
+        start_new_session=True,
+    )
+    try:
+        assert guard.stdout is not None
+        with guard.stdout:
+            if guard.stdout.read(1) != b"+":
+                raise OSError("the parent-death guard failed to start")
+    except BaseException:
+        _release_guard(guard)
+        raise
+    return guard
+
+
+def _release_guard(guard: subprocess.Popen) -> None:
+    """Tell the guard that the run is over (one byte, then end of file), and reap it."""
+    if guard.stdin is not None:
+        try:
+            guard.stdin.write(b".")
+            guard.stdin.close()
+        except OSError:  # the guard is already gone
+            pass
+    try:
+        guard.wait(timeout=5)
+    except subprocess.TimeoutExpired:  # pragma: no cover - a guard that does not read its pipe
+        guard.kill()
+        guard.wait()
+
+
+@contextmanager
+def _running_solver(argv: Sequence[str], term_grace_s: float, **popen_kwargs) -> Iterator[subprocess.Popen]:
+    """Keep the solver supervised from its first instruction until its group is gone."""
+    with ExitStack() as sockets:
+        command = list(argv)
+        if _IS_WINDOWS:  # pragma: no cover
+            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            if not sys.executable or getattr(sys, "frozen", False):
+                raise OSError("a Python interpreter is required for the POSIX parent-death guard")
+            control, child = socket.socketpair()
+            sockets.enter_context(control)
+            sockets.enter_context(child)
+            command = [sys.executable, "-I", "-S", str(_LAUNCHER), "launch", str(child.fileno()), *argv]
+            popen_kwargs.update(start_new_session=True, pass_fds=(child.fileno(),))
+
+        process = subprocess.Popen(command, **popen_kwargs)
+        guard = None
+        registered = False
+        try:
+            if not _IS_WINDOWS:
+                child.close()
+                guard = _start_guard(process.pid, term_grace_s)
+            with _LIVE_LOCK:
+                if guard is not None:
+                    # EOF before this byte ends the launcher without starting the solver.
+                    control.sendall(b"+")
+                    _GUARDS[process.pid] = guard
+                _LIVE[process.pid] = process
+                registered = True
+            if guard is not None:
+                # Waiting for exec must leave the registry available to other runs and to terminate_all.
+                # exec closes the socket on success. On failure the launcher returns the OS error.
+                try:
+                    error = control.recv(8192)
+                except ConnectionResetError:
+                    with _LIVE_LOCK:
+                        if process.pid not in _TERMINATED:
+                            raise
+                else:
+                    if error:
+                        raise OSError(error.decode(errors="replace"))
+                control.close()
+            yield process
+        finally:
+            if not _IS_WINDOWS:
+                control.close()
+                # Also remove children left behind by a solver that exited normally.
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+            if registered:
+                _unregister(process)
+            elif guard is not None:
+                _release_guard(guard)
+            process.wait()
 
 
 def _unregister(process: subprocess.Popen) -> None:
+    """Forget a solver whose process group is gone, and release its guard."""
     with _LIVE_LOCK:
         _LIVE.pop(process.pid, None)
+        guard = _GUARDS.pop(process.pid, None)
+    if guard is not None:
+        _release_guard(guard)
 
 
 def _was_terminated(process: subprocess.Popen) -> bool:
@@ -127,6 +247,50 @@ def terminate_all(term_grace_s: float = 1.0) -> int:
 
 
 atexit.register(terminate_all)
+
+
+class TerminationSignal(KeyboardInterrupt):
+    """SIGTERM or SIGHUP, raised as the interrupt of Ctrl-C by :func:`interrupt_on_termination`."""
+
+    def __init__(self, signum: int):
+        super().__init__(signum)
+        self.signum = int(signum)
+
+    @property
+    def name(self) -> str:
+        """``SIGTERM`` or ``SIGHUP``."""
+        return signal.Signals(self.signum).name
+
+
+def _raise_termination(signum: int, frame: object) -> None:
+    raise TerminationSignal(signum)
+
+
+@contextmanager
+def interrupt_on_termination() -> Iterator[None]:
+    """Inside the block, SIGTERM and SIGHUP raise :class:`TerminationSignal` in the main thread.
+
+    It is a ``KeyboardInterrupt``, so a command line that stops its solvers and reports on Ctrl-C
+    does the same for ``timeout 60 <command>``, a systemd stop or a closed terminal, which
+    otherwise end the process without a word. The former handlers are restored on exit. Python
+    installs signal handlers from the main thread only: anywhere else this does nothing.
+    """
+    previous: dict[int, object] = {}
+    if threading.current_thread() is threading.main_thread():
+        for name in ("SIGTERM", "SIGHUP"):
+            signum = getattr(signal, name, None)
+            if signum is None:  # no SIGHUP on Windows
+                continue
+            try:
+                previous[signum] = signal.signal(signum, _raise_termination)
+            except (OSError, ValueError):  # pragma: no cover - a signal this platform does not let us handle
+                pass
+    try:
+        yield
+    finally:
+        for signum, handler in previous.items():
+            # ``None`` is a handler that was not installed from Python: it cannot be put back.
+            signal.signal(signum, signal.SIG_DFL if handler is None else handler)  # type: ignore[arg-type]
 
 
 def _read_new(log_path: Path, offset: int) -> tuple[str, int]:
@@ -201,17 +365,13 @@ def run_process(
         "stderr": subprocess.STDOUT,
         "env": dict(env) if env is not None else None,
     }
-    if _IS_WINDOWS:  # pragma: no cover
-        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
-    else:
-        popen_kwargs["start_new_session"] = True
     best: float | None = None
     iterations: int | None = None
     offset = 0
     pending = ""
-    with log_path.open("wb") as log:
+    with log_path.open("wb") as log, ExitStack() as children:
         try:
-            process = subprocess.Popen(list(argv), stdout=log, **popen_kwargs)
+            process = children.enter_context(_running_solver(argv, term_grace_s, stdout=log, **popen_kwargs))
         except OSError as error:
             return ProcessOutcome(
                 returncode=None,
@@ -221,7 +381,6 @@ def run_process(
                 log_tail="",
                 error=f"cannot start {argv[0]}: {error}",
             )
-        _register(process)
         termination: Literal["exited", "timeout", "cancelled", "error"] = "exited"
         try:
             while True:
@@ -252,13 +411,6 @@ def run_process(
             raise
         finally:
             _was_terminated(process)  # forget the pid whichever way the run ended
-            if not _IS_WINDOWS:
-                # The solver exited, but children it spawned may still hold the group.
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
-                    pass
-            _unregister(process)
     if pattern is not None:  # progress lines written right before exit
         chunk, offset = _read_new(log_path, offset)
         best, iterations = _scan_progress(pattern, pending + chunk, best, iterations)
