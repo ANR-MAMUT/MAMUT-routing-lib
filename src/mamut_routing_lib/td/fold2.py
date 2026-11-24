@@ -1,0 +1,288 @@
+"""Historical td-fold/2 checker and ready-time curves from mamut-routing-lib v0.12.
+
+The floating fold composes the materialized arc functions and applies customer windows and service at each step. It prices routes in canonical route order. The historical repricer uses this module to replay unmarked records.
+"""
+
+from __future__ import annotations
+
+from pydantic import BaseModel, ConfigDict
+
+from mamut_routing_lib.checker import SolutionCheckStatus, canonical_route_order
+from mamut_routing_lib.enums import ObjectiveFunction
+from mamut_routing_lib.models import BenchmarkBKS, BenchmarkSolution
+from mamut_routing_lib.td.artifacts import InstanceATFs, LoadedTDInstance
+from mamut_routing_lib.td.models import AnyTDBenchmarkInstance, BenchmarkInstanceTDVRPTW
+from mamut_routing_lib.td.pwlf import NDCPWLF, apply_ready_time, restrict_domain
+
+#: Objectives the TD checker can score. Everything else is a static-checker
+#: concern and is refused loudly.
+TD_OBJECTIVES = (ObjectiveFunction.DURATION, ObjectiveFunction.FLEET_COST_DURATION)
+
+#: Arithmetic identity for the v0.12 replay.
+TD_CHECKER_CONTRACT = "td-fold/2"
+
+#: Hint appended to cost mismatches: stored BKS priced under ``td-fold/1``
+#: need a re-pricing pass after the lib upgrade.
+REPRICE_HINT = (
+    "the TD checker contract changed to td-fold/2 in mamut-routing-lib 0.12.0; "
+    "re-price stored BKS with `mamut-routing bks reprice-td`"
+)
+
+__all__ = [
+    "REPRICE_HINT",
+    "TD_CHECKER_CONTRACT",
+    "TD_OBJECTIVES",
+    "TDRouteEvaluation",
+    "TDSolutionCheckResult",
+    "canonical_route_order",
+    "check_td_solution",
+    "compute_route_duration",
+    "compute_route_ready_time_function",
+    "compute_solution_cost",
+]
+
+
+def _fleet_fixed_cost_for(
+    instance: AnyTDBenchmarkInstance,
+    objective_function: ObjectiveFunction,
+) -> float | None:
+    """Resolve the fixed-cost term of ``objective_function`` on ``instance``.
+
+    Returns ``None`` for ``Duration`` (no term), the instance's
+    ``fleet_fixed_cost`` for ``FleetCostDuration``, and raises on any other
+    objective or when the required field is missing.
+    """
+    if objective_function == ObjectiveFunction.DURATION:
+        return None
+    if objective_function == ObjectiveFunction.FLEET_COST_DURATION:
+        if instance.fleet_fixed_cost is None:
+            raise ValueError(
+                f"Instance {instance.instance_name} has no fleet_fixed_cost; "
+                "the FleetCostDuration objective requires it"
+            )
+        return float(instance.fleet_fixed_cost)
+    raise ValueError(f"The TD checker only scores {[o.value for o in TD_OBJECTIVES]}, got {objective_function!r}")
+
+
+class TDRouteEvaluation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    route: list[int]
+    feasible: bool
+    duration: float | None = None
+    departure_time: float | None = None
+
+
+class TDSolutionCheckResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: SolutionCheckStatus
+    routing_cost: float | None
+    num_routes: int | None
+    error_message: str = ""
+    exact_evaluation: dict | None = None
+    route_evaluations: list[TDRouteEvaluation] = []
+
+    def is_valid(self) -> bool:
+        return self.status == SolutionCheckStatus.VALID
+
+    @classmethod
+    def make_invalid(cls, status: SolutionCheckStatus, error_message: str) -> "TDSolutionCheckResult":
+        return cls(status=status, routing_cost=None, num_routes=None, error_message=error_message)
+
+
+def _vertex_time_window(
+    instance: AnyTDBenchmarkInstance,
+    vertex: int,
+) -> tuple[float, float] | None:
+    if isinstance(instance, BenchmarkInstanceTDVRPTW):
+        earliest, latest = instance.time_windows[vertex]
+        return float(earliest), float(latest)
+    return None
+
+
+def compute_route_ready_time_function(
+    instance: AnyTDBenchmarkInstance,
+    atfs: InstanceATFs,
+    route: list[int],
+) -> NDCPWLF:
+    """Route ready-time function ``δ_r`` over feasible depot departure times.
+
+    Implements the released ``td-fold/2`` contract. Returns an empty
+    function when the route is time-infeasible.
+    """
+    if not route:
+        raise ValueError("cannot evaluate an empty route")
+    horizon_start, horizon_end = atfs.horizon
+    depot = instance.depot
+
+    depot_tw = _vertex_time_window(instance, depot)
+    if depot_tw is not None:
+        departure_low = max(horizon_start, depot_tw[0])
+        departure_high = min(horizon_end, depot_tw[1])
+    else:
+        departure_low, departure_high = horizon_start, horizon_end
+    if departure_low > departure_high:
+        return NDCPWLF.empty()
+
+    acc: NDCPWLF | None = None
+    previous = depot
+    for vertex in route:
+        arc = atfs.arcs[(previous, vertex)]
+        if acc is None:
+            acc = restrict_domain(arc, departure_low, departure_high)
+        else:
+            acc = arc.compose(acc, slope_one_exact=True)
+        if acc.is_empty():
+            return acc
+        time_window = _vertex_time_window(instance, vertex)
+        acc = apply_ready_time(
+            acc,
+            earliest=time_window[0] if time_window is not None else None,
+            latest=time_window[1] if time_window is not None else None,
+            service_time=float(instance.service_times[vertex]),
+        )
+        if acc.is_empty():
+            return acc
+        previous = vertex
+
+    assert acc is not None
+    acc = atfs.arcs[(previous, depot)].compose(acc, slope_one_exact=True)
+    if acc.is_empty():
+        return acc
+    if depot_tw is not None:
+        # Restrict the return arrival to the depot due date, without any
+        # waiting clamp: the route ends upon arrival.
+        acc = apply_ready_time(acc, earliest=None, latest=depot_tw[1], service_time=0.0)
+    return acc
+
+
+def compute_route_duration(
+    instance: AnyTDBenchmarkInstance,
+    atfs: InstanceATFs,
+    route: list[int],
+) -> TDRouteEvaluation:
+    """Optimal Duration ``Δ*_r`` and earliest optimal depot departure ``t*_r``."""
+    delta = compute_route_ready_time_function(instance, atfs, route)
+    if delta.is_empty():
+        return TDRouteEvaluation(route=route, feasible=False)
+    duration, departure = delta.min_shifted_image()
+    return TDRouteEvaluation(route=route, feasible=True, duration=duration, departure_time=departure)
+
+
+def compute_solution_cost(
+    instance: AnyTDBenchmarkInstance,
+    atfs: InstanceATFs,
+    routes: list[list[int]],
+    objective_function: ObjectiveFunction = ObjectiveFunction.DURATION,
+) -> float:
+    """Total cost under ``objective_function``, canonical route order.
+
+    Duration: sum of per-route durations. FleetCostDuration: the same fold,
+    then a single ``+ fleet_fixed_cost * len(routes)``. Raises on infeasible
+    routes and on a missing ``fleet_fixed_cost``.
+    """
+    fleet_fixed_cost = _fleet_fixed_cost_for(instance, objective_function)
+    total = 0.0
+    for route in canonical_route_order(routes):
+        evaluation = compute_route_duration(instance, atfs, route)
+        if not evaluation.feasible:
+            raise ValueError(f"route {route} is time-infeasible")
+        assert evaluation.duration is not None
+        total += evaluation.duration
+    if fleet_fixed_cost is not None:
+        total += fleet_fixed_cost * len(routes)
+    return total
+
+
+def check_td_solution(
+    loaded: LoadedTDInstance,
+    solution: BenchmarkSolution | BenchmarkBKS,
+    objective_function: ObjectiveFunction = ObjectiveFunction.DURATION,
+) -> TDSolutionCheckResult:
+    instance = loaded.instance
+    atfs = loaded.atfs
+    routes = solution.routes
+    is_tdvrptw = isinstance(instance, BenchmarkInstanceTDVRPTW)
+
+    # Contract misuse guards, not solution defects: raise instead of returning
+    # an invalid result.
+    fleet_fixed_cost = _fleet_fixed_cost_for(instance, objective_function)
+    declared_objective = getattr(solution, "objective_function", None)
+    if declared_objective is not None and declared_objective != objective_function:
+        raise ValueError(
+            f"Solution declares objective {declared_objective!r} but the check "
+            f"was requested for {objective_function!r}"
+        )
+
+    served_customers: set[int] = set()
+    for route in routes:
+        current_load = 0
+        for customer in route:
+            if customer < 1 or customer > instance.num_customers:
+                return TDSolutionCheckResult.make_invalid(
+                    SolutionCheckStatus.INVALID_CUSTOMER_INDEX,
+                    f"Invalid customer index: {customer}",
+                )
+            if customer in served_customers:
+                return TDSolutionCheckResult.make_invalid(
+                    SolutionCheckStatus.CUSTOMER_SERVED_MULTIPLE_TIMES,
+                    f"Customer {customer} served more than once.",
+                )
+            served_customers.add(customer)
+            current_load += instance.demands[customer]
+            if current_load > instance.vehicle_capacity:
+                return TDSolutionCheckResult.make_invalid(
+                    SolutionCheckStatus.VEHICLE_CAPACITY_EXCEEDED,
+                    f"Vehicle capacity exceeded on route: {route}",
+                )
+
+    missing_customers = set(range(1, instance.num_customers + 1)) - served_customers
+    if missing_customers:
+        return TDSolutionCheckResult.make_invalid(
+            SolutionCheckStatus.NOT_ALL_CUSTOMERS_SERVED,
+            f"Not all customers served. Missing: {sorted(missing_customers)}",
+        )
+
+    if instance.num_vehicles is not None and len(routes) > instance.num_vehicles:
+        return TDSolutionCheckResult.make_invalid(
+            SolutionCheckStatus.TOO_MANY_VEHICLES_USED,
+            "Number of routes exceeds the declared number of vehicles.",
+        )
+
+    evaluations: list[TDRouteEvaluation] = []
+    for route in routes:
+        evaluation = compute_route_duration(instance, atfs, route)
+        if not evaluation.feasible:
+            status = (
+                SolutionCheckStatus.TIME_WINDOW_VIOLATED
+                if is_tdvrptw
+                else SolutionCheckStatus.ROUTE_TIMING_INFEASIBLE
+            )
+            return TDSolutionCheckResult.make_invalid(
+                status,
+                f"Route has no feasible depot departure time: {route}",
+            )
+        evaluations.append(evaluation)
+
+    total = 0.0
+    # Canonical route order (same key as canonical_route_order).
+    for evaluation in sorted(evaluations, key=lambda item: item.route[0]):
+        assert evaluation.duration is not None
+        total += evaluation.duration
+    if fleet_fixed_cost is not None:
+        total += fleet_fixed_cost * len(routes)
+
+    if solution.cost is not None and solution.cost != total:
+        return TDSolutionCheckResult.make_invalid(
+            SolutionCheckStatus.OBJECTIVE_VALUE_MISMATCH,
+            f"Provided cost {solution.cost!r} does not match computed "
+            f"{objective_function.value} {total!r} ({REPRICE_HINT}).",
+        )
+
+    return TDSolutionCheckResult(
+        status=SolutionCheckStatus.VALID,
+        routing_cost=total,
+        num_routes=len(routes),
+        route_evaluations=evaluations,
+    )

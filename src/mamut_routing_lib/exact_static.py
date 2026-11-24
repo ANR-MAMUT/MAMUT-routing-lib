@@ -11,7 +11,7 @@ from mamut_routing_lib.checker import SolutionCheckStatus
 from mamut_routing_lib.enums import ObjectiveFunction
 from mamut_routing_lib.exact_types import (
     STATIC_PROFILE, ExactBackend, ExactEvaluation, ExactRouteError, binary64_operand,
-    canonical_checked_routes, exact_resource, nonnegative_integer,
+    canonical_checked_routes, checked_stops, exact_resource, nonnegative_integer,
 )
 from mamut_routing_lib.models import BenchmarkInstanceVRPTW, BenchmarkInstanceCVRP
 from mamut_routing_lib.objectives import base_objective, require_supported_objective
@@ -30,7 +30,7 @@ def _fraction_checker(rows, opens, closes, services, vertices):
         matrix.append(converted)
     opens, closes, services = (tuple(map(Fraction.from_float, v)) for v in (opens, closes, services))
 
-    def evaluate(routes: Routes) -> Fraction | None:
+    def evaluate(routes: Routes, check_windows: bool) -> Fraction | None:
         cost = Fraction(0)
         for route in routes:
             previous = 0
@@ -38,7 +38,7 @@ def _fraction_checker(rows, opens, closes, services, vertices):
             for customer in chain(route, (0,)):
                 arc = matrix[previous][customer]
                 cost += arc
-                if opens:
+                if check_windows and opens:
                     start = max(departure + arc, opens[customer])
                     if start > closes[customer]:
                         return None
@@ -60,7 +60,15 @@ class PreparedStatic:
     fleet_limit: int | None
     objective: ObjectiveFunction
     backend: str
-    _price: Callable[[Routes], Fraction | None] = field(repr=False)
+    _price: Callable[[Routes, bool], Fraction | None] = field(repr=False)
+
+    def routing_cost(self, routes: Sequence[Sequence[int]]) -> Fraction:
+        """Sum the arcs of possibly partial routes, independently of temporal and coverage checks."""
+        walks = tuple(checked_stops(route, self.num_customers) for route in routes)
+        cost = self._price(walks, False)
+        if cost is None:
+            raise RuntimeError("Arc pricing unexpectedly returned a time-window rejection.")
+        return cost
 
     def evaluate(self, routes: Sequence[Sequence[int]]) -> ExactEvaluation:
         """Verify the submitted routes and price the exact sum of the traversed arcs."""
@@ -68,7 +76,7 @@ class PreparedStatic:
             routes, num_customers=self.num_customers, demands=self.demands,
             capacity=self.capacity, fleet_limit=self.fleet_limit,
         )
-        cost = self._price(canonical)
+        cost = self._price(canonical, True)
         if cost is None:
             raise ExactRouteError(SolutionCheckStatus.TIME_WINDOW_VIOLATED,
                                   "A customer or depot return time window is violated.")
@@ -140,8 +148,8 @@ def prepare_static(
                               "or select backend='python' for the Fraction reference.") from exc
         model = StaticModel(vertices, rows, opens, closes, services)
 
-        def price(routes: Routes) -> Fraction | None:
-            pair = model.evaluate(routes)
+        def price(routes: Routes, check_windows: bool) -> Fraction | None:
+            pair = model.evaluate(routes, check_windows)
             if pair is None:
                 return None
             units, scale = pair

@@ -23,11 +23,14 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field
+from decimal import Decimal
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
 from mamut_routing_lib.checker import shortest_decimal_cost_value, get_objective_tuple
 from mamut_routing_lib.enums import ObjectiveFunction
+from mamut_routing_lib.exact_types import ExactEvaluation, ExactRouteError, _fraction_record
 
 _TD_STRICT = "TDVRPTW"
 _TD_RELAXED = "TDVRP"
@@ -114,12 +117,19 @@ class RelaxationCheck:
     objective_function: str
     strict_cost: float | int | None
     relaxed_cost: float | int | None
-    priced_cost: float | int | None = None
+    priced_cost: Fraction | None = None
     inverted: bool = False
     issues: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        if self.priced_cost is not None:
+            data["priced_cost_exact"] = _fraction_record(self.priced_cost)
+            try:
+                data["priced_cost"] = float(self.priced_cost)
+            except OverflowError:
+                data["priced_cost"] = None
+        return data
 
 
 def _bks_for(instance_path: Path, objective: str) -> Path:
@@ -127,12 +137,21 @@ def _bks_for(instance_path: Path, objective: str) -> Path:
     return instance_path.with_name(f"{base}.bks.{objective}.json")
 
 
+def _stored_cost(payload: dict) -> Fraction | None:
+    """Read the exact assertion, or the historical decimal display for an unmarked record."""
+    metadata = payload.get("metadata", {})
+    for key in ("standard", "exact_evaluation"):
+        if key in metadata:
+            pair = metadata[key]["authoritative_cost"]
+            return Fraction(int(Decimal(pair["numerator"])), int(Decimal(pair["denominator"])))
+    return shortest_decimal_cost_value(payload["cost"]) if payload.get("cost") is not None else None
+
+
 def check_relaxation_pair(strict_bks_path: str | Path, *, priced: bool = False) -> RelaxationCheck | None:
     """Screen the twin pair of a restriction's BKS; ``None`` when it has no twin BKS.
 
     ``inverted`` is set when the relaxation's stored BKS is strictly worse
-    than the restriction's (exact decimal costs, compared through
-    ``get_objective_tuple``) or, with ``priced``, worse than the restriction's
+    than the restriction's under the objective key or, with ``priced``, worse than the restriction's
     routes priced on the relaxation.
     """
     strict_bks = Path(strict_bks_path)
@@ -155,39 +174,40 @@ def check_relaxation_pair(strict_bks_path: str | Path, *, priced: bool = False) 
         relaxed_cost=relaxed_payload.get("cost"),
         issues=structural_relaxation_issues(strict_instance, relaxed_instance),
     )
-    if result.issues or result.strict_cost is None or result.relaxed_cost is None:
+    if result.issues:
+        return result
+    strict_value, relaxed_value = _stored_cost(strict_payload), _stored_cost(relaxed_payload)
+    if strict_value is None or relaxed_value is None:
         return result
     objective_function = ObjectiveFunction(objective)
     strict_routes = strict_payload["routes"]
-    relaxed_key = get_objective_tuple(
-        relaxed_payload["routes"], shortest_decimal_cost_value(result.relaxed_cost), objective_function
-    )
-    if relaxed_key > get_objective_tuple(strict_routes, shortest_decimal_cost_value(result.strict_cost), objective_function):
-        result.inverted = True
+    relaxed_key = get_objective_tuple(relaxed_payload["routes"], relaxed_value, objective_function)
+    result.inverted = relaxed_key > get_objective_tuple(strict_routes, strict_value, objective_function)
     if priced:
-        result.priced_cost = _price_on_relaxation(relaxed_instance, strict_routes, objective)
-        if result.priced_cost is not None and relaxed_key > get_objective_tuple(
-            strict_routes, shortest_decimal_cost_value(result.priced_cost), objective_function
-        ):
-            result.inverted = True
+        evaluation = _price_on_relaxation(relaxed_instance, strict_routes, objective_function)
+        if evaluation is not None:
+            result.priced_cost = evaluation.cost
+            result.inverted |= relaxed_key > evaluation.objective_key
     return result
 
 
-def _price_on_relaxation(relaxed_instance: Path, routes: list[list[int]], objective: str) -> float | int | None:
-    from mamut_routing_lib.models import BenchmarkSolution
+def _price_on_relaxation(
+    relaxed_instance: Path, routes: list[list[int]], objective: ObjectiveFunction
+) -> ExactEvaluation | None:
+    from mamut_routing_lib.artifacts import load_benchmark_instance
+    from mamut_routing_lib.exact import evaluate_exact
+    from mamut_routing_lib.manifests import adjacent_manifest
+    from mamut_routing_lib.solutions import is_time_dependent
+    from mamut_routing_lib.td.reprice import load_td_instance_for_routes
 
-    solution = BenchmarkSolution(instance_name="relaxation-twin", routes=routes)
-    payload = json.loads(relaxed_instance.read_text(encoding="utf-8"))
-    if "td" in payload:
-        from mamut_routing_lib.td.checker import check_td_solution
-        from mamut_routing_lib.td.reprice import load_td_instance_for_routes
-
-        loaded = load_td_instance_for_routes(relaxed_instance, routes)
-        check = check_td_solution(loaded, solution, ObjectiveFunction(objective))
+    manifest = adjacent_manifest(relaxed_instance, objective, routes=routes)
+    if manifest is not None:
+        source = manifest.checkable
+    elif is_time_dependent(load_benchmark_instance(relaxed_instance)):
+        source = load_td_instance_for_routes(relaxed_instance, routes)
     else:
-        from mamut_routing_lib.artifacts import hydrate_collection_instance, load_benchmark_instance
-        from mamut_routing_lib.checker import check_solution
-
-        instance = hydrate_collection_instance(load_benchmark_instance(relaxed_instance), relaxed_instance)
-        check = check_solution(instance, solution)
-    return check.routing_cost if check.is_valid() else None
+        source = relaxed_instance
+    try:
+        return evaluate_exact(source, routes, objective_function=objective)
+    except ExactRouteError:
+        return None

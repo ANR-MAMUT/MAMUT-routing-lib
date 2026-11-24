@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from mamut_routing_lib.td import TD_CHECKER_CONTRACT
+from mamut_routing_lib.td.fold2 import TD_CHECKER_CONTRACT
 from mamut_routing_lib.td.pwlf import NDCPWLF, apply_ready_time, make_service_theta, make_theta, restrict_domain
 
 VECTORS = json.loads((Path(__file__).parent / "fixtures" / "td" / "fold-v2-vectors.json").read_text())
@@ -53,7 +53,7 @@ def _td_fold_1(vector: dict) -> NDCPWLF:
     return _fn(vector["f"]).compose(_fn(vector["g"]))
 
 
-def test_vectors_carry_the_current_contract() -> None:
+def test_vectors_identify_the_released_fold() -> None:
     assert VECTORS["contract"] == TD_CHECKER_CONTRACT
 
 

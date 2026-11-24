@@ -1,11 +1,6 @@
 """Non-Decreasing Continuous PieceWise Linear Functions (NDCPWLF).
 
-This module is the canonical, pure-Python reference for the function algebra
-used by the time-dependent (TD) solution checker: arc arrival-time functions,
-time-window ready-time functions, and their compositions. It is deliberately
-kept simple and fully deterministic (plain IEEE-754 double arithmetic, no
-epsilon comparisons) so that it can be reimplemented independently and produce
-bit-identical results.
+Materialization and historical replay use binary64 function algebra. The current family profile interprets the materialized knots as exact binary64 rationals. Use ``evaluate_exact`` to obtain the arrival at an exact departure time.
 
 Representation: a function is the list of its breakpoints, split into two
 parallel arrays ``xs`` (non-decreasing) and ``ys`` (non-decreasing). Between
@@ -27,7 +22,7 @@ with two deliberate deviations that keep the canonical spec simple:
   clamped monotone, so the non-decreasing invariant holds structurally under
   any rounding.
 
-The checker's route fold (contract ``td-fold/2``, see ``td.checker``) adds two
+The historical route fold (``td-fold/2``, see ``td.fold2``) adds two
 exactness rules on top of this generic algebra, so that integer (or dyadic)
 data is folded without any rounding at all:
 
@@ -46,6 +41,7 @@ materializers (their sha256 pins depend on them).
 from __future__ import annotations
 
 from bisect import bisect_left
+from fractions import Fraction
 
 
 class PWLFError(ValueError):
@@ -152,6 +148,19 @@ class NDCPWLF:
         if self.xs[i] == x:
             return self.ys[i]
         return _interpolate(self.xs[i - 1], self.ys[i - 1], self.xs[i], self.ys[i], x, slope_one_exact)
+
+    def evaluate_exact(self, x: Fraction) -> Fraction:
+        """Interpolate the materialized binary64 knots at a rational time, taking the first ordinate at a jump."""
+        if not isinstance(x, Fraction):
+            x = Fraction(x)
+        if self.is_empty() or x < float(self.xs[0]) or x > float(self.xs[-1]):
+            raise PWLFError("The requested time lies outside the domain of the function")
+        i = bisect_left(self.xs, x, key=float)
+        if float(self.xs[i]) == x:
+            return Fraction(float(self.ys[i]))
+        left, right = Fraction(float(self.xs[i - 1])), Fraction(float(self.xs[i]))
+        lower, upper = Fraction(float(self.ys[i - 1])), Fraction(float(self.ys[i]))
+        return lower + (x - left) * (upper - lower) / (right - left)
 
     def __call__(self, x: float) -> float:
         return self.evaluate(x)

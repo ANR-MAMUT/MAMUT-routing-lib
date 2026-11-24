@@ -9,8 +9,9 @@ from typing import Any
 from mamut_routing_lib.artifacts import get_bks_path_for_instance, load_bks, write_bks_file
 from mamut_routing_lib.bks import BKSUpdateResult
 from mamut_routing_lib.enums import ObjectiveFunction
+from mamut_routing_lib.objectives import base_objective
 from mamut_routing_lib.models import BenchmarkBKS, BenchmarkSolution, OptimalityMetadata, SolverReportedOptimality
-from mamut_routing_lib.td.artifacts import LoadedTDInstance, load_td_instance
+from mamut_routing_lib.td.artifacts import LoadedTDInstance, load_td_benchmark_instance, load_td_instance
 from mamut_routing_lib.td.checker import TD_OBJECTIVES
 
 
@@ -18,7 +19,10 @@ def _as_loaded(instance: LoadedTDInstance | str | Path) -> LoadedTDInstance:
     return instance if isinstance(instance, LoadedTDInstance) else load_td_instance(instance)
 
 
-def _validate_td_objective(objective_function: ObjectiveFunction) -> ObjectiveFunction:
+def _td_objective(loaded, objective_function: ObjectiveFunction | None) -> ObjectiveFunction:
+    if objective_function is None:
+        instance = loaded.instance if isinstance(loaded, LoadedTDInstance) else load_td_benchmark_instance(loaded)
+        return base_objective(instance)
     if objective_function not in TD_OBJECTIVES:
         raise ValueError(f'TD BKS store only supports {[o.value for o in TD_OBJECTIVES]}, got {objective_function!r}')
     return ObjectiveFunction(objective_function)
@@ -27,7 +31,7 @@ def _validate_td_objective(objective_function: ObjectiveFunction) -> ObjectiveFu
 def _checker(loaded, objective_function, backend):
     # td.__init__ also exposes the BKS helpers while the exact TD module imports td models.
     from mamut_routing_lib.exact_td import prepare_td
-    return prepare_td(loaded.instance, loaded.atfs, objective_function=_validate_td_objective(objective_function), backend=backend)
+    return prepare_td(loaded.instance, loaded.atfs, objective_function=objective_function, backend=backend)
 
 
 def _candidate(loaded, checker, solution, authors, metadata, manifest=None):
@@ -74,10 +78,11 @@ def create_td_bks_from_solution(
     *,
     authors: str,
     metadata: dict[str, Any] | None = None,
-    objective_function: ObjectiveFunction = ObjectiveFunction.DURATION,
+    objective_function: ObjectiveFunction | None = None,
     backend: str = 'native',
 ) -> BenchmarkBKS:
     """Price a candidate, check any declared cost and bind exact witnesses to canonical routes."""
+    objective_function = _td_objective(loaded, objective_function)
     loaded, manifest = _published_inputs(loaded, objective_function, solution.routes)
     checker = _checker(loaded, objective_function, backend)
     return _candidate(loaded, checker, solution, authors, metadata, manifest)[0]
@@ -89,7 +94,7 @@ def save_td_solution_as_bks_if_improved(
     *,
     authors: str,
     metadata: dict[str, Any] | None = None,
-    objective_function: ObjectiveFunction = ObjectiveFunction.DURATION,
+    objective_function: ObjectiveFunction | None = None,
     backend: str = 'native',
 ) -> BKSUpdateResult:
     """Re-evaluate both route sets and store only a strict exact improvement.
@@ -100,7 +105,8 @@ def save_td_solution_as_bks_if_improved(
     from mamut_routing_lib.exact_store import preserve_claim_record, verify_stored
 
     instance_path = loaded.instance_path if isinstance(loaded, LoadedTDInstance) else loaded
-    path = get_bks_path_for_instance(instance_path, _validate_td_objective(objective_function))
+    objective_function = _td_objective(loaded, objective_function)
+    path = get_bks_path_for_instance(instance_path, objective_function)
     incumbent_bks = load_bks(path) if path.exists() else None
     all_routes = [*solution.routes, *incumbent_bks.routes] if incumbent_bks is not None else solution.routes
     loaded, manifest = _published_inputs(loaded, objective_function, all_routes)
@@ -139,7 +145,7 @@ OPTIMALITY_COST_TOLERANCE = 1e-6
 def annotate_td_bks_optimality(
     loaded: LoadedTDInstance | str | Path,
     optimality: OptimalityMetadata | SolverReportedOptimality | dict[str, Any],
-    objective_function: ObjectiveFunction = ObjectiveFunction.DURATION,
+    objective_function: ObjectiveFunction | None = None,
     *,
     backend: str = 'native',
 ) -> Path:
@@ -152,7 +158,7 @@ def annotate_td_bks_optimality(
     from mamut_routing_lib.exact_store import preserve_claim_record, verify_stored
     from mamut_routing_lib.exact_types import TD_PROFILE
 
-    objective_function = _validate_td_objective(objective_function)
+    objective_function = _td_objective(loaded, objective_function)
     instance_path = loaded.instance_path if isinstance(loaded, LoadedTDInstance) else loaded
     path = get_bks_path_for_instance(instance_path, objective_function)
     if not path.exists():

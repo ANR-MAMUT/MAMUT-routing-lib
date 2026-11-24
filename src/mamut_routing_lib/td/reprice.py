@@ -1,6 +1,6 @@
 """Re-price legacy TD BKS under the historical td-fold/2 contract.
 
-A change of the TD route fold (see ``td.checker.TD_CHECKER_CONTRACT``) moves
+A change of the TD route fold (see ``td.fold2.TD_CHECKER_CONTRACT``) moves
 the float value of some stored BKS by a few ulps, and occasionally by more
 (Rifki2020 under ``td-fold/1``). The store refuses a stored BKS whose cost no
 longer matches the checker, so every stored TD BKS has to be re-priced once
@@ -38,7 +38,7 @@ from mamut_routing_lib.td.artifacts import (
     load_td_benchmark_instance,
 )
 from mamut_routing_lib.td.bks import OPTIMALITY_COST_TOLERANCE
-from mamut_routing_lib.td.checker import TD_CHECKER_CONTRACT, check_td_solution
+from mamut_routing_lib.td.fold2 import TD_CHECKER_CONTRACT, check_td_solution
 from mamut_routing_lib.td.models import TDIGPProfileRef, TDRoadGraphRef
 
 #: Label written to ``metadata.repriced.checker``.

@@ -11,7 +11,7 @@ from mamut_routing_lib.checker import SolutionCheckStatus
 from mamut_routing_lib.enums import ObjectiveFunction
 from mamut_routing_lib.exact_types import (
     TD_PROFILE, ExactBackend, ExactEvaluation, ExactRouteError, ExactRouteEvaluation, binary64_operand,
-    canonical_checked_routes, exact_resource, nonnegative_integer,
+    canonical_checked_routes, checked_stops, exact_resource, nonnegative_integer,
 )
 from mamut_routing_lib.objectives import base_objective, require_supported_objective
 from mamut_routing_lib.td.artifacts import InstanceATFs
@@ -85,6 +85,13 @@ class PreparedTD:
     backend: str
     fixed_charge: Fraction
     _solve: Callable = field(repr=False, compare=False)
+
+    def route_timing(self, route: Sequence[int]) -> ExactRouteEvaluation:
+        """Price one nonempty, possibly partial route under the temporal profile."""
+        stops = checked_stops(route, self.num_customers)
+        if not stops:
+            raise ExactRouteError(SolutionCheckStatus.INVALID_CUSTOMER_INDEX, "Cannot time an empty route.")
+        return self._route(stops)
 
     def _route(self, route: tuple[int, ...]) -> ExactRouteEvaluation:
         vertices = (0, *route, 0)

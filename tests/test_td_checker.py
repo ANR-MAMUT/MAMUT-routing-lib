@@ -9,13 +9,13 @@ from mamut_routing_lib.checker import SolutionCheckStatus
 from mamut_routing_lib.models import BenchmarkSolution
 from mamut_routing_lib.td import (
     NDCPWLF,
-    TD_CHECKER_CONTRACT,
     InstanceATFs,
     check_td_solution,
     compute_route_duration,
     load_td_instance,
     td_instance_from_payload,
 )
+from mamut_routing_lib.td import fold2
 from td_utils import make_toy_atfs, toy_instance_payload, write_toy_instance_files
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -157,7 +157,7 @@ class TestCheckTDSolution:
 
 
 class TestFoldV2Regressions:
-    """Routes the pre-0.12 fold (td-fold/1) mispriced; see td.checker's docstring."""
+    """Routes the pre-0.12 fold (td-fold/1) mispriced; see td.fold2's docstring."""
 
     HORIZON = 43200.0
 
@@ -186,7 +186,7 @@ class TestFoldV2Regressions:
                 (1, 0): NDCPWLF([0.0, 13.0, 13.0, 43200.0], [1.0, 14.0, 100.0, 43300.0]),
             }
         )
-        evaluation = compute_route_duration(self._instance(False), atfs, [1])
+        evaluation = fold2.compute_route_duration(self._instance(False), atfs, [1])
         assert (evaluation.duration, evaluation.departure_time) == (14.0, 0.0)
 
     def test_arrival_exactly_at_the_due_date_is_feasible(self):
@@ -199,7 +199,7 @@ class TestFoldV2Regressions:
                 (2, 0): self._constant(10.0),
             }
         )
-        evaluation = compute_route_duration(self._instance(True), atfs, [1, 2])
+        evaluation = fold2.compute_route_duration(self._instance(True), atfs, [1, 2])
         assert evaluation.feasible
         assert (evaluation.duration, evaluation.departure_time) == (1024.0, 0.0)
 
@@ -225,6 +225,6 @@ class TestFoldV2Regressions:
         instance = td_instance_from_payload(payload)
         arcs = {(arc["from"], arc["to"]): NDCPWLF(arc["xs"], arc["ys"]) for arc in fixture["arcs"]}
         atfs = InstanceATFs("Rifki-30-route", "Rifki2020", tuple(fixture["horizon"]), num_customers, arcs)
-        evaluation = compute_route_duration(instance, atfs, fixture["route"])
-        expected = fixture["expected"][TD_CHECKER_CONTRACT]
+        evaluation = fold2.compute_route_duration(instance, atfs, fixture["route"])
+        expected = fixture["expected"][fold2.TD_CHECKER_CONTRACT]
         assert (evaluation.duration, evaluation.departure_time) == (expected["duration"], expected["departure_time"])

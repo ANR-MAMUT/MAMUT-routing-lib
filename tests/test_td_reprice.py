@@ -11,11 +11,11 @@ from mamut_routing_lib.cli import app
 from mamut_routing_lib.json_utils import save_json_to_file
 from mamut_routing_lib.relaxation import check_relaxation_pair, relaxation_twin, structural_relaxation_issues
 from mamut_routing_lib.td import (
-    TD_CHECKER_CONTRACT,
     load_td_instance,
     materialize_instance_atfs,
 )
 from mamut_routing_lib.td.igp import load_instance_categories, materialize_selected_atfs_igp
+from mamut_routing_lib.td.fold2 import TD_CHECKER_CONTRACT
 from mamut_routing_lib.td.reprice import (
     iter_td_bks_files,
     load_td_instance_for_routes,
@@ -226,3 +226,19 @@ def test_only_the_depot_window_must_fit_the_horizon(tmp_path: Path) -> None:
     payload["time_windows"][0] = [payload["time_windows"][0][0], horizon_end + 2]
     save_json_to_file(payload, strict_instance)
     assert structural_relaxation_issues(strict_instance, relaxed_instance) == ["the depot window leaves the horizon"]
+
+
+def test_relaxation_compares_marked_fractions_on_display_ties_and_overflow(tmp_path):
+    from fractions import Fraction
+
+    for tag, numerator, display in (("tie", 2**53, float(2**53)), ("overflow", 2**1100, None)):
+        strict = _write_td_twins(tmp_path / tag, display, display)
+        relaxed = relaxation_twin(strict)
+        for path, offset in ((strict, 0), (relaxed, 1)):
+            payload = json.loads(path.read_text())
+            payload["metadata"]["standard"] = {"authoritative_cost": {"numerator": str(numerator + offset), "denominator": "1"}}
+            path.write_text(json.dumps(payload))
+        check = check_relaxation_pair(strict, priced=True)
+        assert check.inverted
+        assert isinstance(check.priced_cost, Fraction) and check.priced_cost == 30
+        assert check.as_dict()["priced_cost_exact"] == {"numerator": "30", "denominator": "1"}

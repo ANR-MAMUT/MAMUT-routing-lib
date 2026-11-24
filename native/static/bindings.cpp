@@ -102,9 +102,9 @@ class StaticModel {
 
     template<class Acc, class T>
     std::optional<Big> sum(const Tables<T> &data,
-                           const std::vector<std::vector<std::size_t>> &routes) const {
+                           const std::vector<std::vector<std::size_t>> &routes, bool check_windows) const {
         Acc total = 0;
-        const bool temporal = !data.opens.empty();
+        const bool temporal = check_windows && !data.opens.empty();
         for (const auto &route : routes) {
             std::size_t previous = 0;
             Acc departure = temporal ? Acc(data.opens[0]) : Acc(0);
@@ -174,18 +174,18 @@ public:
         }
     }
 
-    py::object evaluate(const std::vector<std::vector<std::size_t>> &routes) const {
+    py::object evaluate(const std::vector<std::vector<std::size_t>> &routes, bool check_windows) const {
         std::optional<Big> total;
         {
             py::gil_scoped_release release;
             if (const auto *narrow = std::get_if<Tables<Small>>(&tables)) {
                 try {
-                    total = sum<Small>(*narrow, routes);
+                    total = sum<Small>(*narrow, routes, check_windows);
                 } catch (const std::overflow_error &) {
-                    total = sum<Big>(*narrow, routes);
+                    total = sum<Big>(*narrow, routes, check_windows);
                 }
             } else {
-                total = sum<Big>(std::get<Tables<Big>>(tables), routes);
+                total = sum<Big>(std::get<Tables<Big>>(tables), routes, check_windows);
             }
         }
         if (!total) return py::none();
@@ -201,5 +201,5 @@ PYBIND11_MODULE(_static_exact, module) {
     py::class_<StaticModel>(module, "StaticModel")
         .def(py::init<std::size_t, const py::sequence &, const std::vector<double> &,
                       const std::vector<double> &, const std::vector<double> &>())
-        .def("evaluate", &StaticModel::evaluate);
+        .def("evaluate", &StaticModel::evaluate, py::arg("routes"), py::arg("check_windows") = true);
 }

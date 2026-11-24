@@ -1,43 +1,20 @@
-"""Historical static checking and objective comparison helpers.
-
-The compatibility checker follows the released Python summation and time-window
-recurrences on an embedded CVRP or VRPTW matrix. External integer-scaled solver
-adapters can also compute rational costs from shortest decimal spellings. The
-v0.13 BKS store uses the binary64-exact evaluation in ``exact_static``.
-"""
+"""Check and price static routes under the family's binary64-exact-v1 profile."""
 
 from __future__ import annotations
 
-from enum import Enum
 from fractions import Fraction
 from numbers import Integral
+from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
-from mamut_routing_lib.enums import ObjectiveFunction
+from mamut_routing_lib.enums import ObjectiveFunction, SolutionCheckStatus
+from mamut_routing_lib.exact_types import ExactBackend
 from mamut_routing_lib.models import BenchmarkBKS, BenchmarkInstanceVRPTW, BenchmarkInstanceCVRP, BenchmarkSolution, LoadedStaticInstance
 
 
-class SolutionCheckStatus(str, Enum):
-    """Outcome of a check: ``valid`` or the first violation met, in route order.
-
-    The checker stops at the first violation, so a solution with several defects
-    reports only one. ``route_timing_infeasible`` is reserved for the
-    time-dependent checker.
-    """
-    VALID = "valid"
-    INVALID_CUSTOMER_INDEX = "invalid_customer_index"
-    CUSTOMER_SERVED_MULTIPLE_TIMES = "customer_served_multiple_times"
-    VEHICLE_CAPACITY_EXCEEDED = "vehicle_capacity_exceeded"
-    TIME_WINDOW_VIOLATED = "time_window_violated"
-    NOT_ALL_CUSTOMERS_SERVED = "not_all_customers_served"
-    TOO_MANY_VEHICLES_USED = "too_many_vehicles_used"
-    OBJECTIVE_VALUE_MISMATCH = "objective_value_mismatch"
-    ROUTE_TIMING_INFEASIBLE = "route_timing_infeasible"
-
-
 class SolutionCheckResult(BaseModel):
-    """Status plus, when valid, the priced ``routing_cost`` and ``num_routes``; ``error_message`` explains a rejection."""
+    """Checked route count, display cost and lossless exact evaluation for a valid solution."""
     model_config = ConfigDict(extra="forbid")
 
     status: SolutionCheckStatus
@@ -73,25 +50,22 @@ def _require_static_matrix(instance: LoadedStaticInstance) -> None:
                         "instances first. Time-dependent instances require the TD checker and ATFs.")
 
 
-def compute_route_cost(instance: LoadedStaticInstance, route: list[int]) -> int | float:
-    """Cost of one route: ``depot -> route[0] -> ... -> route[-1] -> depot`` over ``instance.arc_costs`` (no feasibility check)."""
-    _require_static_matrix(instance)
-    total_cost: int | float = 0
-    previous_node = instance.depot
-    for customer in route:
-        total_cost += instance.arc_costs[previous_node][customer]
-        previous_node = customer
-    total_cost += instance.arc_costs[previous_node][instance.depot]
-    return total_cost
+def compute_route_cost(instance: LoadedStaticInstance, route: list[int], *, backend: ExactBackend = "native") -> Fraction:
+    """Return the exact cost of the listed depot-to-depot arcs, including a partial tour."""
+    return compute_solution_cost(instance, [route], backend=backend)
 
 
 def compute_solution_cost(
     instance: LoadedStaticInstance,
     solution_or_routes: BenchmarkSolution | BenchmarkBKS | list[list[int]],
-) -> int | float:
-    """Sum of ``compute_route_cost`` over the routes of a solution, BKS or plain route list."""
+    *,
+    backend: ExactBackend = "native",
+) -> Fraction:
+    """Sum the traversed arcs under binary64-exact-v1. Use check_solution to also check feasibility."""
+    from mamut_routing_lib.exact_static import prepare_static
+
     _require_static_matrix(instance)
-    return sum(compute_route_cost(instance, route) for route in _iter_routes(solution_or_routes))
+    return prepare_static(instance, backend=backend).routing_cost(_iter_routes(solution_or_routes))
 
 
 def canonical_route_order(routes: list[list[int]]) -> list[list[int]]:
@@ -133,135 +107,47 @@ def compute_shortest_decimal_solution_cost(
     return total
 
 
-def _evaluate_static_routes(
+def check_solution(
     instance: LoadedStaticInstance,
-    routes: list[list[int]],
+    solution: BenchmarkSolution | BenchmarkBKS,
     *,
-    validate_time_windows: bool,
+    backend: ExactBackend = "native",
+    objective_function: ObjectiveFunction | None = None,
+    instance_path: str | Path | None = None,
 ) -> SolutionCheckResult:
-    served_customers: set[int] = set()
-    total_cost: int | float = 0
+    """Check an embedded static instance under binary64-exact-v1. Supply its path to verify a certified BKS."""
+    from mamut_routing_lib.solutions import _check_solution_model
 
-    for route in routes:
-        current_load = 0
-        current_time = 0
-        previous_node = instance.depot
-
-        for customer in route:
-            if customer < 1 or customer > instance.num_customers:
-                return SolutionCheckResult.make_invalid(
-                    SolutionCheckStatus.INVALID_CUSTOMER_INDEX,
-                    f"Invalid customer index: {customer}",
-                )
-
-            if customer in served_customers:
-                return SolutionCheckResult.make_invalid(
-                    SolutionCheckStatus.CUSTOMER_SERVED_MULTIPLE_TIMES,
-                    f"Customer {customer} served more than once.",
-                )
-            served_customers.add(customer)
-
-            current_load += instance.demands[customer]
-            if current_load > instance.vehicle_capacity:
-                return SolutionCheckResult.make_invalid(
-                    SolutionCheckStatus.VEHICLE_CAPACITY_EXCEEDED,
-                    f"Vehicle capacity exceeded on route: {route}",
-                )
-
-            travel_cost = instance.arc_costs[previous_node][customer]
-            total_cost += travel_cost
-
-            if validate_time_windows:
-                assert isinstance(instance, BenchmarkInstanceVRPTW)
-                arrival_time = current_time + travel_cost
-                ready_time, due_date = instance.time_windows[customer]
-                if arrival_time < ready_time:
-                    arrival_time = ready_time
-                if arrival_time > due_date:
-                    return SolutionCheckResult.make_invalid(
-                        SolutionCheckStatus.TIME_WINDOW_VIOLATED,
-                        f"Time window violated for customer {customer} on route: {route}",
-                    )
-                current_time = arrival_time + instance.service_times[customer]
-
-            previous_node = customer
-
-        total_cost += instance.arc_costs[previous_node][instance.depot]
-
-        if validate_time_windows:
-            assert isinstance(instance, BenchmarkInstanceVRPTW)
-            arrival_time = current_time + instance.arc_costs[previous_node][instance.depot]
-            depot_ready_time, depot_due_date = instance.time_windows[instance.depot]
-            if arrival_time < depot_ready_time:
-                arrival_time = depot_ready_time
-            if arrival_time > depot_due_date:
-                return SolutionCheckResult.make_invalid(
-                    SolutionCheckStatus.TIME_WINDOW_VIOLATED,
-                    f"Time window violated when returning to depot on route: {route}",
-                )
-
-    missing_customers = set(range(1, instance.num_customers + 1)) - served_customers
-    if missing_customers:
-        return SolutionCheckResult.make_invalid(
-            SolutionCheckStatus.NOT_ALL_CUSTOMERS_SERVED,
-            f"Not all customers served. Missing: {sorted(missing_customers)}",
-        )
-
-    if instance.num_vehicles is not None and len(routes) > instance.num_vehicles:
-        return SolutionCheckResult.make_invalid(
-            SolutionCheckStatus.TOO_MANY_VEHICLES_USED,
-            "Number of routes exceeds the declared number of vehicles.",
-        )
-
-    return SolutionCheckResult.make_valid(routing_cost=total_cost, num_routes=len(routes))
+    _require_static_matrix(instance)
+    return _check_solution_model(instance, instance_path, instance, solution, objective_function, backend)
 
 
 def check_cvrp_solution(
     instance: BenchmarkInstanceCVRP,
     solution: BenchmarkSolution | BenchmarkBKS,
+    *,
+    backend: ExactBackend = "native",
+    objective_function: ObjectiveFunction | None = None,
+    instance_path: str | Path | None = None,
 ) -> SolutionCheckResult:
-    """Validate and price a solution on a CVRP instance (capacity, coverage, fleet; no timing)."""
+    """Check an embedded CVRP solution under the family profile."""
     if not isinstance(instance, BenchmarkInstanceCVRP):
         raise TypeError("check_cvrp_solution requires an embedded CVRP matrix.")
-    result = _evaluate_static_routes(instance, solution.routes, validate_time_windows=False)
-    if result.is_valid() and solution.cost is not None and solution.cost != result.routing_cost:
-        return SolutionCheckResult.make_invalid(
-            SolutionCheckStatus.OBJECTIVE_VALUE_MISMATCH,
-            "Provided cost does not match computed routing cost.",
-        )
-    return result
+    return check_solution(instance, solution, backend=backend, objective_function=objective_function, instance_path=instance_path)
 
 
 def check_vrptw_solution(
     instance: BenchmarkInstanceVRPTW,
     solution: BenchmarkSolution | BenchmarkBKS,
+    *,
+    backend: ExactBackend = "native",
+    objective_function: ObjectiveFunction | None = None,
+    instance_path: str | Path | None = None,
 ) -> SolutionCheckResult:
-    """Validate and price a solution on a VRPTW instance (capacity, coverage, fleet, time windows with waiting)."""
+    """Check an embedded VRPTW solution under the family profile."""
     if not isinstance(instance, BenchmarkInstanceVRPTW):
         raise TypeError("check_vrptw_solution requires an embedded VRPTW matrix with time windows.")
-    result = _evaluate_static_routes(instance, solution.routes, validate_time_windows=True)
-    if result.is_valid() and solution.cost is not None and solution.cost != result.routing_cost:
-        return SolutionCheckResult.make_invalid(
-            SolutionCheckStatus.OBJECTIVE_VALUE_MISMATCH,
-            "Provided cost does not match computed routing cost.",
-        )
-    return result
-
-
-def check_solution(
-    instance: LoadedStaticInstance,
-    solution: BenchmarkSolution | BenchmarkBKS,
-) -> SolutionCheckResult:
-    """Validate and price ``solution`` on a static instance; the single entry point.
-
-    Dispatches on the instance model. Raises ``TypeError`` for time-dependent
-    instances (use ``mamut_routing_lib.td.check_td_solution``) and for slim
-    collection instances (hydrate them first).
-    """
-    _require_static_matrix(instance)
-    if isinstance(instance, BenchmarkInstanceCVRP):
-        return check_cvrp_solution(instance, solution)
-    return check_vrptw_solution(instance, solution)
+    return check_solution(instance, solution, backend=backend, objective_function=objective_function, instance_path=instance_path)
 
 
 def get_objective_tuple(
@@ -284,15 +170,14 @@ def get_objective_tuple(
 
 def is_better_solution(
     candidate_routes: list[list[int]],
-    candidate_cost: int | float,
+    candidate_cost: int | float | Fraction,
     existing_routes: list[list[int]],
-    existing_cost: int | float,
+    existing_cost: int | float | Fraction,
     objective_function: ObjectiveFunction,
 ) -> bool:
     """True when the candidate strictly precedes the existing solution under ``objective_function`` (see ``get_objective_tuple``).
 
-    Compares the float costs as given, so it is order-sensitive at the ulp
-    level. The BKS store compares recomputed exact objective keys.
+    Pass the authoritative rational costs to compare under an exact family profile.
     """
     return get_objective_tuple(candidate_routes, candidate_cost, objective_function) < get_objective_tuple(
         existing_routes,

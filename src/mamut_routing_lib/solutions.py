@@ -547,9 +547,23 @@ def _require_marked_target(marked: BenchmarkBKS, instance: Any, routes, objectiv
         raise ValueError("Marked BKS routes must match their original customer identifiers and order.")
 
 
+def _check_solution_model(instance, instance_path, checkable, solution, objective_function, backend):
+    """Apply the path-aware checker to an already loaded solution model."""
+    from mamut_routing_lib.objectives import base_objective
+
+    objective = objective_function or base_objective(instance)
+    if solution.instance_name != instance.instance_name:
+        raise ValueError(f"Solution identifies {solution.instance_name!r}, expected {instance.instance_name!r}.")
+    if getattr(solution, "objective_function", objective) != objective:
+        raise ValueError(f"Solution declares objective {solution.objective_function!r}, expected {objective!r}.")
+    marked = isinstance(solution, BenchmarkBKS) and ("standard" in solution.metadata or "exact_evaluation" in solution.metadata)
+    return check_routes(instance, instance_path, solution.routes, objective, declared_cost=solution.cost,
+                        backend=backend, checkable=checkable, marked_input=solution if marked else None)
+
+
 def check_routes(
     instance: Any,
-    instance_path: str | Path,
+    instance_path: str | Path | None,
     routes: list[list[int]],
     objective_function: ObjectiveFunction | None = None,
     *,
@@ -564,13 +578,15 @@ def check_routes(
     from mamut_routing_lib.td.checker import TDRouteEvaluation, TDSolutionCheckResult
 
     from mamut_routing_lib.manifests import adjacent_manifest
-    manifest = adjacent_manifest(instance_path, objective_function, routes=routes)
+    manifest = adjacent_manifest(instance_path, objective_function, routes=routes) if instance_path is not None else None
     if manifest is not None:
         checkable = manifest.checkable
     elif checkable is None:
         checkable = load_checkable(instance, instance_path)
-    else:
+    elif instance_path is not None:
         _require_same_instance(instance, checkable, Path(instance_path))
+    elif checkable is not instance:
+        raise ValueError("A preloaded checkable requires its instance path for identity verification.")
     prepared = prepare_exact(checkable, backend=backend, objective_function=objective_function)
     is_td = is_time_dependent(instance)
     result_type = TDSolutionCheckResult if is_td else SolutionCheckResult
@@ -587,13 +603,13 @@ def check_routes(
             return result_type.make_invalid(SolutionCheckStatus.OBJECTIVE_VALUE_MISMATCH, str(error))
     if declared_cost is not None and declared_cost != exact.display_cost:
         return result_type.make_invalid(SolutionCheckStatus.OBJECTIVE_VALUE_MISMATCH,
-                                        "Declared display cost differs from the exact result's projection.")
+                                        f"Declared display cost differs from the exact {exact.objective.value} projection.")
     fields = dict(status=SolutionCheckStatus.VALID, routing_cost=exact.display_cost,
                   num_routes=len(exact.routes), exact_evaluation=exact.as_dict())
     if is_td:
         fields["route_evaluations"] = [
             TDRouteEvaluation(route=list(route), feasible=True,
-                              duration=float(witness.duration), departure_time=float(witness.departure_time))
+                              duration=witness.duration, departure_time=witness.departure_time)
             for route, witness in zip(exact.routes, exact.route_evaluations)
         ]
     return result_type(**fields)

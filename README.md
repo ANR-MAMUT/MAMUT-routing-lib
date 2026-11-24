@@ -73,6 +73,10 @@ A Kayros optimality claim names the contract under which the solver made it. Rep
 
 | Previous API | v0.13 API | Meaning |
 | --- | --- | --- |
+| Static `check_solution`, `check_cvrp_solution`, `check_vrptw_solution` and `td.check_td_solution` | Same names, exact family evaluation | Feasibility and cost use the materialized binary64 rationals. `result.routing_cost` is their display, with `None` on overflow. `result.exact_evaluation` carries the authoritative cost and ordered TD witnesses. The checker uses the family's published objective by default. |
+| Static `compute_route_cost`, `compute_solution_cost` and TD `compute_solution_cost` | Same names, `Fraction` return value | Static helpers price the listed arcs even for a partial walk. The TD solution helper checks the submitted routes and includes any applicable fleet charge. All accept `backend="python"` for reference evaluation. |
+| `td.compute_route_duration` | Same name, exact route timing | On a feasible route, `duration` and `departure_time` are fractions. The latter is the earliest minimizing departure. |
+| `td.compute_route_ready_time_function` | `td.fold2.compute_route_ready_time_function` | Reproduce a ready-time curve from v0.12. Use `td.compute_route_duration` for the family-exact minimum and `NDCPWLF.evaluate_exact` for exact point interpolation. |
 | `BenchmarkInstance` | `BenchmarkInstanceVRPTW` | The static VRPTW model with an embedded matrix. The JSON Schema title uses the new name. The instance JSON fields keep their spelling. |
 | `save_bks_if_improved(..., bks=record)` | `save_bks_if_improved(..., candidate_bks=record)` | Recompute the candidate and incumbent, then write a strict improvement. Positional calls still work. |
 | `save_bks(record, path)` | `write_bks_file(record, path)` | Serialize the model to the given path, overwriting an existing file. Use `submit_bks` for checked submission. |
@@ -394,9 +398,9 @@ Caveats:
 
 ## Replaying historical records
 
-The static compatibility helpers `check_solution` and `compute_shortest_decimal_solution_cost` retain the released arithmetic for historical callers. The latter interprets shortest decimal spellings. Use `evaluate_exact` for the v0.13 binary64 rational cost.
+For static v0.12 replay, import `check_solution`, `compute_route_cost` or `compute_solution_cost` from `mamut_routing_lib.static_v012`. The separately named `compute_shortest_decimal_solution_cost` diagnostic sums the shortest decimal spellings of the parsed operands.
 
-The v0.12 entry point `mamut_routing_lib.td.check_td_solution` uses `TD_CHECKER_CONTRACT` (`td-fold/2`). Its `bks reprice-td` command is retained for working with legacy records. To preview its effects on a historical checkout, run `mamut-routing bks reprice-td benchmarks --dry-run --jobs 8 --report reprice.json`. Use the exact entry points above for v0.13 submissions. The historical repricer refuses a record that carries exact evaluation or certification metadata.
+For `td-fold/2` replay, import `check_td_solution` and the route helpers from `mamut_routing_lib.td.fold2`. The v0.12 repricer uses that module. To preview its effects on a historical checkout, run `mamut-routing bks reprice-td benchmarks --dry-run --jobs 8 --report reprice.json`. The historical repricer refuses records that carry exact evaluation or certification metadata.
 
 ## Development
 

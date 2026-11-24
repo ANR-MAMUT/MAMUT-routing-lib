@@ -8,8 +8,7 @@ from math import isfinite
 from numbers import Integral
 from typing import Literal
 
-from mamut_routing_lib.checker import SolutionCheckStatus
-from mamut_routing_lib.enums import ObjectiveFunction
+from mamut_routing_lib.enums import ObjectiveFunction, SolutionCheckStatus
 
 STATIC_PROFILE = "binary64-exact-v1"
 TD_PROFILE = "td-binary64-exact-v1"
@@ -102,6 +101,18 @@ class ExactEvaluation:
         return data
 
 
+def checked_stops(route, num_customers: int) -> tuple[int, ...]:
+    """Normalize a route's customer identifiers before any backend uses them as indices."""
+    if not isinstance(route, Sequence) or isinstance(route, (bytes, str)):
+        raise ExactRouteError(SolutionCheckStatus.INVALID_CUSTOMER_INDEX, "Expected a sequence of customer identifiers.")
+    normalized = []
+    for stop in route:
+        if isinstance(stop, bool) or not isinstance(stop, Integral) or not 1 <= stop <= num_customers:
+            raise ExactRouteError(SolutionCheckStatus.INVALID_CUSTOMER_INDEX, f"Invalid customer index {stop!r}.")
+        normalized.append(int(stop))
+    return tuple(normalized)
+
+
 def canonical_checked_routes(routes, *, num_customers, demands, capacity, fleet_limit) -> tuple[tuple[int, ...], ...]:
     """Check the submitted enumeration before sorting its nonempty customer sequences."""
     status = SolutionCheckStatus
@@ -113,19 +124,15 @@ def canonical_checked_routes(routes, *, num_customers, demands, capacity, fleet_
         if not isinstance(route, Sequence) or isinstance(route, (bytes, str)) or not route:
             raise ExactRouteError(status.INVALID_CUSTOMER_INDEX, "Each route must be a nonempty customer sequence.")
         load = 0
-        stops = []
-        for stop in route:
-            if isinstance(stop, bool) or not isinstance(stop, Integral) or not 1 <= stop <= num_customers:
-                raise ExactRouteError(status.INVALID_CUSTOMER_INDEX, f"Invalid customer index {stop!r}.")
-            customer = int(stop)
+        stops = checked_stops(route, num_customers)
+        for customer in stops:
             if customer in seen:
                 raise ExactRouteError(status.CUSTOMER_SERVED_MULTIPLE_TIMES, f"Customer {customer} occurs twice.")
             seen.add(customer)
             load += demands[customer]
-            stops.append(customer)
         if load > capacity:
             raise ExactRouteError(status.VEHICLE_CAPACITY_EXCEEDED, "Route demand exceeds vehicle capacity.")
-        checked.append(tuple(stops))
+        checked.append(stops)
     if len(seen) != num_customers:
         raise ExactRouteError(status.NOT_ALL_CUSTOMERS_SERVED, "Some customers are missing.")
     if fleet_limit is not None and len(checked) > fleet_limit:
