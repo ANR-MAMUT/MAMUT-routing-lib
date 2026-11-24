@@ -14,6 +14,8 @@ or float Euclidean distances (``FAKE_DISTANCE=nint|float``) for coordinates.
 ``FAKE_MODE`` selects a misbehaviour: ``ok`` (default), ``sleep`` (never
 finishes), ``crash`` (exit 3, no output), ``nonzero-with-solution``,
 ``no-output``, ``garbage``, ``zero-based`` (customer ids 0..n-1),
+``depot-and-missing`` (customer ids 1..n, the depot written as 0 once, the
+last customer left out: an incomplete answer that covers 0..n-1),
 ``wrong-cost``, ``ignore-sigterm``, ``spawn-grandchild`` (writes the child pid
 to ``FAKE_PID_FILE`` and sleeps), ``slow`` (sleeps ``FAKE_SLEEP`` seconds,
 printing progress, then answers).
@@ -190,6 +192,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if mode == "wrong-cost":
         cost = cost + 1000
+    if mode == "depot-and-missing":
+        last = max(node for route in routes for node in route)
+        routes = [kept for route in routes if (kept := [node for node in route if node != last])]
+        routes[0] = [0, *routes[0]]
     if lkh:
         _write_lkh(solution_path, routes, cost, problem["vehicles"] or len(routes))
     else:

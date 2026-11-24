@@ -347,6 +347,9 @@ def scale_explicit_data(
             )
             for ready, due in time_windows
         ]
+        for vertex, (ready, due) in enumerate(windows):
+            if ready > due:
+                raise ScaleError(f"integer scale {factor:g} empties the time window at vertex {vertex}: [{ready}, {due}]")
         services = [_round_value(float(value) * factor, "up" if conservative else "nearest") for value in (service_times or [])]
     return matrix, windows, services
 
@@ -356,8 +359,8 @@ def unscale_cost(raw: int | float | None, plan: ScalePlan) -> tuple[float | None
     if raw is None:
         return None, None
     exact = None
-    if plan.exact and float(raw).is_integer():
-        exact = Fraction(int(round(float(raw)))) / Fraction(plan.factor).limit_denominator(10**12)
+    if plan.exact and (isinstance(raw, int) or raw.is_integer()):
+        exact = Fraction(int(raw)) / Fraction(plan.factor).limit_denominator(10**12)
     return float(raw) / plan.factor, exact
 
 

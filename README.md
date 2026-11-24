@@ -202,8 +202,14 @@ tree. A failing instance becomes an `error` row instead of stopping the batch.
 Ctrl-C stops every running solve: external solvers are killed with their
 process group, and so is KAYROS, which runs in a child Python process because
 its search has no stop hook between two incumbents (a stopped solve keeps its
-last incumbent). Exit status: 0 when every solved instance is feasible and
-checker-valid, 1 when one is not, 2 on usage errors.
+last incumbent, and so does a solve whose worker the system kills, for example
+when memory runs out: the row is solved, and a line says how the worker ended).
+SIGTERM and SIGHUP (`timeout 60 mamut-routing solve`, a systemd
+stop, a closed terminal) end the command the same way. A command that is killed
+outright (SIGKILL, a crash) cannot stop anything itself: on Linux and macOS each
+solver process has a guard that ends it once the command is gone. Exit status: 0
+when every solved instance is feasible and checker-valid, 1 when one is not, 2 on
+usage errors, 130 after Ctrl-C, 143 after SIGTERM.
 
 ### External solvers
 
@@ -241,7 +247,8 @@ problem_types = ["CVRP"]
 # symmetric_only = false                # only if it really reads asymmetric FULL_MATRIX files
 ```
 
-Relative paths are read from the config file's folder; a bare executable name is looked up on PATH. Unknown keys
+Relative paths are read from the config file's folder; a bare executable name is looked up on PATH, in its absolute
+entries only (a relative entry such as `.` is the working directory, which is never searched). Unknown keys
 and mistyped values (`fleet_limit = "false"`) are errors, with a suggestion for near-miss keys; an error in one
 `[solvers.<name>]` table disables that solver only (`solvers list` shows why), and `extends` may name a table defined
 anywhere in the file.
@@ -250,26 +257,19 @@ A solver declared in the config is `symmetric_only = true` unless it says otherw
 road-network variants (`fastest`, `shortest`) are refused for it rather than handed over as a `TYPE : CVRP` file a
 symmetric solver would misread; `extends = "lkh3"` inherits LKH-3's asymmetric support.
 
-Each run writes the solver's input into a scratch directory
-(`--keep-artifacts DIR` keeps it), scaled to the integers the solver needs:
-exactly (x1000 for 3-decimal matrices; the solver's cost then unscales exactly
-and is cross-checked) when the solver's limits allow, otherwise approximately --
-conservatively for time windows, so a schedule the solver finds feasible is
-feasible on the published data. HGS-CVRP computes in doubles, so it reads the
-published matrix as is (divided by 10, exactly, where a distance exceeds its 1e5
-limit), with the coordinates only for SWAP*'s polar sectors. Coordinate solvers
-get coordinates in a unit that fits their limits (FILO2 millimetres). The
-solver runs in its own process group with a hard timeout (budget + grace) and is
-killed with its children on cancellation. A run that ends without a solution
-file reports the last lines the solver printed (an unpatched build rejecting the
-input, a missing library), since the scratch directory is gone by then.
-Provenance (command, executable and input sha256, scale, version, machine) goes
-into the run result and into a BKS stored from it.
+A `cvrplib-sol` solution file is read with the numbering its solver declares: `id_convention = "one-based"` (the
+default: customers 1..n as CVRPLIB writes them, a 0 is the depot), `"zero-based"` (customers 0..n-1) or `"auto"`.
+The numbering is not guessed unless the solver asks for it, because a guess can complete an incomplete answer:
+`Route #1: 0 1 2` for 3 customers is a complete zero-based file, or a one-based file that writes the depot and
+misses customer 3. The four built-in solvers write one-based files.
 
-With `input_format = "lkh"`, `extra_args` are literal lines appended to the
-LKH-3 parameter file (`extra_args = ["RUNS = 10"]`), whatever the `argv` -- a
-command wrapped in `taskset` or a launcher script keeps them. For every other
-format they are extra command-line tokens.
+Each run writes its input to a scratch directory. Use `--keep-artifacts DIR` to retain it. For an explicit integer matrix, the adapter scales each arc cost to an integer in solver units. A 3-decimal matrix, for example, can use a factor of 1,000 if it fits the solver's limits. Coarser exports round costs and time windows and refuse a window that becomes empty. HGS-CVRP accepts a floating-point matrix through its patched reader. Coordinate solvers calculate distances themselves.
+
+When an integer solver returns routes and a cost for an explicit matrix, the adapter sums the actual exported weights, including the depot legs, and compares the report in solver units. A disagreement or fractional integer-solver report produces a warning. The benchmark checker still validates and prices the routes independently. A solver that only prints a rounded floating-point estimate can supply a route without this comparison.
+
+The runner stops the solver process group on cancellation or hard timeout and includes the final log lines if a solver exits without a solution file. Run provenance records the command, input digest, scale and identifiable solver file. A Python module invocation can identify its interpreter even when the code has no single script to hash. A configured script used as the Python entry point and a Java jar passed to the JVM are recorded by their file hashes.
+
+With `input_format = "lkh"`, each `extra_args` item supplies one parameter line, such as `RUNS = 10`. The runner owns `PROBLEM_FILE`, `MTSP_SOLUTION_FILE`, `SEED`, `TIME_LIMIT`, `PRECISION` and `SCALE`. Other input formats append `extra_args` to the command line.
 
 ### Solutions found elsewhere
 

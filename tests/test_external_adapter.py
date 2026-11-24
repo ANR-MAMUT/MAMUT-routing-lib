@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import sys
 import threading
 from pathlib import Path
@@ -96,6 +98,57 @@ def test_coordinate_solver_on_a_euclidean_collection_instance(collection: Path) 
     assert solved.bks_metadata()["input_sha256"] == result.provenance["input_sha256"]
 
 
+def test_a_python_solver_is_hashed_by_its_script_not_by_the_interpreter(collection: Path, tmp_path: Path) -> None:
+    script = tmp_path / "solve.py"
+    script.write_text(
+        "import runpy\nrunpy.run_module('mamut_routing_lib.solvers.external._fake_solver', run_name='__main__')\n"
+    )
+    descriptor = FAKE_LKH.with_overrides(executable=str(script), argv=("{python}", "{executable}", "--params", "{params}"))
+    solver = ExternalSolver(descriptor)
+    assert solver.availability().available and solver.availability().executable == str(script)
+    solved = run_solver(solver, _variant(collection, "CVRP", "fastest"), time_limit_s=5)
+    assert solved.valid
+    provenance = solved.result.provenance
+    assert provenance["argv"][:2] == [sys.executable, str(script)]
+    assert provenance["executable"] == str(script)
+    assert provenance["executable_sha256"] == hashlib.sha256(script.read_bytes()).hexdigest()
+    assert provenance["runtime_executable"] == sys.executable and provenance["runtime_version"]
+    assert solved.bks_metadata()["executable_sha256"] == provenance["executable_sha256"]
+
+    missing = ExternalSolver(descriptor.with_overrides(executable=str(tmp_path / "gone.py")))
+    assert not missing.availability().available and "script not found" in missing.availability().reason
+
+
+def test_a_python_solver_that_names_no_script_publishes_no_executable_hash(collection: Path) -> None:
+    """Its argv runs a module: the interpreter's hash would say nothing about the code that ran."""
+    solved = run_solver(ExternalSolver(FAKE_LKH), _variant(collection, "CVRP", "fastest"), time_limit_s=5)
+    assert solved.valid
+    assert solved.result.provenance["executable_sha256"] is None
+    assert solved.result.provenance["runtime_executable"] == sys.executable
+    assert "executable_sha256" not in solved.bks_metadata()
+
+
+def test_a_java_solver_records_its_jar_and_the_jvm_that_ran_it(collection: Path, tmp_path: Path) -> None:
+    jdk = tmp_path / "jdk"
+    (jdk / "bin").mkdir(parents=True)
+    java = jdk / "bin" / "java"  # a launcher that runs the stand-in solver, whatever the jar
+    java.write_text(f'#!/bin/sh\nexec "{sys.executable}" -m mamut_routing_lib.solvers.external._fake_solver "$@"\n')
+    java.chmod(0o755)
+    (jdk / "release").write_text('IMPLEMENTOR="Test JDK"\nJAVA_RUNTIME_VERSION="21.0.1+12"\n')
+    jar = tmp_path / "solver.jar"
+    jar.write_bytes(b"the solver")
+    descriptor = FAKE_LKH.with_overrides(
+        runtime="java", jar=str(jar), java=str(java), argv=("{java}", "-jar", "{jar}", "--params", "{params}")
+    )
+    solved = run_solver(ExternalSolver(descriptor), _variant(collection, "CVRP", "fastest"), time_limit_s=5)
+    assert solved.valid
+    provenance = solved.result.provenance
+    assert provenance["executable"] == str(jar)
+    assert provenance["executable_sha256"] == hashlib.sha256(b"the solver").hexdigest()
+    assert provenance["runtime_executable"] == str(java.resolve())
+    assert provenance["runtime_version"] == "21.0.1+12 (Test JDK)"
+
+
 def test_coordinate_solver_refuses_a_road_metric(collection: Path) -> None:
     with pytest.raises(InstanceNotSupportedError, match="coordinates"):
         run_solver(ExternalSolver(FAKE_X), _variant(collection, "CVRP", "fastest"), time_limit_s=1)
@@ -107,7 +160,7 @@ def test_lkh_style_solver_scales_exactly_and_cross_checks_its_cost(collection: P
     assert solved.valid
     assert result.cost_exact is True and result.cost_scale == 1000
     assert result.provenance["problem_type_line"] == "CVRP"
-    assert result.provenance["reported_cost_matches_checker"] is True
+    assert result.provenance["reported_cost_matches_exported_model"] is True
     assert result.solver_cost == pytest.approx(solved.cost)
 
 
@@ -156,18 +209,117 @@ def test_a_run_without_a_solution_reports_what_the_solver_said(collection: Path,
     assert "the solver's output ends with: fake solver: mode=crash" in solved.result.error
 
 
-def test_zero_based_ids_are_understood(collection: Path, monkeypatch) -> None:
+def test_zero_based_ids_are_read_when_the_descriptor_declares_them(collection: Path, monkeypatch) -> None:
     _env(monkeypatch, FAKE_MODE="zero-based")
-    solved = run_solver(ExternalSolver(FAKE_X), _variant(collection, "CVRP", "euclidean"), time_limit_s=5)
-    assert solved.valid
+    path = _variant(collection, "CVRP", "euclidean")
+    solved = run_solver(ExternalSolver(FAKE_X.with_overrides(id_convention="zero-based")), path, time_limit_s=5)
+    assert solved.valid and solved.result.provenance["solution_ids"] == "zero-based"
+    # Undeclared, the file is read the way CVRPLIB numbers stops (1..n, 0 is the depot): refused, with the key to set.
+    refused = run_solver(ExternalSolver(FAKE_X), path, time_limit_s=5)
+    assert refused.result.status == "failed" and not refused.result.routes
+    assert "never visited" in refused.result.error
+    assert 'id_convention = "zero-based" (solvers.fake-x' in refused.result.error
+
+
+def test_an_incomplete_answer_is_never_completed(collection: Path, monkeypatch) -> None:
+    """Customers from 1, the depot written as 0 once, the last customer left out: the ids cover 0..n-1."""
+    _env(monkeypatch, FAKE_MODE="depot-and-missing")
+    path = _variant(collection, "CVRP", "euclidean")
+    solved = run_solver(ExternalSolver(FAKE_X), path, time_limit_s=5)
+    assert solved.result.status == "failed" and not solved.result.routes
+    assert "never visited" in solved.result.error
+    assert solved.result.provenance["solution_ids"] == "one-based"
+    # "auto" is a choice of the descriptor. It reads this file as a complete zero-based one, which is
+    # why it is not the default: these are routes that the solver never produced.
+    guessed = run_solver(ExternalSolver(FAKE_X.with_overrides(id_convention="auto")), path, time_limit_s=5)
+    assert guessed.valid and guessed.result.provenance["solution_ids"] == "zero-based"
+
+
+def test_the_builtin_solvers_declare_cvrplib_numbering() -> None:
+    assert {descriptor.id_convention for descriptor in BUILTIN_DESCRIPTORS.values()} == {"one-based"}
 
 
 def test_a_wrong_reported_cost_is_flagged_and_ignored(collection: Path, monkeypatch) -> None:
     _env(monkeypatch, FAKE_MODE="wrong-cost")
     solved = run_solver(ExternalSolver(FAKE_LKH), _variant(collection, "CVRP", "fastest"), time_limit_s=5)
     assert solved.valid
-    assert solved.result.provenance["reported_cost_matches_checker"] is False
+    assert solved.result.provenance["reported_cost_matches_exported_model"] is False
     assert solved.cost == pytest.approx(solved.result.solver_cost - 1.0)  # 1000 scaled units = 1.0
+    # The routes are kept (the checker priced them), and the result says that the solver's number is another one.
+    assert solved.result.status == "feasible"
+    assert f"reported {solved.result.solver_cost_raw} solver units" in solved.result.error
+    assert f"Its routes cost {solved.result.solver_cost_raw - 1000} units in the exported matrix" in solved.result.error
+
+
+def test_module_invocation_does_not_credit_unused_script(tmp_path, collection):
+    unused = tmp_path / "unused.py"
+    unused.write_text("raise AssertionError()")
+    desc = FAKE_LKH.with_overrides(executable=str(unused), extra_args=())
+    solved = run_solver(ExternalSolver(desc), _variant(collection, "CVRP", "fastest"), time_limit_s=5)
+    assert solved.valid
+    assert solved.result.provenance["executable_sha256"] is None
+    assert "executable_sha256" not in solved.bks_metadata()
+
+
+def test_integer_report_uses_written_digits_and_checks_actual_export(tmp_path, toy_cvrp_instance):
+    from decimal import Decimal
+    from mamut_routing_lib.solutions import parse_lkh_mtsp_solution, parse_solution_text
+    from mamut_routing_lib.solvers.external.adapter import _exported_route_cost
+
+    raw = 9007199254740993
+    for text in [f"Route #1: 1\nCost {raw}.0", f'{{"routes":[[1]],"cost":{raw}.0}}']:
+        _, cost = parse_solution_text(text, exact_report=True)
+        assert type(cost) is int and cost == raw
+    _, _, cost = parse_lkh_mtsp_solution(f"instance, Cost: 0_{raw}\n1 2 1 (#1) Cost: 0", exact_report=True)
+    assert type(cost) is int and cost == raw
+    path = tmp_path / "problem.vrp"
+    path.write_text(f"EDGE_WEIGHT_SECTION\n0 {raw - 1}\n1 0\nEOF\n")
+    assert _exported_route_cost(path, [[1]], 2) == raw
+
+    script = tmp_path / "solver.py"
+    script.write_text("import sys\nfrom pathlib import Path\n"
+                      "Path(sys.argv[1]).write_text('Route #1: 1 2\\nCost 14.00000000000000001\\n')\n")
+    desc = FAKE_LKH.with_overrides(executable=str(script), argv=("{python}", "{executable}", "{solution}"),
+                                   output_format="cvrplib-sol")
+    solved = run_solver(ExternalSolver(desc), _write(toy_cvrp_instance, tmp_path), time_limit_s=5)
+    assert solved.valid
+    assert solved.result.provenance["reported_cost_matches_exported_model"] is False
+    text = solved.result.provenance["reported_cost_raw_text"]
+    assert Decimal(text) == Decimal("14.00000000000000001") and text in solved.result.error
+    assert solved.result.cost_exact is False
+
+
+def test_unrepresentable_window_is_refused_before_launch(tmp_path, toy_vrptw_instance):
+    from mamut_routing_lib.solvers.external.scaling import Limits
+
+    data = toy_vrptw_instance.model_copy(update={"time_windows": [(0, 100), (5, 6), (0, 50)]})
+    desc = FAKE_LKH.with_overrides(limits=Limits(max_time_value=20))
+    with pytest.raises(InstanceNotSupportedError, match="empties the time window at vertex 1"):
+        run_solver(ExternalSolver(desc), _write(data, tmp_path), workdir=tmp_path / "run", time_limit_s=5)
+    assert not (tmp_path / "run" / "solver.log").exists()
+
+
+def test_python_descriptor_preserves_positions_and_rejects_unknown_ids():
+    from dataclasses import fields
+    from mamut_routing_lib.solutions import SolutionFormatError, normalize_routes
+
+    positional = []
+    for field in fields(FAKE_X):
+        if field.name == "distance_model":
+            break
+        if not field.kw_only:
+            positional.append(getattr(FAKE_X, field.name))
+    desc = ExternalSolverDescriptor(*positional, "nint")
+    assert desc.distance_model == "nint" and desc.id_convention == "one-based"
+    with pytest.raises(ValueError, match="id_convention"):
+        desc.with_overrides(id_convention="typo")
+    with pytest.raises(SolutionFormatError, match="id_convention"):
+        normalize_routes([[0, 1, 2]], 3, convention="typo")
+
+
+def test_a_matching_reported_cost_leaves_no_remark(collection: Path) -> None:
+    solved = run_solver(ExternalSolver(FAKE_LKH), _variant(collection, "CVRP", "fastest"), time_limit_s=5)
+    assert solved.result.provenance["reported_cost_matches_exported_model"] is True and solved.result.error is None
 
 
 def test_nonzero_exit_with_a_solution_keeps_the_solution(collection: Path, monkeypatch) -> None:
@@ -244,6 +396,38 @@ def _executable(tmp_path: Path, name: str) -> Path:
     path.write_text("#!/bin/sh\nexit 0\n")
     path.chmod(0o755)
     return path
+
+
+@pytest.mark.parametrize("relative_path", [".", "/nonexistent:.", "/nonexistent::/also-nonexistent", "tree"])
+def test_a_bare_name_is_never_found_through_the_working_directory(tmp_path: Path, monkeypatch, relative_path: str) -> None:
+    """A relative PATH entry is the working directory: a file called `filo2` in a benchmark tree is not the solver."""
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    for name in ("filo2", "java"):
+        _executable(tree, name)
+    monkeypatch.chdir(tmp_path if relative_path == "tree" else tree)
+    monkeypatch.setenv("PATH", relative_path.replace(":", os.pathsep))
+
+    found_by_name = ExternalSolver(BUILTIN_DESCRIPTORS["filo2"]).availability()
+    assert not found_by_name.available and "only found through a relative PATH entry" in found_by_name.reason
+    configured = ExternalSolver(BUILTIN_DESCRIPTORS["filo2"].with_overrides(executable="filo2")).availability()
+    assert not configured.available and "'filo2' is not on PATH" in configured.reason
+    assert "only found through a relative PATH entry" in configured.reason
+    jar = tmp_path / "solver.jar"
+    jar.write_bytes(b"jar")
+    java = ExternalSolver(BUILTIN_DESCRIPTORS["ails2"].with_overrides(jar=str(jar))).availability()
+    assert not java.available and "java not found on PATH" in java.reason
+
+
+def test_a_bare_name_is_found_in_the_absolute_entries_of_path(tmp_path: Path, monkeypatch) -> None:
+    tree, bin_dir = tmp_path / "tree", tmp_path / "bin"
+    for folder in (tree, bin_dir):
+        folder.mkdir()
+        _executable(folder, "filo2")
+    monkeypatch.chdir(tree)
+    monkeypatch.setenv("PATH", os.pathsep.join([".", str(bin_dir)]))  # the working directory comes first, and is skipped
+    availability = ExternalSolver(BUILTIN_DESCRIPTORS["filo2"]).availability()
+    assert availability.available and availability.executable == str((bin_dir / "filo2").resolve())
 
 
 def test_a_configured_executable_never_falls_back_to_another_on_path(tmp_path: Path, monkeypatch) -> None:
@@ -323,7 +507,7 @@ def test_full_matrix_solver_takes_asymmetric_road_metrics(collection: Path, toy_
         assert solved.valid, solved.result.error
         assert solved.result.cost_exact is True and solved.result.provenance["scale"]["rounding"] == "float"
         assert solved.result.solver_cost == pytest.approx(solved.cost)
-        assert "reported_cost_matches_checker" not in solved.result.provenance  # float solver: no exact cross-check
+        assert "reported_cost_matches_exported_model" not in solved.result.provenance  # float solver: no exact cross-check
 
 
 def test_builtin_hgs_reads_the_full_matrix(collection: Path, tmp_path: Path, monkeypatch) -> None:
@@ -422,3 +606,22 @@ def test_one_solve_reads_the_distance_matrix_once(collection: Path, monkeypatch)
     pytest.importorskip("pyvrp")
     assert run_solver("pyvrp", path, time_limit_s=1).valid
     assert len(reads) == 1
+
+
+def test_an_lkh_descriptor_cannot_contradict_the_run_it_records() -> None:
+    """LKH-3 keeps the last occurrence of a parameter: an extra `SEED = 1` would run another seed than the result says."""
+    from mamut_routing_lib.solvers.external.problem import lkh_parameter_key, render_lkh_params
+
+    assert [lkh_parameter_key(line) for line in ("SEED = 1", "  seed=1", "= Time_Limit 9", "# SEED = 1", "", "RUNS = 10")] == [
+        "SEED", "SEED", "TIME_LIMIT", "", "", "RUNS",
+    ]
+    for line in ("SEED = 1", "TIME_LIMIT = 9999", "precision=10", "PROBLEM_FILE = x.vrp", "MTSP_SOLUTION_FILE = x.sol"):
+        with pytest.raises(ValueError, match="the run would not be the one that its result records"):
+            FAKE_LKH.with_overrides(extra_args=(line,))
+        with pytest.raises(ValueError, match="sets "):
+            list(render_lkh_params(problem=Path("p.vrp"), solution=Path("s.sol"), seed=7, time_limit_s=5, extra=(line,)))
+    assert FAKE_LKH.with_overrides(extra_args=("RUNS = 10",)).extra_args == ("RUNS = 10",)
+    # For any other input format, extra_args are command-line tokens: nothing of LKH-3 applies.
+    assert FAKE_X.with_overrides(extra_args=("SEED = 1",)).extra_args == ("SEED = 1",)
+    lines = list(render_lkh_params(problem=Path("p.vrp"), solution=Path("s.sol"), seed=7, time_limit_s=5, extra=("RUNS = 10",)))
+    assert lines[-1] == "RUNS = 10" and "SEED = 7" in lines and "TIME_LIMIT = 5.0" in lines

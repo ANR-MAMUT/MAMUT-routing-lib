@@ -20,7 +20,8 @@ directory or a benchmark tree: the file names executables that will be run.
 
     [solvers.lkh3]
     executable = "~/bin/LKH"
-    extra_args = ["POPULATION_SIZE = 10"] # LKH-3: extra parameter-file lines
+    extra_args = ["POPULATION_SIZE = 10"] # LKH-3: extra parameter-file lines (not SEED, TIME_LIMIT,
+                                          # PRECISION or the file names: the runner sets those)
 
     [solvers.hgs-fork]                    # a variant of a built-in
     extends = "hgs-cvrp"
@@ -36,12 +37,18 @@ directory or a benchmark tree: the file names executables that will be run.
     problem_types = ["CVRP", "VRPTW"]
     objectives = ["MonoCost"]
     symmetric_only = false                # it reads asymmetric FULL_MATRIX files (default: true)
+    id_convention = "zero-based"          # its .sol numbers customers 0..n-1 (default: one-based)
 
 ``mamut-routing solvers init`` writes a commented starter file (``starter_config_text``).
 
 Paths: ``~`` is expanded, and a relative path is read from the config file's folder,
 never the working directory: ``jar = "AILSII.jar"``, ``executable = "./bin/filo2"``.
-A bare ``executable`` or ``java`` name (``filo2``, ``java``) is looked up on PATH.
+A bare ``executable`` or ``java`` name (``filo2``, ``java``) is looked up on PATH, in
+its absolute entries only: a relative entry (``.``) is the working directory.
+With ``runtime = "python"``, ``executable`` is the solver's script (a file, read
+from the config file's folder when relative): ``argv = ["{python}", "{executable}", ...]``.
+The script is what the provenance hashes; a solver whose argv names its code by
+itself (``"-m", "package.module"``) records no executable hash.
 
 Unknown keys and mistyped values (``fleet_limit = "false"``) are errors, so a typo
 never silently runs a different command. An error in one ``[solvers.<name>]`` table
@@ -53,6 +60,12 @@ the generic explicit file says ``TYPE : CVRP`` whatever the matrix. A solver
 that ``extends`` a built-in inherits the built-in's value (LKH-3 takes
 asymmetric matrices, and so does HGS-CVRP in a build with the shipped
 full-matrix reader patch. FILO2 and AILS-II do not).
+
+``id_convention`` says how a ``cvrplib-sol`` solution file numbers its stops:
+``one-based`` (the default: customers 1..n as CVRPLIB writes them, a 0 is the
+depot), ``zero-based`` (customers 0..n-1) or ``auto`` (guess from the file). The
+guess reads a one-based file that writes the depot and misses the last customer
+as a complete zero-based one, so a solver's convention is better declared.
 """
 
 from __future__ import annotations
@@ -70,6 +83,7 @@ from typing import Any, Callable
 from mamut_routing_lib.enums import ObjectiveFunction, ProblemType
 from mamut_routing_lib.solvers.base import Availability, SolverCapabilities, SolverUnavailableError, Support
 from mamut_routing_lib.solvers.external.descriptor import ExternalSolverDescriptor
+from mamut_routing_lib.solvers.external.problem import check_lkh_extra_lines
 from mamut_routing_lib.solvers.external.scaling import Limits
 
 __all__ = [
@@ -99,6 +113,7 @@ _SCALAR_FIELDS = {
     "java": str,
     "runtime": str,
     "solution_file": str,
+    "id_convention": str,
     "distance_model": str,
     "input_format": str,
     "output_format": str,
@@ -123,6 +138,7 @@ _CHOICES = {
     "distance_model": ("float", "nint", "integer"),
     "input_format": ("cvrplib-x", "cvrplib-matrix", "cvrplib-explicit", "lkh"),
     "output_format": ("cvrplib-sol", "lkh-mtsp"),
+    "id_convention": ("one-based", "zero-based", "auto"),
     "live_progress": ("none", "elapsed", "incumbent"),
 }
 #: argv placeholders (see ``descriptor``); ``{java_options}`` is a whole argv token of its own.
@@ -357,9 +373,12 @@ def _descriptor(
         values["limits"] = Limits(
             **{**{k: getattr(base_limits, k) for k in _LIMIT_KEYS}, **{k: _number(v, name, f"limits.{k}") for k, v in limits.items()}}
         )
+    runtime = values.get("runtime", parent.runtime if parent else "native")
     for key in ("executable", "jar", "java"):
         if key in values:
-            values[key] = _config_relative(values[key], base_dir, on_path=key != "jar")
+            # A jar and the script of a Python solver are files, never commands: no PATH lookup for a bare name.
+            is_file = key == "jar" or (key == "executable" and runtime == "python")
+            values[key] = _config_relative(values[key], base_dir, on_path=not is_file)
     if "jar" in values and not Path(values["jar"]).is_absolute():
         raise SolverConfigError(f"solvers.{name}.jar must be a path to the jar (absolute, or relative to the config file)")
     if "progress_pattern" in values:
@@ -390,6 +409,11 @@ def _descriptor(
     if input_format != "lkh":  # with the lkh format, extra_args are literal parameter-file lines
         for token in values.get("extra_args", ()):
             _check_template(name, "extra_args", token, _ARGV_FIELDS)
+    else:
+        try:
+            check_lkh_extra_lines(values.get("extra_args", parent.extra_args if parent else ()))
+        except ValueError as error:
+            raise SolverConfigError(f"solvers.{name}.extra_args: {error}") from error
 
     capability_values: dict[str, Any] = {}
     for key in ("problem_types", "objectives"):
@@ -573,7 +597,8 @@ _STARTER_HEADER = """\
 # set its path, then check with `mamut-routing solvers list`.
 #
 # - Relative paths are read from this file's folder; a bare executable name is
-#   looked up on PATH. Booleans are unquoted (true / false).
+#   looked up on PATH (absolute entries only, never the working directory).
+#   Booleans are unquoted (true / false).
 # - A mistake in one table disables that solver only; `solvers list` says why.
 # - `version` is recorded in the provenance of every BKS a run stores.
 schema_version = 1
@@ -633,6 +658,7 @@ _STARTER_FOOTER = """\
 # problem_types = ["CVRP"]
 # objectives = ["MonoCost"]
 # symmetric_only = true               # false: it reads asymmetric FULL_MATRIX files
+# id_convention = "one-based"        # how its .sol numbers customers: one-based (1..n, CVRPLIB) | zero-based | auto
 """
 
 
@@ -646,8 +672,7 @@ def starter_config_text(*, detect: bool = True) -> str:
     With ``detect``, a solver already found on PATH is marked as such (it needs no table).
     The text parses as a valid config that defines no solver.
     """
-    import shutil
-
+    from mamut_routing_lib.solvers.external.adapter import find_on_path
     from mamut_routing_lib.solvers.external.catalog import BUILTIN_DESCRIPTORS, patch_path
 
     parts = [_STARTER_HEADER]
@@ -656,7 +681,7 @@ def starter_config_text(*, detect: bool = True) -> str:
         text = about.format(homepage=descriptor.homepage or "", patch=patch_path("hgs-cvrp-explicit-matrix.patch"))
         block = [_comment(text)]
         if detect and descriptor.runtime == "native":
-            found = next((hit for candidate in descriptor.executable_names if (hit := shutil.which(candidate))), None)
+            found = next((hit for candidate in descriptor.executable_names if (hit := find_on_path(candidate)[0])), None)
             if found:
                 block.append(f"# Found on PATH: {found} (used as is; a table is only needed to pin a version).")
         block.append(f"# [solvers.{name}]")
