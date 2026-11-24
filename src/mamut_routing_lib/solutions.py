@@ -536,6 +536,17 @@ def load_checkable(instance: Any, instance_path: str | Path | None) -> Any:
     return hydrate_collection_instance(instance, instance_path)
 
 
+def _require_descriptor_at_path(instance, path):
+    from mamut_routing_lib.artifacts import hydrate_collection_instance, load_benchmark_instance
+    from mamut_routing_lib.models import LoadedStaticInstance
+
+    descriptor = load_benchmark_instance(path)
+    if isinstance(instance, LoadedStaticInstance):
+        descriptor = hydrate_collection_instance(descriptor, path)
+    if instance != descriptor:
+        raise ValueError(f"Supplied instance differs from the descriptor or matrix at {path}")
+
+
 def _require_marked_target(marked: BenchmarkBKS, instance: Any, routes, objective: ObjectiveFunction) -> None:
     from mamut_routing_lib.artifacts import get_instance_identifier
 
@@ -577,15 +588,21 @@ def check_routes(
     from mamut_routing_lib.exact import prepare_exact
     from mamut_routing_lib.td.checker import TDRouteEvaluation, TDSolutionCheckResult
 
-    from mamut_routing_lib.manifests import adjacent_manifest
-    manifest = adjacent_manifest(instance_path, objective_function, routes=routes) if instance_path is not None else None
+    from mamut_routing_lib.manifests import adjacent_manifest, manifest_path_for
+    manifest = None
+    if instance_path is not None:
+        if manifest_path_for(instance_path).exists():
+            manifest = adjacent_manifest(instance_path, objective_function, routes=routes,
+                                         supplied_instance=instance, supplied_checkable=checkable)
+        else:
+            _require_descriptor_at_path(instance, instance_path)
     if manifest is not None:
         checkable = manifest.checkable
     elif checkable is None:
         checkable = load_checkable(instance, instance_path)
     elif instance_path is not None:
         _require_same_instance(instance, checkable, Path(instance_path))
-    elif checkable is not instance:
+    elif getattr(checkable, "instance", checkable) is not instance:
         raise ValueError("A preloaded checkable requires its instance path for identity verification.")
     prepared = prepare_exact(checkable, backend=backend, objective_function=objective_function)
     is_td = is_time_dependent(instance)
@@ -653,6 +670,8 @@ def submit_bks(
     if reserved:
         raise ValueError(f"metadata cannot set what the BKS store and the checker tools write: {', '.join(reserved)}")
     path = Path(instance_path)
+    if instance is not None:
+        _require_descriptor_at_path(instance, path)
     loaded = instance if instance is not None else load_benchmark_instance(path)
     if checkable is not None:
         _require_same_instance(loaded, checkable, path)
@@ -681,7 +700,8 @@ def submit_bks(
 
     from mamut_routing_lib.manifests import manifest_path_for
     if checkable is None or manifest_path_for(path).exists():
-        return save_solution_as_bks_if_improved(path, objective, solution, authors=authors, metadata=dict(metadata or {}), backend=backend)
+        return save_solution_as_bks_if_improved(path, objective, solution, authors=authors, metadata=dict(metadata or {}),
+                                               backend=backend, supplied_checkable=checkable)
     # The same two steps as save_solution_as_bks_if_improved, on the instance already in hand.
     bks = create_bks_from_solution(checkable, solution, objective, authors=authors, metadata=dict(metadata or {}), backend=backend)
     return save_bks_if_improved(checkable, bks, path, backend=backend)
@@ -691,15 +711,22 @@ def _require_same_instance(loaded: Any, checkable: Any, path: Path) -> None:
     """Refuse a ``checkable`` that was built from another instance than the one being stored."""
     from mamut_routing_lib.artifacts import get_instance_identifier
 
+    from mamut_routing_lib.models import LoadedStaticInstance
+    from mamut_routing_lib.td.artifacts import LoadedTDInstance
+
     expected = get_instance_identifier(loaded)
-    if is_time_dependent(loaded):
-        held = get_instance_identifier(checkable.instance)
+    held_model = checkable.instance if isinstance(checkable, LoadedTDInstance) else checkable
+    held = get_instance_identifier(held_model)
+    if held != expected or held_model.benchmark_name != loaded.benchmark_name:
+        raise ValueError(f"checkable holds instance {held!r} of {held_model.benchmark_name}, expected {expected!r} of {loaded.benchmark_name}")
+    if isinstance(checkable, LoadedTDInstance):
         if Path(checkable.instance_path).resolve() != path.resolve():
             raise ValueError(f"checkable was loaded from {checkable.instance_path}, not from {path}")
-    else:
-        held = get_instance_identifier(checkable)
-    if held != expected:
-        raise ValueError(f"checkable holds instance {held!r}, not {expected!r}")
+        if held_model != loaded:
+            raise ValueError("The supplied TD descriptor differs from the preloaded instance.")
+    elif isinstance(loaded, LoadedStaticInstance) and held_model != loaded:
+        raise ValueError("The supplied static model differs from the preloaded instance.")
+
 
 
 def preview_bks_update(
@@ -724,9 +751,11 @@ def preview_bks_update(
     from mamut_routing_lib.objectives import base_objective, require_supported_objective
 
     path = Path(instance_path)
+    from mamut_routing_lib.manifests import adjacent_manifest, manifest_path_for
+    if instance is not None and not manifest_path_for(path).exists():
+        _require_descriptor_at_path(instance, path)
     loaded = instance if instance is not None else load_benchmark_instance(path)
     objective = require_supported_objective(loaded, objective_function or base_objective(loaded))
-    from mamut_routing_lib.manifests import adjacent_manifest
     bks_path = get_bks_path_for_instance(path, objective)
     summary = dict(objective_function=objective.value, path=str(bks_path), candidate_cost=None,
                    candidate_num_routes=None, existing_cost=None, existing_num_routes=None, tie=False)
@@ -735,7 +764,7 @@ def preview_bks_update(
     except ValueError as error:
         return {**summary, "action": "stored_invalid", "error": str(error)}
     all_routes = [*routes, *existing.routes] if existing is not None else routes
-    manifest = adjacent_manifest(path, objective, routes=all_routes)
+    manifest = adjacent_manifest(path, objective, routes=all_routes, supplied_instance=loaded, supplied_checkable=checkable)
     if manifest is not None:
         checkable = manifest.checkable
     elif checkable is None:

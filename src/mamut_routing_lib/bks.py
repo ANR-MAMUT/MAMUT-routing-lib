@@ -133,7 +133,7 @@ def save_bks_if_improved(
 ) -> BKSUpdateResult:
     """Recheck the candidate and incumbent and replace only on a strict improvement."""
     from mamut_routing_lib.manifests import adjacent_manifest
-    manifest = adjacent_manifest(instance_path, candidate_bks.objective_function)
+    manifest = adjacent_manifest(instance_path, candidate_bks.objective_function, supplied_checkable=instance)
     if manifest is not None:
         instance = manifest.checkable
     prepared = prepare_static(instance, backend=backend, objective_function=candidate_bks.objective_function)
@@ -152,11 +152,14 @@ def save_solution_as_bks_if_improved(
     authors: str,
     metadata: dict[str, Any] | None = None,
     backend: ExactBackend = "native",
+    supplied_checkable: LoadedStaticInstance | None = None,
 ) -> BKSUpdateResult:
     """Load and prepare the instance once, check both submissions and store the winner."""
     from mamut_routing_lib.manifests import adjacent_manifest
-    manifest = adjacent_manifest(instance_path, objective_function)
+    manifest = adjacent_manifest(instance_path, objective_function, supplied_checkable=supplied_checkable)
     instance = manifest.checkable if manifest else hydrate_collection_instance(load_benchmark_instance(instance_path), instance_path)
+    if manifest is None and supplied_checkable is not None and supplied_checkable != instance:
+        raise ValueError(f"Supplied materialized input differs from the descriptor or matrix at {instance_path}")
     prepared = prepare_static(instance, backend=backend, objective_function=objective_function)
     candidate_bks, candidate_evaluation = _candidate(
         prepared, get_instance_identifier(instance), solution, authors, metadata, manifest,

@@ -237,8 +237,30 @@ def _materialization(instance, root, sidecar_names, material):
     return "atf_stream_sha256" if td else "matrix_sha256"
 
 
+def _require_bound_inputs(path, descriptor, published, supplied_instance, supplied_checkable):
+    """Bind any caller-provided inputs to the descriptor and materialized values just verified."""
+    if supplied_instance is not None:
+        expected = published if isinstance(supplied_instance, LoadedStaticInstance) else descriptor
+        if supplied_instance != expected:
+            raise ValueError(f"Supplied instance differs from the verified descriptor or matrix at {path}")
+    if supplied_checkable is None or (supplied_checkable is supplied_instance and isinstance(published, LoadedStaticInstance)):
+        return
+    if isinstance(published, LoadedTDInstance) and isinstance(supplied_checkable, LoadedTDInstance):
+        given, verified = supplied_checkable.atfs, published.atfs
+        # Verification can materialize incumbent arcs absent from the caller's sparse view.
+        if (supplied_checkable.instance == descriptor and Path(supplied_checkable.instance_path).resolve() == path
+                and (given.instance_name, given.benchmark_name, given.horizon, given.num_customers)
+                == (verified.instance_name, verified.benchmark_name, verified.horizon, verified.num_customers)
+                and all(given.arcs[arc] == fn for arc, fn in verified.arcs.items() if arc in given.arcs)):
+            return
+    elif supplied_checkable == published:
+        return
+    raise ValueError(f"Supplied materialized input differs from the verified instance at {path}")
+
+
 def verify_manifest(instance_path: str | Path, *, expected_sha256: str | None = None,
-                    routes: Iterable[Iterable[int]] | None = None, atf_cache_root: Path | None = None) -> VerifiedManifest:
+                    routes: Iterable[Iterable[int]] | None = None, atf_cache_root: Path | None = None,
+                    supplied_instance=None, supplied_checkable=None) -> VerifiedManifest:
     """Verify the adjacent manifest, required artifact files and complete materialization without Git.
 
     Materialize omitted sidecars with the published family recipe before loading them.
@@ -313,13 +335,14 @@ def verify_manifest(instance_path: str | Path, *, expected_sha256: str | None = 
         actual = matrix_sha256(checkable.arc_costs)
     if material.get(field) != actual:
         raise ValueError(f"Manifest {field} disagrees with the complete materialization")
+    _require_bound_inputs(instance_path, instance, checkable, supplied_instance, supplied_checkable)
     return VerifiedManifest(SPECIFICATION, revision, digest, base_objective(instance), checkable)
 
 
-def adjacent_manifest(instance_path, objective=None, *, routes=None) -> VerifiedManifest | None:
+def adjacent_manifest(instance_path, objective=None, *, routes=None, supplied_instance=None, supplied_checkable=None) -> VerifiedManifest | None:
     if not manifest_path_for(instance_path).exists():
         return None
-    verified = verify_manifest(instance_path, routes=routes)
+    verified = verify_manifest(instance_path, routes=routes, supplied_instance=supplied_instance, supplied_checkable=supplied_checkable)
     if objective is not None and objective != verified.objective:
         return None  # The alternate objective is an unbound evaluation.
     return verified

@@ -84,4 +84,7 @@ def check_td_solution(
     """Check the loaded TD solution with its family objective and the selected exact backend."""
     from mamut_routing_lib.solutions import _check_solution_model
 
-    return _check_solution_model(loaded.instance, loaded.instance_path, loaded, solution, objective_function, backend)
+    # A certified result asserts the identity of the on-disk edition. An ordinary
+    # solution is evaluated directly on the supplied materialized operands.
+    path = loaded.instance_path if isinstance(solution, BenchmarkBKS) and "standard" in solution.metadata else None
+    return _check_solution_model(loaded.instance, path, loaded, solution, objective_function, backend)

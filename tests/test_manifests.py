@@ -123,3 +123,53 @@ def test_td_digest_only_and_route_specific_views(tmp_path):
     assert set(partial.checkable.atfs.arcs) == {(0, 1), (1, 2), (2, 0)}
     assert len(full.checkable.atfs.arcs) == 6
     assert empty.result_identity() == partial.result_identity() == full.result_identity()
+
+
+@pytest.mark.parametrize("change", ["name", "family", "capacity", "matrix"])
+def test_static_checker_binds_supplied_model_to_descriptor(tmp_path, change):
+    from mamut_routing_lib import BenchmarkName, BenchmarkSolution, check_solution
+
+    path, published, _ = fixture(tmp_path, False)
+    other = published.model_copy(deep=True)
+    if change == "name":
+        other.instance_name = "other"
+    elif change == "family":
+        other.benchmark_name = BenchmarkName.DIMACS_2021
+    elif change == "capacity":
+        other.vehicle_capacity = 0
+    else:
+        other.arc_costs[0][1] += 1
+    solution = BenchmarkSolution(instance_name=other.instance_name, routes=[[1, 2]])
+    with pytest.raises(ValueError, match="differs from"):
+        check_solution(other, solution, instance_path=path, backend="python")
+    manifest_path_for(path).unlink()
+    with pytest.raises(ValueError, match="differs from"):
+        check_solution(other, solution, instance_path=path, backend="python")
+
+
+def test_td_in_memory_check_and_certified_edition_binding(tmp_path, monkeypatch):
+    from mamut_routing_lib import BenchmarkSolution
+    from mamut_routing_lib import manifests
+    from mamut_routing_lib.td import NDCPWLF, check_td_solution
+
+    path, _, _ = fixture(tmp_path, True)
+    loaded = load_td_instance(path)
+    routes = [[1, 2]]
+    certified = load_bks(submit_bks(path, routes, authors="Fixture", backend="python").path)
+    ordinary = BenchmarkSolution(instance_name=loaded.instance.instance_name, routes=routes)
+    calls = []
+    stream = manifests.stream_td_materialization
+
+    def counted(*args, **kwargs):
+        calls.append(args[0])
+        return stream(*args, **kwargs)
+
+    monkeypatch.setattr(manifests, "stream_td_materialization", counted)
+    assert check_td_solution(loaded, ordinary, backend="python").is_valid()
+    assert calls == []
+    assert check_td_solution(loaded, certified, backend="python").is_valid()
+    assert len(calls) == 1
+    arc = loaded.atfs.arcs[0, 1]
+    loaded.atfs.arcs[0, 1] = NDCPWLF(arc.xs, [y + 1 for y in arc.ys])
+    with pytest.raises(ValueError, match="materialized input differs"):
+        check_td_solution(loaded, certified, backend="python")

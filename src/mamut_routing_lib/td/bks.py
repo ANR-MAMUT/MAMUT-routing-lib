@@ -68,7 +68,8 @@ def _candidate(loaded, checker, solution, authors, metadata, manifest=None):
 def _published_inputs(loaded, objective, routes):
     from mamut_routing_lib.manifests import adjacent_manifest
     path = loaded.instance_path if isinstance(loaded, LoadedTDInstance) else loaded
-    manifest = adjacent_manifest(path, objective, routes=routes)
+    manifest = adjacent_manifest(path, objective, routes=routes,
+                                 supplied_checkable=loaded if isinstance(loaded, LoadedTDInstance) else None)
     return (manifest.checkable if manifest else _as_loaded(loaded)), manifest
 
 
