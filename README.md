@@ -71,6 +71,8 @@ A Kayros optimality claim names the contract under which the solver made it. Rep
 
 ## Migrating Python code to v0.13
 
+The v0.13 library requires Pydantic 2.10 or newer for TD route results with rational durations and departures. [Pydantic Fraction support](https://pydantic.dev/articles/pydantic-v2-10-release#support-for-fractionsfraction)
+
 | Previous API | v0.13 API | Meaning |
 | --- | --- | --- |
 | Static `check_solution`, `check_cvrp_solution`, `check_vrptw_solution` and `td.check_td_solution` | Same names, exact family evaluation | Feasibility and cost use the materialized binary64 rationals. `result.routing_cost` is their display, with `None` on overflow. `result.exact_evaluation` carries the authoritative cost and ordered TD witnesses. The checker uses the family's published objective by default. |

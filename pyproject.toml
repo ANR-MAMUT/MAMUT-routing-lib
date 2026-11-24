@@ -23,7 +23,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
-    "pydantic>=2.0.0",
+    "pydantic>=2.10",
 ]
 keywords = [
     "combinatorial optimization",
