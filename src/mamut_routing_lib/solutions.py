@@ -57,6 +57,7 @@ __all__ = [
     "read_solution_file",
     "read_solution_text",
     "resolve_convention",
+    "solver_submission_metadata",
     "submit_bks",
     "write_cvrplib_solution",
 ]
@@ -110,6 +111,7 @@ class ParsedSolution:
     #: The ``metadata`` object of a JSON solution file (``None`` for other formats).
     metadata: dict[str, Any] | None = None
     marked_input: BenchmarkBKS | None = None
+    reported_cost_token: str | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -396,9 +398,12 @@ def read_solution_text(
     filename: str = "",
     depot: int = 0,
     convention: IdConvention = "auto",
+    preserve_solver_report: bool = False,
 ) -> ParsedSolution:
     """Parse any supported format and normalise its ids onto an instance with ``num_customers``."""
     stripped = text.strip()
+    token = None
+    report_mode = "text" if preserve_solver_report else False
     if filename.lower().endswith(".json") or stripped.startswith(("[", "{")):
         routes, declared, metadata, marked = _parse_json_solution(text)
         if marked is not None:
@@ -407,21 +412,32 @@ def read_solution_text(
             return ParsedSolution(routes, declared, "json", metadata=metadata, marked_input=marked)
         fmt = "json"
     elif _looks_like_lkh(text):
-        routes, penalty, cost = parse_lkh_mtsp_solution(text)
+        routes, penalty, cost = parse_lkh_mtsp_solution(text, exact_report=report_mode)
         if penalty:
-            raise SolutionFormatError(f"LKH-3 reports a penalty of {penalty:g}: the solution is infeasible.")
+            raise SolutionFormatError(f"LKH-3 reports a penalty of {penalty}: the solution is infeasible.")
         # LKH node k is library node k-1 (the depot is node 1).
         library = normalize_routes([[node - 1 for node in route] for route in routes], num_customers, depot=depot, convention="one-based")
-        return ParsedSolution(library, cost, "lkh-mtsp", penalty)
+        token = cost if isinstance(cost, str) else None
+        display = float(cost) if cost is not None else None
+        return ParsedSolution(library, display if display is not None and math.isfinite(display) else None,
+                              "lkh-mtsp", penalty, reported_cost_token=token)
     else:
-        routes, declared = ([], None) if not stripped and num_customers == 0 else parse_solution_text(text, filename=filename)
+        routes, declared = ([], None) if not stripped and num_customers == 0 else parse_solution_text(
+            text, filename=filename, exact_report=report_mode,
+        )
+        if isinstance(declared, str):
+            token = declared
+            number = float(declared)
+            declared = number if math.isfinite(number) else None
         fmt, metadata = "cvrplib-sol", None
     ids = resolve_convention(routes, num_customers, convention)
     library = normalize_routes(routes, num_customers, depot=depot, convention=ids)  # type: ignore[arg-type]
-    return ParsedSolution(library, declared, fmt, ids=ids, metadata=metadata)
+    return ParsedSolution(library, declared, fmt, ids=ids, metadata=metadata, reported_cost_token=token)
 
 
-def read_solution_file(path: str | Path, instance: Any, *, convention: IdConvention = "auto") -> ParsedSolution:
+def read_solution_file(
+    path: str | Path, instance: Any, *, convention: IdConvention = "auto", preserve_solver_report: bool = False,
+) -> ParsedSolution:
     """Read a solution file for ``instance`` (any supported format), ids normalised."""
     target = Path(path)
     try:
@@ -434,7 +450,50 @@ def read_solution_file(path: str | Path, instance: Any, *, convention: IdConvent
         filename=target.name,
         depot=int(getattr(instance, "depot", 0) or 0),
         convention=convention,
+        preserve_solver_report=preserve_solver_report,
     )
+
+
+def solver_submission_metadata(parsed: ParsedSolution, extra: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Carry a solver report into the submission and check declarations against its source."""
+    from mamut_routing_lib.solvers.report import checked_solver_metadata, make_solver_report
+    from mamut_routing_lib.solvers.run import BKS_PROVENANCE_KEYS
+
+    extra = extra or {}
+    metadata = {}
+    source = parsed.metadata or {}
+    entries = [source]
+    if isinstance(source.get("bks_metadata"), dict):
+        entries.append(source["bks_metadata"])
+    protected = {"solver_report", "solver_cost"}
+    if any("solver_report" in entry for entry in entries):
+        protected.update(("solver", "solver_version", "method"))
+    for entry in entries:
+        for key in BKS_PROVENANCE_KEYS:
+            if key not in entry:
+                continue
+            if key in protected and key in metadata and entry[key] != metadata[key]:
+                raise ValueError(f"conflicting {key} in the solution file's run metadata")
+            metadata[key] = entry[key]
+    for key in protected:
+        if key in metadata and key in extra and metadata[key] != extra[key]:
+            raise ValueError(f"conflicting {key} in supplied metadata and the solution file")
+    metadata.update(extra)
+    token = parsed.reported_cost_token
+    if token is not None:
+        known_objective = "total-arc-cost" if parsed.format == "lkh-mtsp" else "unspecified"
+        if "solver_report" not in metadata:
+            encoding = "integer" if token.lstrip("+-").isdigit() else "decimal-text"
+            metadata["solver_report"] = make_solver_report(known_objective, token, encoding=encoding)
+        else:
+            declared = metadata["solver_report"]
+            if not isinstance(declared, dict) or declared.get("value") != token:
+                raise ValueError("solver_report must preserve the solution file's original Cost token")
+            if known_objective != "unspecified" and declared.get("objective") != known_objective:
+                raise ValueError("solver_report objective conflicts with the LKH solution file")
+    if "solver_report" not in metadata:
+        metadata.pop("solver_cost", None)
+    return checked_solver_metadata(metadata)
 
 
 def write_cvrplib_solution(routes: list[list[int]], cost: int | float | None = None) -> str:

@@ -73,9 +73,14 @@ def test_hierarchical_warm_fallback_reports_its_unpenalized_objective(toy_vrptw_
         best=SimpleNamespace(routes=lambda: [[1, 2]]),
         cost=lambda: 14,
     )
-    phases = iter([warm_result, SimpleNamespace(is_feasible=lambda: False)])
+    def solve_phase(problem, *, initial_solution=None, **kwargs):
+        if initial_solution is None:
+            return warm_result
+        assert initial_solution.fixed_vehicle_cost() == problem.vehicle_type(0).fixed_cost > 0
+        return SimpleNamespace(is_feasible=lambda: False)
+
     monkeypatch.setattr(pyvrp, "minimise_fleet", lambda problem, **kwargs: problem.vehicle_type(0))
-    monkeypatch.setattr(pyvrp, "pyvrp_solve", lambda problem, **kwargs: next(phases))
+    monkeypatch.setattr(pyvrp, "pyvrp_solve", solve_phase)
 
     result = solve_vrptw(toy_vrptw_instance, objective_function=ObjectiveFunction.HIERARCHICAL_VEHICLE_COST, time_limit_s=1)
     assert result.vehicle_penalty == 0

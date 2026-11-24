@@ -2105,7 +2105,9 @@ _IDS_HELP = (
 )
 
 
-def _load_external_solution(instance_path: Path, solution_path: Path, ids: str) -> tuple[Any, Any]:
+def _load_external_solution(
+    instance_path: Path, solution_path: Path, ids: str, *, preserve_solver_report: bool = False,
+) -> tuple[Any, Any]:
     """(instance, ParsedSolution) or exit 2 with the reason."""
     from mamut_routing_lib.solutions import SolutionFormatError, read_solution_file
 
@@ -2117,7 +2119,7 @@ def _load_external_solution(instance_path: Path, solution_path: Path, ids: str) 
         typer.echo(f"Error: cannot load {instance_path}: {error}", err=True)
         raise typer.Exit(code=2) from error
     try:
-        parsed = read_solution_file(solution_path, instance, convention=ids)  # type: ignore[arg-type]
+        parsed = read_solution_file(solution_path, instance, convention=ids, preserve_solver_report=preserve_solver_report)  # type: ignore[arg-type]
     except (SolutionFormatError, OSError) as error:
         typer.echo(f"Error: {solution_path}: {error}", err=True)
         raise typer.Exit(code=2) from error
@@ -2343,11 +2345,18 @@ def bks_submit(
     Exit status 0 for created / replaced / kept, 1 when the checker rejects the
     solution, 2 on a usage error.
     """
-    from mamut_routing_lib.solutions import preview_bks_update, submit_bks
-    from mamut_routing_lib.solvers.run import BKS_PROVENANCE_KEYS
+    from mamut_routing_lib.solutions import preview_bks_update, solver_submission_metadata, submit_bks
 
-    instance, parsed = _load_external_solution(instance_path, solution_path, ids)
+    instance, parsed = _load_external_solution(instance_path, solution_path, ids, preserve_solver_report=True)
     resolved = _resolve_objective(instance, objective or (parsed.marked_input.objective_function if parsed.marked_input else None))
+    flags = {"method": method, "seed": seed, "time_limit_s": time_limit_s, "solver_version": solver_version}
+    extra = {**{key: value for key, value in flags.items() if value is not None},
+             "submitted_from": solution_path.name, **_meta_pairs(meta)}
+    try:
+        metadata = solver_submission_metadata(parsed, extra)
+    except ValueError as error:
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(code=1) from error
     if dry_run:
         try:
             preview = preview_bks_update(instance_path, parsed.routes, objective_function=resolved, instance=instance, backend=backend,
@@ -2362,24 +2371,6 @@ def bks_submit(
     if not authors or not authors.strip():
         typer.echo(f"Error: --authors is required (or set ${BKS_AUTHORS_ENV}).", err=True)
         raise typer.Exit(code=2)
-    # Both ordinary solution JSON and solve output can carry run provenance.
-    file_metadata = parsed.metadata or {}
-    recorded = file_metadata.get("bks_metadata")
-    carried = {key: file_metadata[key] for key in BKS_PROVENANCE_KEYS if file_metadata.get(key) is not None}
-    if isinstance(recorded, dict):
-        for key in BKS_PROVENANCE_KEYS:
-            if recorded.get(key) is not None:
-                if key in ("solver_report", "solver_cost") and key in carried and recorded[key] != carried[key]:
-                    typer.echo(f"Error: conflicting {key} in the solution file's run metadata.", err=True)
-                    raise typer.Exit(code=1)
-                carried[key] = recorded[key]
-    flags = {"method": method, "seed": seed, "time_limit_s": time_limit_s, "solver_version": solver_version}
-    metadata: dict[str, Any] = {
-        **carried,
-        **{key: value for key, value in flags.items() if value is not None},
-        "submitted_from": solution_path.name,
-        **_meta_pairs(meta),
-    }
     try:
         update = submit_bks(
             instance_path,

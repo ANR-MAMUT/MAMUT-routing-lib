@@ -61,12 +61,27 @@ def test_legacy_metadata_is_readable_and_new_bks_does_not_republish_it(toy_cvrp_
     from mamut_routing_lib.bks import create_bks_from_solution
     from mamut_routing_lib.enums import ObjectiveFunction
 
-    legacy = {"cost_exact": True, "solver_cost": 19, "solver_cost_raw": 1900}
+    legacy = {"cost_exact": True, "solver_cost": 19, "solver_cost_raw": 1900, "solver_reported_cost": 1900}
     solution = BenchmarkSolution(instance_name=toy_cvrp_instance.instance_name, routes=[[1], [2]], metadata=legacy)
     assert solution.metadata == legacy
     candidate = create_bks_from_solution(toy_cvrp_instance, solution, ObjectiveFunction.MONO_COST,
                                          authors="Example", metadata=legacy)
     assert legacy.keys().isdisjoint(candidate.metadata)
+
+
+def test_preserve_report_attribution_on_direct_submission(toy_cvrp_instance):
+    from mamut_routing_lib.bks import create_bks_from_solution
+    from mamut_routing_lib.enums import ObjectiveFunction
+
+    report = make_solver_report("total-arc-cost", "14", encoding="integer", unit=Fraction(1))
+    attribution = {"solver": "my-solver", "solver_version": "1.0", "solver_report": report}
+    solution = BenchmarkSolution(instance_name=toy_cvrp_instance.instance_name, routes=[[1, 2]], metadata=attribution)
+    candidate = create_bks_from_solution(toy_cvrp_instance, solution, ObjectiveFunction.MONO_COST, authors="Example")
+    for key, value in attribution.items():
+        assert candidate.metadata[key] == value
+    with pytest.raises(ValueError, match="Conflicting supplied solver"):
+        create_bks_from_solution(toy_cvrp_instance, solution, ObjectiveFunction.MONO_COST,
+                                 authors="Example", metadata={"solver": "other-solver"})
 
 
 @pytest.mark.parametrize("encoding,value", [("binary64", "0.1"), ("binary64", True), ("integer", 1),

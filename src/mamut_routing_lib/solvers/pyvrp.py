@@ -437,7 +437,9 @@ def solve_vrptw(
             collect_stats=False,
             display=display,
             params=params,
-            initial_solution=warm_result.best if warm_result.is_feasible() else None,
+            # A PyVRP Solution caches its fixed vehicle cost at construction. Rebuild the warm
+            # routes against this phase's vehicle type so all its incumbents have the same objective.
+            initial_solution=Solution(constrained_problem, _extract_routes(warm_result.best)) if warm_result.is_feasible() else None,
         )
         if not result.is_feasible() and warm_result.is_feasible():
             # The warm incumbent is a valid hierarchical solution even when

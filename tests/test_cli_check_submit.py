@@ -274,3 +274,53 @@ def test_marked_bks_input_is_verified_on_check_preview_and_submit(toy_cvrp_insta
         result = runner.invoke(app, [*cmd, '--backend', 'python'])
         assert result.exit_code == 2 and 'manifest' in result.output, result.output
     assert stored.read_bytes() == original
+
+
+@pytest.mark.parametrize(("text", "objective", "token", "encoding"), [
+    ("Route #1: 1 2\nCost 1.4000e+01", "unspecified", "1.4000e+01", "decimal-text"),
+    ("p, Cost: 0_9007199254740993\n1 2 3 1 (#2) Cost: 9007199254740993",
+     "total-arc-cost", "9007199254740993", "integer"),
+    ("Route #1: 1 2\nCost 1e999", "unspecified", "1e999", "decimal-text"),
+])
+def test_submit_preserves_standalone_solver_report(toy_cvrp_instance, tmp_path, text, objective, token, encoding):
+    instance = _write(toy_cvrp_instance, tmp_path)
+    result = _runner().invoke(app, ["bks", "submit", str(instance), str(_sol(tmp_path, text)), "--authors", "Finder"])
+    assert result.exit_code == 0, result.output
+    bks = load_bks(get_bks_path_for_instance(instance, ObjectiveFunction.MONO_COST))
+    assert bks.cost == 14
+    assert bks.metadata["solver_report"] == {"objective": objective, "value": token, "encoding": encoding}
+    assert "solver_cost" not in bks.metadata
+
+
+def test_submit_qualifies_raw_cost_with_unit_and_keeps_original_token(toy_cvrp_instance, tmp_path):
+    instance = _write(toy_cvrp_instance, tmp_path)
+    path = _sol(tmp_path, "Route #1: 1 2\nCost 1.4000E+02")
+    report = {"objective": "total-arc-cost", "value": "1.4000E+02", "encoding": "decimal-text",
+              "family_units_per_solver_unit": {"numerator": "1", "denominator": "10"}}
+    args = ["bks", "submit", str(instance), str(path), "--authors", "Finder"]
+    for mode in (["--dry-run"], []):
+        invalid = _runner().invoke(app, [*args, *mode, "--meta", "solver_report=" + json.dumps(dict(report, value="140"))])
+        assert invalid.exit_code == 1 and "original Cost token" in invalid.stderr
+        invalid = _runner().invoke(app, [*args, *mode, "--meta", "solver_report=" + json.dumps(report),
+                                         "--meta", "solver_cost=1"])
+        assert invalid.exit_code == 1 and "differs" in invalid.stderr
+    valid = _runner().invoke(app, [*args, "--meta", "solver_report=" + json.dumps(report)])
+    assert valid.exit_code == 0, valid.output
+    bks = load_bks(get_bks_path_for_instance(instance, ObjectiveFunction.MONO_COST))
+    assert bks.metadata["solver_report"] == report and bks.metadata["solver_cost"] == 14.0
+
+
+def test_submit_json_cost_is_independent_and_report_checked_in_dry_run(toy_cvrp_instance, tmp_path):
+    instance = _write(toy_cvrp_instance, tmp_path)
+    payload = {"routes": [[1, 2]], "cost": 19}
+    path = _sol(tmp_path, json.dumps(payload), "candidate.json")
+    args = ["bks", "submit", str(instance), str(path), "--authors", "Finder"]
+    valid = _runner().invoke(app, args)
+    assert valid.exit_code == 0, valid.output
+    bks = load_bks(get_bks_path_for_instance(instance, ObjectiveFunction.MONO_COST))
+    assert "solver_report" not in bks.metadata and "solver_cost" not in bks.metadata
+    report = {"objective": "total-arc-cost", "encoding": "binary64", "value": "19"}
+    path.write_text(json.dumps({**payload, "metadata": {"solver_report": report}}))
+    for mode in (["--dry-run"], []):
+        invalid = _runner().invoke(app, [*args, *mode])
+        assert invalid.exit_code == 1 and "binary64" in invalid.stderr
