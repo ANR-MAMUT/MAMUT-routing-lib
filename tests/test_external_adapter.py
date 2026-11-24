@@ -105,10 +105,33 @@ def test_lkh_style_solver_scales_exactly_and_cross_checks_its_cost(collection: P
     solved = run_solver(ExternalSolver(FAKE_LKH), _variant(collection, "CVRP", "fastest"), time_limit_s=5)
     result = solved.result
     assert solved.valid
-    assert result.cost_exact is True and result.cost_scale == 1000
+    assert result.cost_exact is True and result.cost_scale == 4
+    assert result.provenance["scale"]["cost_unit"] == {"numerator": "1", "denominator": "4"}
     assert result.provenance["problem_type_line"] == "CVRP"
     assert result.provenance["reported_cost_matches_checker"] is True
     assert result.solver_cost == pytest.approx(solved.cost)
+
+
+def test_bounded_integer_search_is_priced_on_the_materialized_binary64(toy_cvrp_instance, tmp_path: Path) -> None:
+    from fractions import Fraction
+
+    from mamut_routing_lib.solvers.external.scaling import Limits
+
+    matrix = [[0, 0.1, 1], [1, 0, 0.1], [0.1, 1, 0]]
+    data = toy_cvrp_instance.model_copy(update={"arc_costs": matrix})
+    path = _write(data, tmp_path)
+    descriptor = FAKE_LKH.with_overrides(limits=Limits(max_arc_cost=1000))
+    solved = run_solver(ExternalSolver(descriptor), path, time_limit_s=5)
+    assert solved.valid and solved.result.solver_cost_raw == 3
+    assert not solved.result.cost_exact
+    assert solved.result.provenance["scale"]["search_model"] == "shortest-decimal-grid"
+    expected = 3 * Fraction(0.1)
+    assert solved.check.exact_evaluation["authoritative_cost"] == {
+        "numerator": str(expected.numerator), "denominator": str(expected.denominator),
+    }
+    strict = ExternalSolver(descriptor.with_overrides(require_exact_scale=True))
+    with pytest.raises(InstanceNotSupportedError, match="exact binary64"):
+        run_solver(strict, path, time_limit_s=5)
 
 
 def test_lkh_style_solver_on_vrptw_writes_cvrptw(collection: Path) -> None:
@@ -167,7 +190,7 @@ def test_a_wrong_reported_cost_is_flagged_and_ignored(collection: Path, monkeypa
     solved = run_solver(ExternalSolver(FAKE_LKH), _variant(collection, "CVRP", "fastest"), time_limit_s=5)
     assert solved.valid
     assert solved.result.provenance["reported_cost_matches_checker"] is False
-    assert solved.cost == pytest.approx(solved.result.solver_cost - 1.0)  # 1000 scaled units = 1.0
+    assert solved.cost == pytest.approx(solved.result.solver_cost - 250.0)  # 1000 scaled units at 1/4 each
 
 
 def test_nonzero_exit_with_a_solution_keeps_the_solution(collection: Path, monkeypatch) -> None:

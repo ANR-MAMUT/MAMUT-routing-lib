@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
+import math
 import random
 from fractions import Fraction
 
 import pytest
 
 from mamut_routing_lib.solvers.external.problem import (
+    render_explicit_cvrplib,
     render_lkh_params,
     render_lkh_problem,
     render_matrix_format,
@@ -57,8 +60,8 @@ def test_declared_decimals_are_checked_on_every_value() -> None:
     matrix = [[0.0 if i == j else round(10.0 + i + j / 8, 3) for j in range(size)] for i in range(size)]
     matrix[0][1] = 1.2345  # 10000 values, so a stride of 2 over the flattened matrix skips index 1
     assert agrees_with_checker(matrix, 3)  # the sample alone does not see it
-    plan = plan_explicit_scale(matrix, decimals_hint=3)
-    assert plan.exact and plan.factor == 10.0**4  # measured, not taken from the declaration
+    plan = plan_explicit_scale(matrix, decimals_hint=3, limits=Limits(max_arc_cost=10**7))
+    assert not plan.exact and plan.factor == 10**4  # measured on fallback
     scaled_matrix, _, _ = scale_explicit_data(plan, matrix)
     assert scaled_matrix[0][1] == 12345
 
@@ -79,27 +82,105 @@ def test_scale_uses_shared_shortest_decimal_reading(monkeypatch: pytest.MonkeyPa
     assert not plan_float_matrix_scale(matrix, decimals_hint=3, limits=Limits(max_arc_cost=5)).exact
 
 
-def test_collection_style_matrix_scales_exactly_by_1000() -> None:
+def test_collection_style_matrix_uses_binary64_or_a_decimal_search_grid() -> None:
     matrix = [[0, 12.345, 7.1], [12.344, 0, 3.003], [7.1, 3.0, 0]]
     plan = plan_explicit_scale(matrix)
-    assert plan.exact and plan.factor == 1000 and plan.rounding == "exact"
+    assert plan.exact and plan.search_model == "binary64-exact-integer"
+    exact_matrix, _, _ = scale_explicit_data(plan, matrix)
+    assert all(arc * plan.cost_unit == Fraction(v) for row, original in zip(exact_matrix, matrix) for arc, v in zip(row, original))
+    raw = exact_matrix[0][2] + exact_matrix[2][1] + exact_matrix[1][0]
+    assert unscale_cost(raw, plan)[1] == Fraction(7.1) + Fraction(3) + Fraction(12.344)
+
+    plan = plan_explicit_scale(matrix, limits=Limits(max_arc_cost=10**6))
+    assert not plan.exact and plan.factor == 1000 and plan.search_model == "shortest-decimal-grid"
     scaled, windows, services = scale_explicit_data(plan, matrix)
     assert scaled == [[0, 12345, 7100], [12344, 0, 3003], [7100, 3000, 0]]
     assert windows is None and services is None
     assert star_bound(matrix) == pytest.approx(12.345 + 12.344 + 7.1 + 7.1)
     value, exact = unscale_cost(22445, plan)
-    assert value == pytest.approx(22.445) and exact == Fraction(22445, 1000)
+    assert value == pytest.approx(22.445) and exact is None
 
 
 def test_limits_force_an_approximate_coarser_scale() -> None:
-    matrix = [[0, 12.345], [12.345, 0]]
+    matrix = [[0, 12.345], [1.0, 0]]
     plan = plan_explicit_scale(matrix, limits=Limits(max_arc_cost=200))
     assert not plan.exact and plan.factor == 10 and plan.rounding == "nearest"
-    assert scale_explicit_data(plan, matrix)[0] == [[0, 123], [123, 0]]
+    assert scale_explicit_data(plan, matrix)[0] == [[0, 123], [10, 0]]
     with pytest.raises(ScaleError, match="exact"):
         plan_explicit_scale(matrix, limits=Limits(max_arc_cost=200), require_exact=True)
     with pytest.raises(ScaleError, match="fits"):
-        plan_explicit_scale([[0, 1e9], [1e9, 0]], limits=Limits(max_arc_cost=1))
+        plan_explicit_scale([[0, 1e9], [1, 0]], limits=Limits(max_arc_cost=1))
+
+
+def test_largest_common_dyadic_includes_windows_and_services() -> None:
+    matrix = [[0, 0.75], [1.5, 0]]
+    windows = [(0.0, 9.0), (0.375, 6.0)]
+    services = [0, 0.375]
+    plan = plan_explicit_scale(matrix, time_windows=windows, service_times=services, require_exact=True)
+    assert plan.cost_unit == Fraction(3, 8)
+    assert plan.to_json()["cost_unit"] == {"numerator": "3", "denominator": "8"}
+    assert scale_explicit_data(plan, matrix, time_windows=windows, service_times=services) == (
+        [[0, 2], [4, 0]], [(0, 24), (1, 16)], [0, 1],
+    )
+    assert unscale_cost(6, plan) == (2.25, Fraction(9, 4))
+
+
+def test_exact_bounds_include_nonmetric_routes_and_accumulated_time() -> None:
+    matrix = [[0, 1, 1], [1, 0, 99], [1, 99, 0]]
+    with pytest.raises(ScaleError, match="binary64"):
+        plan_explicit_scale(matrix, limits=Limits(max_total_cost=100), require_exact=True)
+    plan = plan_explicit_scale(matrix, limits=Limits(max_total_cost=100))
+    assert not plan.exact and plan.total_cost_bound_scaled <= 100
+    with pytest.raises(ScaleError, match="binary64"):
+        plan_explicit_scale([[0, 1], [1, 0]], time_windows=[(0, 10), (0, 10)], service_times=[0, 20],
+                            limits=Limits(max_time_value=31), require_exact=True)
+
+
+def test_no_round_trip_through_float_for_export_or_report() -> None:
+    matrix = [[0, 1.0, 0.1], [math.nextafter(1.0, 0.0), 0, 0.25], [1.0, 1.0, 0]]
+    windows = [(0.0, 2.0), (0.0, 1.0), (0.0, 1.0)]
+    services = [0.0, 0.1, 0.1]
+    plan = plan_explicit_scale(matrix, time_windows=windows, service_times=services, require_exact=True)
+    scaled, _, _ = scale_explicit_data(plan, matrix, time_windows=windows, service_times=services)
+    # Individual binary64 operands often become even large integers. An odd
+    # raw route sum above the binary64 consecutive integer range still matters.
+    raw = scaled[0][2] + scaled[2][1] + scaled[1][0]
+    assert raw > 2**53 and raw % 2 == 1
+    assert unscale_cost(raw, plan)[1] == Fraction(0.1) + 1 + Fraction(matrix[1][0])
+    # The generic CVRPLIB renderer also accepts exact integer inputs directly.
+    rows = [[0, raw], [1, 0]]
+    lines = render_explicit_cvrplib(matrix=rows, coordinates=[(0, 0), (1, 0)], demands=[0, 1],
+                                   capacity=1, num_vehicles=None, time_windows=[(0, raw), (0, raw)],
+                                   service_times=[0, raw]).splitlines()
+    assert f"0 {raw}" in lines and f"2 0 {raw}" in lines and f"2 {raw}" in lines
+
+
+def test_config_limits_keep_their_integer_boundary(tmp_path) -> None:
+    from mamut_routing_lib.solvers.external.config import configured_descriptors
+
+    config = tmp_path / "solvers.toml"
+    config.write_text('[solvers.lkh-large]\nextends = "lkh3"\n[solvers.lkh-large.limits]\nmax_total_cost = 9007199254740995\n')
+    limit = configured_descriptors(config)["lkh-large"].limits.max_total_cost
+    assert type(limit) is int and limit == 2**53 + 3
+
+
+def test_subnormal_unit_and_display_overflow() -> None:
+    from mamut_routing_lib.solvers.base import SolveMonitor
+
+    tiny = math.ulp(0.0)
+    plan = plan_explicit_scale([[0, tiny], [3 * tiny, 0]], require_exact=True)
+    assert plan.cost_unit == Fraction(1, 2**1074)
+    assert plan.factor == 2**1074
+    json.dumps(plan.to_json(), allow_nan=False)
+    assert unscale_cost(4, plan) == (4 * tiny, Fraction(4, 2**1074))
+    monitor = SolveMonitor(None)
+    monitor.rescale(1 / plan.cost_unit)
+    monitor.observe(4.0)
+    assert monitor.best_cost == 4 * tiny
+    huge = math.nextafter(math.inf, 0.0)
+    huge_plan = plan_explicit_scale([[0, huge], [huge, 0]], require_exact=True)
+    assert unscale_cost(2, huge_plan) == (None, 2 * Fraction(huge))
+    assert plan_explicit_scale([[0, 0], [0, 0]], require_exact=True).cost_unit == 1
 
 
 def test_full_precision_vrptw_rounds_conservatively() -> None:
@@ -213,10 +294,10 @@ def test_float_matrix_goes_in_unchanged_when_it_fits() -> None:
     assert list(format_float_matrix(matrix, plan)) == ["0 120.5 240.25", "121.5 0 130.75", "240.25 130 0"]
 
 
-def test_float_matrix_is_divided_exactly_when_too_wide() -> None:
+def test_float_matrix_writes_shifted_decimals_when_too_wide() -> None:
     matrix = [[0, 150_000.125], [200_000.0, 0]]  # metres across a 200 km city
     plan = plan_float_matrix_scale(matrix, limits=HGS_LIMITS)
-    assert plan.factor == 0.1 and plan.exact
+    assert plan.factor == 0.1 and not plan.exact
     assert list(format_float_matrix(matrix, plan)) == ["0.0 15000.0125", "20000.0 0.0"]
     with pytest.raises(ScaleError):
         plan_float_matrix_scale(matrix, limits=HGS_LIMITS, candidates=(1.0,))

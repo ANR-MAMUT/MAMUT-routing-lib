@@ -1,34 +1,18 @@
 """Integer scaling of instance data for external solvers.
 
-Most literature solvers work in integers, or round distances to integers, and
-have numeric limits (HGS-CVRP refuses distances above 1e5, AILS-II keeps its
-acceptance threshold in an ``int``, LKH-3 multiplies costs by ``PRECISION``
-inside 32-bit integers). This module picks a scale factor ``s`` per solver and
-instance. For an explicit matrix, an exact scale preserves each operand's shortest decimal spelling. The BKS checker separately evaluates the submitted routes on the materialized binary64 operands.
+For an explicit integer solver, express all materialized binary64 arc costs,
+time-window endpoints and service times in their largest common dyadic unit.
+Every emitted integer multiplied by this unit recovers its input exactly.
+If the integers exceed the solver's bounds, use its decimal-grid search
+model, or raise ScaleError when exact input was requested. The fallback
+reads the operands' shortest decimal spellings and rounds arcs to nearest
+for CVRP. For VRPTW it rounds travel, service and openings up and closings
+down on this decimal reading. The benchmark checker prices returned routes
+independently on the original binary64 data.
 
-Explicit matrices (:func:`plan_explicit_scale`):
-
-- **Exact**: ``s = 10**K`` where ``K`` is the largest number of decimals among
-  the shortest decimal spellings of arc costs, time windows and service times
-  (``checker.shortest_decimal_cost_value``). Mamut2026 and
-  Poryos2026 matrices have 3 decimals, so ``s = 1000``; Dimacs2021 is already
-  integral (``s = 1``). Used when the scaled largest arc, star bound and
-  largest due date fit the solver's limits. The solver's reported cost then
-  unscales exactly (``Fraction(R, s)``).
-- **Approximate**: otherwise (full-precision Sintef2008 doubles, or limits too
-  tight), the largest ``s = 10**k`` that fits. CVRP rounds to nearest. VRPTW
-  rounds *conservatively*: travel times, service times and ready times up, due
-  dates down under this decimal reading. The BKS checker independently verifies
-  the solution against the benchmark's evaluation profile.
-
-Coordinates (:func:`plan_coordinate_scale`, for solvers that compute Euclidean
-distances themselves): the first candidate factor from the solver's list whose
-bounding-box diagonal and star bound fit its limits. FILO2 rounds distances to
-integers, hence millimetres (``s = 1000``) for metre coordinates; HGS-CVRP gets
-metres, or decametres when the diagonal exceeds 90 km. Always approximate.
-
-The scaled star bound ``sum(a[0][i] + a[i][0])`` (one route per customer) bounds
-the cost of any reasonable incumbent, which is what solver accumulators hold.
+Coordinate solvers select from their supported coordinate scales. Floating
+matrix solvers select a scale that their reader supports and accumulate in
+floating point. Provenance identifies the search model used in each case.
 """
 
 from __future__ import annotations
@@ -38,7 +22,9 @@ import math
 import numbers
 from dataclasses import asdict, dataclass
 from fractions import Fraction
-from typing import Any, Iterable, Literal, Sequence
+from typing import Any, Callable, Iterable, Literal, Sequence
+
+from mamut_routing_lib.exact_types import binary64_operand
 
 __all__ = [
     "Limits",
@@ -61,9 +47,7 @@ __all__ = [
 MAX_DECIMALS = 9
 #: Smallest exponent tried in approximate mode (``s = 10**-3``).
 MIN_EXPONENT = -3
-#: A scaled value within this many float ulps of an integer is that integer (``0.1 * 10`` is
-#: ``1.0000000000000002``); anything further is rounded in the requested direction.
-_ULP_TOLERANCE = 8 * 2.220446049250313e-16
+
 
 try:  # numpy speeds up large matrices; the lib core does not require it.
     import numpy as _np
@@ -91,19 +75,29 @@ class ScalePlan:
     """How instance data was scaled for one solver run."""
 
     mode: Literal["explicit", "coordinates"]
-    factor: float
+    factor: float | int | None
     exact: bool
     rounding: Literal["exact", "nearest", "conservative", "solver", "float"]
-    max_scaled_arc: float
-    star_bound_scaled: float
-    #: Worst rounding error per arc, in instance units (``0`` when exact).
+    max_scaled_arc: int | float
+    star_bound_scaled: int | float
+    #: Per-arc rounding error bound in the input reading of the search model.
     max_arc_error: float = 0.0
     coordinate_decimals: int | None = None
     #: The coordinate unit implied by the factor for metre data (provenance only).
     unit: str | None = None
 
+    search_model: str = ""
+    # The value of one emitted integer in instance units. The numeric factor
+    # above is for display and can be inexact or outside the binary64 range.
+    cost_unit: Fraction | None = None
+    total_cost_bound_scaled: int | None = None
+    time_bound_scaled: int | None = None
+
     def to_json(self) -> dict[str, Any]:
-        return {key: value for key, value in asdict(self).items() if value is not None}
+        data = {key: value for key, value in asdict(self).items() if value is not None}
+        if self.cost_unit is not None:
+            data["cost_unit"] = {"numerator": str(self.cost_unit.numerator), "denominator": str(self.cost_unit.denominator)}
+        return data
 
 
 # --------------------------------------------------------------------------- #
@@ -155,7 +149,7 @@ def max_decimals(values: Any, *, limit: int = MAX_DECIMALS) -> int | None:
     else:
         for places in range(0, limit + 1):
             factor = 10.0**places
-            if all(round(v * factor) / factor == v for v in flat):
+            if all(math.isfinite(v * factor) and round(v * factor) / factor == v for v in flat):
                 found = places
                 break
     if found is None or not agrees_with_checker(flat, found):
@@ -184,14 +178,12 @@ def agrees_with_checker(values: Any, places: int, *, sample: int = 4096) -> bool
 def _declared_or_measured(values: Any, declared: int | None) -> int | None:
     """The declared decimals when every value fits and sampled shortest decimals agree, else ``max_decimals``.
 
-    A declaration is a claim about the data, not a fact: every value is read (a float round
-    trip, as ``max_decimals`` does) before the result is called exact, and the shortest decimals
-    are checked on a sample. One value with more decimals than declared makes the
-    data be measured instead, so an exact plan never rests on rounded input.
+    The hint selects the starting resolution for the decimal search model. A failed
+    round trip causes the data to be measured instead.
     """
-    if declared is not None:
+    if declared is not None and 0 <= declared <= MAX_DECIMALS:
         factor = 10.0**declared
-        if all(round(value * factor) / factor == value for value in _flatten(values)) and agrees_with_checker(values, declared):
+        if all(math.isfinite(v * factor) and round(v * factor) / factor == v for v in _flatten(values)) and agrees_with_checker(values, declared):
             return declared
     return max_decimals(values)
 
@@ -241,6 +233,34 @@ def _fits(limits: Limits, *, arc: float, total: float, time: float | None) -> bo
 # --------------------------------------------------------------------------- #
 
 
+def _common_dyadic_unit(values: Iterable[float]) -> Fraction:
+    numerator, denominator = 0, 1
+    for value in values:
+        n, d = binary64_operand(value).as_integer_ratio()
+        if d > denominator:
+            numerator = math.gcd(numerator * (d // denominator), n)
+            denominator = d
+        elif numerator != 1:
+            numerator = math.gcd(numerator, n * (denominator // d))
+    # The all-zero data have no largest unit. One is the canonical choice.
+    return Fraction(numerator or 1, denominator)
+
+
+def _integer_weights(unit: Fraction, rounding: str) -> Callable[[float], int]:
+    if rounding == "exact":
+        def exact(value: float) -> int:
+            n, d = binary64_operand(value).as_integer_ratio()
+            quotient, remainder = divmod(n * unit.denominator, d * unit.numerator)
+            if remainder:
+                raise ScaleError("operand is not a multiple of the selected binary64 unit")
+            return quotient
+
+        return exact
+
+    choose = {"nearest": round, "up": math.ceil, "down": math.floor}[rounding]
+    return lambda value: choose(_exact_value(binary64_operand(value)) / unit)
+
+
 def plan_explicit_scale(
     arc_costs: Sequence[Sequence[float]],
     *,
@@ -251,75 +271,67 @@ def plan_explicit_scale(
     require_exact: bool = False,
     decimals_hint: int | None = None,
 ) -> ScalePlan:
-    """Choose the scale for an explicit integer matrix (see the module docstring)."""
-    largest_arc = _max_arc(arc_costs)
-    star = star_bound(arc_costs, depot)
-    horizon = max((float(window[1]) for window in time_windows), default=None) if time_windows else None
+    """Choose a common operand unit and check the solver's bounds in emitted integer units."""
+    if (time_windows is None) != (service_times is None):
+        raise ScaleError("time windows and service times must be supplied together")
+    all_values = itertools.chain(
+        itertools.chain.from_iterable(arc_costs),
+        itertools.chain.from_iterable(time_windows or ()),
+        service_times or (),
+    )
+    exact_unit = _common_dyadic_unit(all_values)
+    row_maxima = [max(row) for row in arc_costs]
+    customers = [i for i in range(len(arc_costs)) if i != depot]
+    vrptw = time_windows is not None
+
+    def candidate(unit: Fraction, exact: bool) -> ScalePlan | None:
+        rounding = "exact" if exact else ("conservative" if vrptw else "nearest")
+        weight = _integer_weights(unit, "up" if rounding == "conservative" else rounding)
+        arc = weight(max(row_maxima))
+        # Each customer has one outgoing arc, and each depot departure reaches
+        # a distinct customer. This bound also covers nonmetric/asymmetric data.
+        departures = sum(weight(arc_costs[depot][i]) for i in customers)
+        total = departures + sum(weight(row_maxima[i]) for i in customers)
+        time_bound = None
+        if time_windows is not None:
+            close = weight if exact else _integer_weights(unit, "down")
+            # A route can depart by the depot deadline and wait at any opening.
+            travel = min(total, (len(customers) + 1) * arc)
+            start = max(close(time_windows[depot][1]), max(weight(ready) for ready, _ in time_windows))
+            elapsed = start + travel + sum(map(weight, service_times or ()))
+            time_bound = max(elapsed, max(close(due) for _, due in time_windows))
+        if not _fits(limits, arc=arc, total=total, time=time_bound):
+            return None
+        reciprocal = 1 / unit
+        try:
+            factor = reciprocal.numerator if reciprocal.denominator == 1 else float(reciprocal)
+        except OverflowError:
+            factor = None
+        return ScalePlan(
+            mode="explicit", factor=factor, exact=exact, rounding=rounding,
+            search_model="binary64-exact-integer" if exact else "shortest-decimal-grid",
+            cost_unit=unit, max_scaled_arc=arc,
+            star_bound_scaled=departures + sum(weight(arc_costs[i][depot]) for i in customers),
+            total_cost_bound_scaled=total, time_bound_scaled=time_bound,
+            max_arc_error=0.0 if exact else float(unit) * (1.0 if vrptw else 0.5),
+        )
+
+    plan = candidate(exact_unit, True)
+    if plan is not None:
+        return plan
+    if require_exact:
+        raise ScaleError(f"no exact binary64 integer scale fits the solver's limits (unit {exact_unit})")
     decimals = _declared_or_measured(arc_costs, decimals_hint)
     if decimals is not None and time_windows is not None:
         windows = max_decimals(time_windows)
-        services = max_decimals(service_times or [])
+        services = max_decimals(service_times or ())
         decimals = None if windows is None or services is None else max(decimals, windows, services)
-
-    if decimals is not None:
-        factor = 10.0**decimals
-        if _fits(limits, arc=largest_arc * factor, total=star * factor, time=None if horizon is None else horizon * factor):
-            return ScalePlan(
-                mode="explicit",
-                factor=factor,
-                exact=True,
-                rounding="exact",
-                max_scaled_arc=largest_arc * factor,
-                star_bound_scaled=star * factor,
-            )
-    if require_exact:
-        reason = (
-            "its data has more than 9 decimals" if decimals is None else
-            f"its exact scale 10^{decimals} exceeds the solver's limits"
-        )
-        raise ScaleError(f"no exact integer scale: {reason}")
     top = MAX_DECIMALS if decimals is None else min(decimals, MAX_DECIMALS)
-    vrptw = time_windows is not None
     for exponent in range(top, MIN_EXPONENT - 1, -1):
-        factor = 10.0**exponent
-        if _fits(limits, arc=largest_arc * factor, total=star * factor, time=None if horizon is None else horizon * factor):
-            return ScalePlan(
-                mode="explicit",
-                factor=factor,
-                exact=False,
-                rounding="conservative" if vrptw else "nearest",
-                max_scaled_arc=largest_arc * factor,
-                star_bound_scaled=star * factor,
-                max_arc_error=(1.0 if vrptw else 0.5) / factor,
-            )
-    raise ScaleError(
-        f"no scale between 10^{top} and 10^{MIN_EXPONENT} fits the solver's limits "
-        f"(largest arc {largest_arc:g}, star bound {star:g})"
-    )
-
-
-def _round_matrix(arc_costs: Sequence[Sequence[float]], factor: float, mode: str) -> list[list[int]]:
-    if _np is not None:
-        array = _np.asarray(arc_costs, dtype=_np.float64) * factor
-        if mode == "conservative":
-            # Up, but a value already integral within float noise stays put (0.1*10 is 1.0000000000000002).
-            near = _np.abs(array - _np.round(array)) <= _ULP_TOLERANCE * _np.maximum(1.0, _np.abs(array))
-            rounded = _np.where(near, _np.round(array), _np.ceil(array))
-        else:
-            rounded = _np.round(array)
-        return rounded.astype(_np.int64).tolist()
-    return [[_round_value(float(value) * factor, "up" if mode == "conservative" else "nearest") for value in row] for row in arc_costs]
-
-
-def _round_value(value: float, direction: str) -> int:
-    nearest = round(value)
-    if abs(value - nearest) <= _ULP_TOLERANCE * max(1.0, abs(value)):
-        return int(nearest)
-    if direction == "up":
-        return int(math.ceil(value))
-    if direction == "down":
-        return int(math.floor(value))
-    return int(nearest)
+        plan = candidate(Fraction(10) ** -exponent, False)
+        if plan is not None:
+            return plan
+    raise ScaleError(f"no integer scale between 10^{top} and 10^{MIN_EXPONENT} fits the solver's limits")
 
 
 def scale_explicit_data(
@@ -329,32 +341,35 @@ def scale_explicit_data(
     time_windows: Sequence[Sequence[float]] | None = None,
     service_times: Sequence[float] | None = None,
 ) -> tuple[list[list[int]], list[tuple[int, int]] | None, list[int] | None]:
-    """The integer matrix, time windows and service times for ``plan``."""
-    factor = plan.factor
-    conservative = plan.rounding == "conservative"
-    matrix = _round_matrix(arc_costs, factor, "conservative" if conservative else "nearest")
-    windows = None
-    services = None
-    if time_windows is not None:
-        windows = [
-            (
-                _round_value(float(ready) * factor, "up" if conservative else "nearest"),
-                _round_value(float(due) * factor, "down" if conservative else "nearest"),
-            )
-            for ready, due in time_windows
-        ]
-        services = [_round_value(float(value) * factor, "up" if conservative else "nearest") for value in (service_times or [])]
-    return matrix, windows, services
+    """Apply the selected rational unit to every operand sent to the integer solver."""
+    if plan.cost_unit is None:
+        raise ScaleError("integer export needs an explicit integer scale plan")
+    weight = _integer_weights(plan.cost_unit, "up" if plan.rounding == "conservative" else plan.rounding)
+    matrix = [[weight(value) for value in row] for row in arc_costs]
+    if time_windows is None:
+        return matrix, None, None
+    close = _integer_weights(plan.cost_unit, "down") if plan.rounding == "conservative" else weight
+    windows = [(weight(ready), close(due)) for ready, due in time_windows]
+    for vertex, (ready, due) in enumerate(windows):
+        if ready > due:
+            raise ScaleError(f"integer unit {plan.cost_unit} empties the time window at vertex {vertex}: [{ready}, {due}]")
+    return matrix, windows, [weight(value) for value in (service_times or ())]
 
 
 def unscale_cost(raw: int | float | None, plan: ScalePlan) -> tuple[float | None, Fraction | None]:
-    """(instance-unit cost, exact Fraction when the plan is exact and the raw value integral)."""
+    """Return a display value and, for exact integer exports, the lossless unscaled report."""
     if raw is None:
         return None, None
-    exact = None
-    if plan.exact and float(raw).is_integer():
-        exact = Fraction(int(round(float(raw)))) / Fraction(plan.factor).limit_denominator(10**12)
-    return float(raw) / plan.factor, exact
+    if plan.cost_unit is None:
+        assert plan.factor is not None
+        return float(raw) / plan.factor, None
+    report = Fraction(raw)
+    value = report * plan.cost_unit
+    try:
+        display = float(value)
+    except OverflowError:
+        display = None
+    return display, value if plan.exact and report.denominator == 1 else None
 
 
 # --------------------------------------------------------------------------- #
@@ -372,24 +387,22 @@ def plan_float_matrix_scale(
 ) -> ScalePlan:
     """The first factor of ``candidates`` whose largest arc and star bound fit the limits.
 
-    The matrix is written in decimal (``format_float_matrix``), so no integer rounding happens:
-    at factor 1 the solver reads exactly the published doubles; at ``10**-k`` the scaled values
-    are exact decimals when the data have finitely many decimals (``decimals_hint`` or
-    ``max_decimals``), so scaling preserves the shortest-decimal values exactly.
+    At factor one the floating reader recovers the published binary64 values.
+    A shifted decimal spelling can round to a different binary64 significand.
     """
     largest_arc = _max_arc(arc_costs)
     star = star_bound(arc_costs, depot)
-    decimals = _declared_or_measured(arc_costs, decimals_hint)
     for factor in candidates:
         factor = float(factor)
         if not _fits(limits, arc=largest_arc * factor, total=star * factor, time=None):
             continue
-        exact = factor == 1.0 or decimals is not None
+        exact = factor == 1.0
         return ScalePlan(
             mode="explicit",
             factor=factor,
             exact=exact,
             rounding="float",
+            search_model="floating-matrix",
             max_scaled_arc=largest_arc * factor,
             star_bound_scaled=star * factor,
             max_arc_error=0.0 if exact else 1e-15 * largest_arc,
@@ -465,6 +478,7 @@ def plan_coordinate_scale(
             factor=factor,
             exact=False,
             rounding="solver",
+            search_model="coordinate-distances",
             max_scaled_arc=arc,
             star_bound_scaled=star * factor,
             max_arc_error=error,

@@ -58,6 +58,7 @@ full-matrix reader patch. FILO2 and AILS-II do not).
 from __future__ import annotations
 
 import difflib
+import math
 import os
 import re
 import string
@@ -284,10 +285,12 @@ def _objectives(values: list[str], name: str) -> frozenset[ObjectiveFunction]:
     return frozenset(objectives)
 
 
-def _number(value: Any, name: str, key: str) -> float:
+def _number(value: Any, name: str, key: str) -> int | float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise SolverConfigError(f"solvers.{name}.{key} must be a number, not {_value_text(value)}")
-    return float(value)
+    if isinstance(value, float) and not math.isfinite(value):
+        raise SolverConfigError(f"solvers.{name}.{key} must be finite")
+    return value
 
 
 def _descriptor(

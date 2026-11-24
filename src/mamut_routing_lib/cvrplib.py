@@ -120,6 +120,8 @@ class ExportResult:
 
 
 def _is_integral(value: Any) -> bool:
+    if isinstance(value, int):
+        return True
     number = float(value)
     return math.isfinite(number) and number.is_integer()
 
@@ -135,7 +137,7 @@ def vector_formatter(values: Sequence[Any], decimals: int | None = None) -> Call
     if decimals is not None:
         return lambda value: f"{float(value):.{decimals}f}"
     if all(_is_integral(value) for value in values):
-        return lambda value: str(int(float(value)))
+        return lambda value: str(value) if type(value) is int else str(int(float(value)))
     return _format_float
 
 

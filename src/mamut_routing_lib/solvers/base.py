@@ -24,6 +24,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, Protocol, runtime_checkable
 
@@ -139,7 +140,7 @@ class SolveMonitor:
     def current_phase(self) -> str:
         return self._phase
 
-    def rescale(self, scale: float) -> None:
+    def rescale(self, scale: float | Fraction) -> None:
         """Adopt the solve's cost scale, which is only known once the instance is converted."""
         self._scale = scale if scale and scale > 0 else 1
 
@@ -191,8 +192,14 @@ class SolveMonitor:
         elapsed = now - self._start
         real_cost = None
         if best_cost is not None and best_cost < INFEASIBLE_COST:
-            real_cost = best_cost / self._scale
-            if self.best_cost is None or real_cost < self.best_cost:
+            if isinstance(self._scale, Fraction):
+                try:
+                    real_cost = float(Fraction(best_cost) / self._scale)
+                except OverflowError:
+                    real_cost = None
+            else:
+                real_cost = best_cost / self._scale
+            if real_cost is not None and (self.best_cost is None or real_cost < self.best_cost):
                 self.best_cost = real_cost
                 if self._record:
                     self._record_point(elapsed, real_cost)
@@ -446,8 +453,9 @@ class SolveResult:
 
     ``solver_cost`` is the solver's own objective value brought back to instance units (informational:
     the checker's cost is authoritative); ``solver_cost_raw`` is the value as the solver reported it,
-    in its own (scaled) units; ``cost_scale`` is the factor between the two; ``cost_exact`` says whether
-    the solver worked on exactly the published costs (``False``: rounded or approximated input).
+    in its own (scaled) units. For external integer input, provenance records the exact rational
+    cost unit. ``cost_scale`` gives its reciprocal for display when representable. ``cost_exact``
+    describes the fidelity of the search input. The checker owns the final route evaluation.
     """
 
     solver: str
@@ -462,7 +470,7 @@ class SolveResult:
     routes: list[list[int]] = field(default_factory=list)
     solver_cost: float | None = None
     solver_cost_raw: int | float | None = None
-    cost_scale: float = 1.0
+    cost_scale: int | float | None = 1.0
     cost_exact: bool | None = None
     stopped_early: bool = False
     error: str | None = None

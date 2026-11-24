@@ -406,7 +406,9 @@ class ExternalSolver:
                 if monitor.stop_requested:
                     return SolveResult(**base, wall_time=time.perf_counter() - started, status="cancelled",
                                        stopped_early=True, provenance=provenance)
-                monitor.rescale(prepared.plan.factor)
+                scale = 1 / prepared.plan.cost_unit if prepared.plan.cost_unit is not None else prepared.plan.factor
+                assert scale is not None
+                monitor.rescale(scale)
                 monitor.phase("solving")
             # A solution left by an earlier run in a reused workdir (--keep-artifacts, a resumed campaign)
             # must never be read back as this run's answer when the solver writes nothing.
@@ -465,7 +467,7 @@ class ExternalSolver:
             cost_exact=plan.exact,
             stopped_early=outcome.termination == "cancelled",
             provenance=provenance,
-            metadata={"progress_best_cost": None if outcome.best_cost is None else outcome.best_cost / plan.factor},
+            metadata={"progress_best_cost": unscale_cost(outcome.best_cost, plan)[0]},
         )
         if outcome.termination == "error":
             return SolveResult(**common, status="failed", error=outcome.error)
