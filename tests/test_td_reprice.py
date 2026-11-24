@@ -238,7 +238,23 @@ def test_relaxation_compares_marked_fractions_on_display_ties_and_overflow(tmp_p
             payload = json.loads(path.read_text())
             payload["metadata"]["standard"] = {"authoritative_cost": {"numerator": str(numerator + offset), "denominator": "1"}}
             path.write_text(json.dumps(payload))
+        assert check_relaxation_pair(strict).inverted
         check = check_relaxation_pair(strict, priced=True)
         assert check.inverted
         assert isinstance(check.priced_cost, Fraction) and check.priced_cost == 30
         assert check.as_dict()["priced_cost_exact"] == {"numerator": "30", "denominator": "1"}
+
+
+def test_relaxation_priced_routes_can_improve_under_tied_displays(tmp_path):
+    from fractions import Fraction
+
+    strict = _write_td_twins(tmp_path, 30.0, 30.0)
+    epsilon = Fraction(1, 2**55)
+    for path, exact in ((strict, 30 + 2 * epsilon), (relaxation_twin(strict), 30 + epsilon)):
+        payload = json.loads(path.read_text())
+        payload["metadata"]["exact_evaluation"] = {
+            "authoritative_cost": {"numerator": str(exact.numerator), "denominator": str(exact.denominator)}
+        }
+        path.write_text(json.dumps(payload))
+    assert not check_relaxation_pair(strict).inverted
+    assert check_relaxation_pair(strict, priced=True).inverted
