@@ -4,8 +4,7 @@ This file is skipped by default. To run it:
 
     MAMUT_ROUTING_TEST_NETWORK=1 pytest tests/test_remote_network.py -v
 
-It performs a real GitHub API call and downloads ~1.6 MB from the
-`ANR-MAMUT/MAMUT-routing` release.
+Use MAMUT_ROUTING_TEST_RELEASE_TAG to pin a published family-first snapshot. By default the smoke test follows the latest release and downloads the Sintef2008 collection.
 """
 
 from __future__ import annotations
@@ -31,42 +30,25 @@ pytestmark = pytest.mark.skipif(
 
 
 RELEASE_REPO = "ANR-MAMUT/MAMUT-routing"
-RELEASE_TAG = "snapshot-2026-05-22-28f9199"
-EXPECTED_SNAPSHOT_ID = "2026-05-22-28f9199"
-EXPECTED_ASSET_COUNT = 5
-TARGET_FILENAME = "CVRP-Poryos2026-snapshot-2026-05-22-28f9199.zip"
 
-
-def test_real_release_download_cvrp_poryos2026(tmp_path: Path) -> None:
+def test_real_release_download_sintef2008(tmp_path: Path) -> None:
     client = GitHubReleaseClient(
         GitHubReleaseSource(repo_full_name=RELEASE_REPO, token=os.getenv("MAMUT_ROUTING_GITHUB_TOKEN"))
     )
-    manifest = client.fetch_manifest(tag=RELEASE_TAG)
-
-    assert manifest.snapshot_id == EXPECTED_SNAPSHOT_ID
-    assert manifest.release_tag == RELEASE_TAG
-    assert len(manifest.assets) == EXPECTED_ASSET_COUNT
-
+    tag = os.getenv("MAMUT_ROUTING_TEST_RELEASE_TAG")
+    manifest = client.fetch_manifest(tag=tag)
+    if tag:
+        assert manifest.release_tag == tag
     matching = manifest.select_assets(
-        scope=ReleaseArchiveScope.PROBLEM_FAMILY,
-        problem_type=ProblemType.CVRP,
-        benchmark_name=BenchmarkName.PORYOS_2026,
+        scope=ReleaseArchiveScope.FAMILY_COLLECTION,
+        problem_type=ProblemType.VRPTW,
+        benchmark_name=BenchmarkName.SINTEF_2008,
     )
     assert len(matching) == 1
     asset = matching[0]
-    assert asset.filename == TARGET_FILENAME
-    assert asset.checksum_sha256 is not None
-    assert asset.size_bytes is not None and asset.size_bytes > 0
-
-    extracted_dir = client.download_asset(asset, tmp_path, extract=True, manifest=manifest)
-
-    # Canonical extraction: the archive_root subtree lands in the benchmarks tree itself.
-    expected_subdir = tmp_path / "CVRP" / "Poryos2026"
-    assert extracted_dir == expected_subdir
-    assert expected_subdir.is_dir(), f"Expected directory missing: {expected_subdir}"
-    extracted_files = list(expected_subdir.rglob("*"))
-    assert any(p.is_file() for p in extracted_files), "Extracted archive contained no files"
-    assert discover_benchmark_instances(tmp_path), "fetched tree is not discoverable"
-
-    zip_path = tmp_path / TARGET_FILENAME
-    assert zip_path.is_file()
+    assert asset.checksum_sha256 and asset.size_bytes and asset.size_bytes > 0
+    extracted = client.download_asset(asset, tmp_path, extract=True, manifest=manifest)
+    assert extracted == tmp_path / "Sintef2008"
+    assert (extracted / "mamut-collection.json").is_file()
+    assert discover_benchmark_instances(tmp_path, benchmark_names=[BenchmarkName.SINTEF_2008])
+    assert (tmp_path / asset.filename).stat().st_size == asset.size_bytes
