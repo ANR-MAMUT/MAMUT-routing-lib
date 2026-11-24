@@ -326,6 +326,7 @@ def test_float_matrix_writes_shifted_decimals_when_too_wide() -> None:
     matrix = [[0, 150_000.125], [200_000.0, 0]]  # metres across a 200 km city
     plan = plan_float_matrix_scale(matrix, limits=HGS_LIMITS)
     assert plan.factor == 0.1 and not plan.exact
+    assert plan.family_units_per_solver_unit == 10
     assert list(format_float_matrix(matrix, plan)) == ["0.0 15000.0125", "20000.0 0.0"]
     with pytest.raises(ScaleError):
         plan_float_matrix_scale(matrix, limits=HGS_LIMITS, candidates=(1.0,))

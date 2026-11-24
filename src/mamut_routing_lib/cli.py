@@ -2182,13 +2182,6 @@ def _number(value: float) -> str:
     return str(int(value)) if float(value).is_integer() else repr(float(value))
 
 
-#: Provenance a solution file written by ``solve --output-dir`` carries into ``bks submit``.
-_CARRIED_PROVENANCE_KEYS = (
-    "method", "solver", "solver_version", "seed", "time_limit_s", "wall_time", "solver_cost", "cost_exact", "machine",
-    "vehicle_penalty", "executable_sha256", "input_sha256",
-)
-
-
 def _meta_pairs(pairs: list[str] | None) -> dict[str, Any]:
     from mamut_routing_lib.solutions import STORE_METADATA_KEYS
 
@@ -2351,6 +2344,7 @@ def bks_submit(
     solution, 2 on a usage error.
     """
     from mamut_routing_lib.solutions import preview_bks_update, submit_bks
+    from mamut_routing_lib.solvers.run import BKS_PROVENANCE_KEYS
 
     instance, parsed = _load_external_solution(instance_path, solution_path, ids)
     resolved = _resolve_objective(instance, objective or (parsed.marked_input.objective_function if parsed.marked_input else None))
@@ -2368,10 +2362,17 @@ def bks_submit(
     if not authors or not authors.strip():
         typer.echo(f"Error: --authors is required (or set ${BKS_AUTHORS_ENV}).", err=True)
         raise typer.Exit(code=2)
-    carried: dict[str, Any] = {}
-    recorded = (parsed.metadata or {}).get("bks_metadata")
-    if isinstance(recorded, dict):  # a file written by `mamut-routing solve --output-dir`
-        carried = {key: recorded[key] for key in _CARRIED_PROVENANCE_KEYS if recorded.get(key) is not None}
+    # Both ordinary solution JSON and solve output can carry run provenance.
+    file_metadata = parsed.metadata or {}
+    recorded = file_metadata.get("bks_metadata")
+    carried = {key: file_metadata[key] for key in BKS_PROVENANCE_KEYS if file_metadata.get(key) is not None}
+    if isinstance(recorded, dict):
+        for key in BKS_PROVENANCE_KEYS:
+            if recorded.get(key) is not None:
+                if key in ("solver_report", "solver_cost") and key in carried and recorded[key] != carried[key]:
+                    typer.echo(f"Error: conflicting {key} in the solution file's run metadata.", err=True)
+                    raise typer.Exit(code=1)
+                carried[key] = recorded[key]
     flags = {"method": method, "seed": seed, "time_limit_s": time_limit_s, "solver_version": solver_version}
     metadata: dict[str, Any] = {
         **carried,

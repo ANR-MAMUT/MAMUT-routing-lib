@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -61,6 +62,52 @@ def test_solve_vrptw_hierarchical_uses_vehicle_penalty(toy_vrptw_instance) -> No
     assert hierarchical.vehicle_penalty > 0
     # Hierarchical should never use more vehicles than mono on the same instance.
     assert hierarchical.route_count <= mono.route_count
+
+
+def test_hierarchical_warm_fallback_reports_its_unpenalized_objective(toy_vrptw_instance, monkeypatch) -> None:
+    from mamut_routing_lib.solvers import pyvrp
+
+    # The second phase failed, so the returned result was produced by the warm solve with zero fixed cost.
+    warm_result = SimpleNamespace(
+        is_feasible=lambda: True,
+        best=SimpleNamespace(routes=lambda: [[1, 2]]),
+        cost=lambda: 14,
+    )
+    phases = iter([warm_result, SimpleNamespace(is_feasible=lambda: False)])
+    monkeypatch.setattr(pyvrp, "minimise_fleet", lambda problem, **kwargs: problem.vehicle_type(0))
+    monkeypatch.setattr(pyvrp, "pyvrp_solve", lambda problem, **kwargs: next(phases))
+
+    result = solve_vrptw(toy_vrptw_instance, objective_function=ObjectiveFunction.HIERARCHICAL_VEHICLE_COST, time_limit_s=1)
+    assert result.vehicle_penalty == 0
+    assert result.solver_cost == 14.0
+    assert result.solver_report == {
+        "objective": "total-arc-cost", "value": "14", "encoding": "integer",
+        "family_units_per_solver_unit": {"numerator": "1", "denominator": "1"},
+    }
+
+
+def test_pyvrp_preserves_the_objective_type_and_distance_above_binary64_precision(toy_vrptw_instance, monkeypatch) -> None:
+    from mamut_routing_lib.solvers import pyvrp
+
+    distance = 2**53 + 3
+    raw = 1.25e16  # An API that already returned the penalized objective as binary64.
+    phase_result = SimpleNamespace(
+        is_feasible=lambda: True, best=SimpleNamespace(routes=lambda: [[1, 2]], distance=lambda: distance), cost=lambda: raw
+    )
+    monkeypatch.setattr(pyvrp, "minimise_fleet", lambda problem, **kwargs: problem.vehicle_type(0))
+    monkeypatch.setattr(pyvrp, "pyvrp_solve", lambda problem, **kwargs: phase_result)
+    # Fractional arc costs select the factor-1000 conversion in the real PyVRP adapter.
+    arc_costs = [[0, 0.1, 2], [1, 0, 3], [2, 3, 0]]
+    result = solve_vrptw(
+        toy_vrptw_instance, objective_function=ObjectiveFunction.HIERARCHICAL_VEHICLE_COST, time_limit_s=1,
+        arc_costs=arc_costs,
+    )
+    report = result.solver_report
+    assert report["value"] == raw and report["encoding"] == "binary64"
+    assert report["routing_cost_component"] == {"objective": "total-arc-cost", "value": str(distance), "encoding": "integer"}
+    assert report["family_units_per_solver_unit"] == {"numerator": "1", "denominator": "1000"}
+    assert result.solver_cost == distance / 1000
+    assert result.solver_cost != float(distance) / 1000
 
 
 def test_solve_instance_dispatches_on_type(toy_cvrp_instance, toy_vrptw_instance) -> None:

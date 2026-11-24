@@ -46,7 +46,7 @@ def test_run_solver_pyvrp_checks_the_routes(toy_cvrp_instance, tmp_path: Path) -
     # Everything a solve can publish, named once: a new key has to be added to BKS_PROVENANCE_KEYS on purpose.
     assert set(solved.bks_metadata()) <= set(BKS_PROVENANCE_KEYS)
     assert set(BKS_PROVENANCE_KEYS) == {
-        "method", "solver", "solver_version", "seed", "time_limit_s", "wall_time", "solver_cost", "cost_exact",
+        "method", "solver", "solver_version", "seed", "time_limit_s", "wall_time", "solver_cost", "solver_report",
         "machine", "vehicle_penalty", "executable_sha256", "input_sha256",
     }
     for key in ("solver", "machine", "validated_cost", "optimality"):
@@ -105,7 +105,7 @@ class _Bogus(_Unavailable):
         return SolveResult(
             solver="bogus", method="bogus", problem_type="CVRP", objective_function="MonoCost",
             instance_id="x", seed=0, time_limit_s=1, wall_time=0.0, status="feasible",
-            routes=[[1, 1, 2]], solver_cost=1.0,
+            routes=[[1, 1, 2]],
         )
 
 
@@ -130,7 +130,7 @@ def test_warm_start_routes_seed_a_mono_cost_solve(toy_cvrp_instance) -> None:
     result = solve_cvrp(toy_cvrp_instance, time_limit_s=1, seed=2, initial_routes=[[1], [2]])
     assert result.solver_is_feasible
     assert result.metadata["warm_start"] is True
-    assert result.metadata["cost_exact"] is True
+    assert result.solver_report["objective"] == "total-arc-cost"
 
 
 def test_a_partial_warm_start_is_refused_with_its_reason(toy_cvrp_instance, tmp_path: Path) -> None:
@@ -153,7 +153,7 @@ def test_objective_defaults(toy_cvrp_instance, toy_vrptw_instance) -> None:
 
 def test_pyvrp_does_not_take_a_nearly_integral_matrix_for_an_integral_one() -> None:
     """A long arc with a fractional part passed ``numpy.allclose`` and was truncated to an integer."""
-    from mamut_routing_lib.solvers.pyvrp import _is_integral, scale_is_exact
+    from mamut_routing_lib.solvers.pyvrp import _is_integral
 
     import numpy as np
 
@@ -162,7 +162,6 @@ def test_pyvrp_does_not_take_a_nearly_integral_matrix_for_an_integral_one() -> N
     nearly = [[0.0, 100000.4], [200000.7, 0.0]]
     assert np.allclose(np.asarray(nearly), np.round(np.asarray(nearly)))  # what the old test saw
     assert not _is_integral(np.asarray(nearly))
-    assert not scale_is_exact(nearly, 1)
 
 
 def test_pyvrp_says_that_it_needs_the_depot_at_index_0(toy_cvrp_instance, tmp_path: Path) -> None:

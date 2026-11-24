@@ -70,6 +70,17 @@ def evaluation_metadata(evaluation, manifest=None) -> dict:
 
 def assert_candidate_metadata(solution, supplied, evaluation, manifest=None):
     """Check all caller-supplied numeric assertions before replacing them with checker output."""
+    for key in ("solver_report", "solver_cost"):
+        if key in solution.metadata and "solver_report" in solution.metadata:
+            if key in supplied and supplied[key] != solution.metadata[key]:
+                raise ValueError(f"Conflicting supplied {key} values")
+            supplied[key] = solution.metadata[key]
+    # Older writers used the same keys for incompatible quantities. Only a structured
+    # report identifies the quantity and unit when publishing a fresh BKS.
+    supplied.pop("cost_exact", None)
+    supplied.pop("solver_cost_raw", None)
+    if "solver_report" not in supplied:
+        supplied.pop("solver_cost", None)
     for key in ("standard", "exact_evaluation"):
         if key not in supplied and key not in solution.metadata:
             continue

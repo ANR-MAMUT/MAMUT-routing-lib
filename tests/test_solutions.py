@@ -40,6 +40,21 @@ def test_real_solver_cost_lines_parse_including_exponents(fixture: str, cost: fl
     assert declared == pytest.approx(cost)
 
 
+@pytest.mark.parametrize("token", ["1.234570e+06", "1.234570E+006", "-0", "9007199254740993"])
+def test_original_solver_cost_token_is_preserved_across_formats(token: str) -> None:
+    routes = [[1]]
+    assert parse_solution_text(f"Route #1: 1\nCost {token}", exact_report="text") == (routes, token)
+    assert parse_solution_text(f'{{"routes":[[1]],"cost":{token}}}', exact_report="text") == (routes, token)
+    lkh = f"instance, Cost: 0_{token}\n1 2 1 (#1) Cost: {token}"
+    assert parse_lkh_mtsp_solution(lkh, exact_report="text") == ([[2]], 0, token)
+
+
+@pytest.mark.parametrize("text", ['{"routes":[["1"]]}', '{"routes":[[1.0]]}', '{"routes":[[1]],"cost":"6.00"}'])
+def test_original_token_reader_preserves_json_number_type_validation(text: str) -> None:
+    with pytest.raises(SolutionFormatError):
+        parse_solution_text(text, exact_report="text")
+
+
 def test_lkh_mtsp_solution_drops_the_depot_and_empty_vehicles() -> None:
     routes, penalty, cost = parse_lkh_mtsp_solution((FIXTURES / "lkh3-mtsp.sol").read_text())
     assert routes == [[3, 2], [4]]

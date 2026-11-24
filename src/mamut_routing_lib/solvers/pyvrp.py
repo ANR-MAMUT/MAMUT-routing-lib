@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from fractions import Fraction
+from numbers import Integral
 from pathlib import Path
 from typing import Any
 
@@ -37,12 +39,7 @@ from mamut_routing_lib.artifacts import (
     hydrate_collection_instance,
     resolve_arc_costs,
 )
-from mamut_routing_lib.bks import (
-    BKSUpdateResult,
-    create_bks_from_solution,
-    save_bks_if_improved,
-)
-from mamut_routing_lib.checker import check_solution
+from mamut_routing_lib.bks import BKSUpdateResult
 from mamut_routing_lib.enums import ObjectiveFunction
 from mamut_routing_lib.models import (
     AnyStaticBenchmarkInstance,
@@ -50,9 +47,12 @@ from mamut_routing_lib.models import (
     BenchmarkInstanceCVRP,
     BenchmarkInstanceCVRPCollection,
     BenchmarkInstanceVRPTWCollection,
-    BenchmarkSolution,
 )
+from mamut_routing_lib.solutions import check_routes, submit_bks
 from mamut_routing_lib.solvers.base import INFEASIBLE_COST, SolveMonitor, SolveTick
+from mamut_routing_lib.solvers.pyvrp_adapter import method_result_to_solve_result
+from mamut_routing_lib.solvers.report import make_solver_report, solver_cost_display
+from mamut_routing_lib.solvers.run import CheckedSolve
 
 
 __all__ = [
@@ -95,10 +95,15 @@ class MethodResult:
     wall_time: float
     solver_is_feasible: bool
     routes: list[list[int]] = field(default_factory=list)
-    solver_cost: int | float | None = None
+    solver_report: dict[str, Any] | None = None
     route_count: int = 0
-    vehicle_penalty: int | float = 0
+    vehicle_penalty: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def solver_cost(self) -> float | None:
+        """Display the reported routing cost in family units."""
+        return solver_cost_display(self.solver_report)
 
 
 def _is_vrptw_like(instance: AnyStaticBenchmarkInstance) -> bool:
@@ -251,14 +256,22 @@ def _is_integral(weights: Any) -> bool:
     return bool(np.all(weights == np.round(weights)))
 
 
-def scale_is_exact(arc_costs: list[list[int]] | list[list[float]], scale: int) -> bool:
-    """Whether ``scale`` turns every arc cost into an integer without rounding.
+def _reported_objective(result: Any, scale: int, *, vehicle_penalty: int = 0) -> dict[str, Any]:
+    """Preserve the numerical type returned by the PyVRP API."""
+    def encode(value: int | float) -> tuple[str, str | float]:
+        if isinstance(value, Integral):
+            return "integer", str(value)
+        return "binary64", float(value)
 
-    False for full-precision float matrices (e.g. Sintef2008), which PyVRP's
-    ``exact`` rounding approximates to the nearest milli-unit.
-    """
-    weights = np.asarray(arc_costs, dtype=np.float64) * scale
-    return bool(np.all(np.abs(weights - np.round(weights)) <= 1e-9 * np.maximum(1.0, np.abs(weights))))
+    objective = "vehicle-penalized-cost" if vehicle_penalty else "total-arc-cost"
+    encoding, value = encode(result.cost())
+    component = None
+    if vehicle_penalty:
+        distance_encoding, distance = encode(result.best.distance())
+        component = {"objective": "total-arc-cost", "encoding": distance_encoding, "value": distance}
+    return make_solver_report(
+        objective, value, encoding=encoding, unit=Fraction(1, scale), routing_cost_component=component
+    )
 
 
 def _warm_start(problem: ProblemData, initial_routes: list[list[int]] | None) -> Any:
@@ -327,7 +340,7 @@ def solve_cvrp(
         wall_time=wall_time,
         solver_is_feasible=is_feasible,
         routes=routes,
-        solver_cost=result.cost(),
+        solver_report=_reported_objective(result, scale) if is_feasible else None,
         route_count=len(routes),
         vehicle_penalty=0,
         metadata=_build_method_metadata(
@@ -337,9 +350,7 @@ def solve_cvrp(
             time_limit_s=time_limit_s,
             extra={
                 **({"arc_cost_scale": scale} if scale != 1 else {}),
-                "cost_exact": scale_is_exact(arc_costs, scale),
                 **({"warm_start": True} if initial_routes else {}),
-                **({"solver_distance": int(result.best.distance())} if is_feasible else {}),
             },
         ),
     )
@@ -379,7 +390,7 @@ def solve_vrptw(
         monitor.rescale(scale)
     problem = to_pyvrp_problem(instance, round_func=round_func, arc_costs=arc_costs)
     params = SolveParams()
-    vehicle_penalty: int | float = 0
+    vehicle_penalty: int = 0
 
     if objective_function == ObjectiveFunction.MONO_COST:
         result = pyvrp_solve(
@@ -432,6 +443,7 @@ def solve_vrptw(
             # The warm incumbent is a valid hierarchical solution even when
             # phase 2 degrades; never return worse than what phase 1 proved.
             result = warm_result
+            vehicle_penalty = 0  # The warm solve used no fixed vehicle cost.
 
     wall_time = time.perf_counter() - start_time
     is_feasible = result.is_feasible()
@@ -446,7 +458,7 @@ def solve_vrptw(
         wall_time=wall_time,
         solver_is_feasible=is_feasible,
         routes=routes,
-        solver_cost=result.cost(),
+        solver_report=_reported_objective(result, scale, vehicle_penalty=vehicle_penalty) if is_feasible else None,
         route_count=len(routes),
         vehicle_penalty=vehicle_penalty,
         metadata=_build_method_metadata(
@@ -457,15 +469,11 @@ def solve_vrptw(
             extra={
                 "vehicle_penalty": vehicle_penalty,
                 **({"arc_cost_scale": scale} if scale != 1 else {}),
-                "cost_exact": scale_is_exact(arc_costs, scale),
                 **(
                     {"warm_start": True}
                     if initial_routes and objective_function == ObjectiveFunction.MONO_COST
                     else {}
                 ),
-                # Routing cost of the returned solution in solver units, without the hierarchical
-                # fleet cost (which the phase-1 fallback result does not carry at all).
-                **({"solver_distance": int(result.best.distance())} if is_feasible else {}),
             },
         ),
     )
@@ -535,9 +543,8 @@ def solve_and_update_bks(
     ``authors`` (who to credit in the BKS) is required: a stored BKS is published.
 
     Returns the `MethodResult` and a `BKSUpdateResult` (or None if the solver did not
-    return a feasible solution). The BKS file path is derived from `instance_path`
-    via `mamut_routing_lib.artifacts.get_bks_path_for_instance` (handled inside
-    `save_bks_if_improved`).
+    return a feasible solution). The checked BKS submission uses the same solver
+    metadata and family evaluation as the registry path.
     """
     method_result = solve_instance(
         instance,
@@ -551,30 +558,22 @@ def solve_and_update_bks(
         return method_result, None
 
     resolved_objective = ObjectiveFunction(method_result.objective_function)
-    checkable = hydrate_collection_instance(instance, instance_path)
-    candidate = BenchmarkSolution(
-        instance_name=get_instance_identifier(instance),
-        routes=method_result.routes,
-        cost=None,
-        metadata={"seed": seed, "method": method_result.method, "wall_time": method_result.wall_time},
-    )
-    check_result = check_solution(checkable, candidate)
-    if not check_result.is_valid():
+    path = Path(instance_path)
+    checkable = hydrate_collection_instance(instance, path)
+    check = check_routes(instance, path, method_result.routes, resolved_objective, checkable=checkable)
+    if not check.is_valid():
         return method_result, None
 
-    bks = create_bks_from_solution(
-        checkable,
-        candidate,
-        resolved_objective,
-        authors=authors,
-        metadata={
-            "method": method_result.method,
-            "seed": seed,
-            "time_limit_s": time_limit_s,
-            "wall_time": method_result.wall_time,
-            "solver_cost": method_result.solver_cost,
-            "vehicle_penalty": method_result.vehicle_penalty,
-        },
+    checked = CheckedSolve(
+        result=method_result_to_solve_result(method_result),
+        check=check,
+        objective=resolved_objective,
+        instance_path=path,
+        instance_name=get_instance_identifier(instance),
+        checkable=checkable,
     )
-    update_result = save_bks_if_improved(checkable, bks, Path(instance_path))
+    update_result = submit_bks(
+        path, method_result.routes, authors=authors, objective_function=resolved_objective,
+        metadata=checked.bks_metadata(), instance=instance, checkable=checkable,
+    )
     return method_result, update_result

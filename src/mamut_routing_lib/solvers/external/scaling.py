@@ -94,6 +94,20 @@ class ScalePlan:
     total_cost_bound_scaled: int | None = None
     time_bound_scaled: int | None = None
 
+    @property
+    def family_units_per_solver_unit(self) -> Fraction:
+        """Size of the reported solver unit in family units."""
+        if self.cost_unit is not None:
+            return self.cost_unit
+        assert self.factor is not None
+        if self.mode == "explicit":
+            # The floating-matrix writer applies powers of ten as decimal shifts.
+            shift = round(math.log10(self.factor))
+            if math.isclose(10.0**shift, self.factor):
+                return Fraction(10) ** -shift
+        # Coordinate scaling and other floating matrix factors multiply by this binary64 value.
+        return 1 / Fraction(self.factor)
+
     def to_json(self) -> dict[str, Any]:
         data = {key: value for key, value in asdict(self).items() if value is not None}
         if self.cost_unit is not None:

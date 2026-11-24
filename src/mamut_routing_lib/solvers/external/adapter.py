@@ -57,6 +57,7 @@ from mamut_routing_lib.solvers.external.scaling import (
     unscale_cost,
 )
 from mamut_routing_lib.solvers.provenance import environment, file_sha256, java_release
+from mamut_routing_lib.solvers.report import make_solver_report
 
 __all__ = ["ExternalSolver", "PreparedInput", "find_on_path"]
 
@@ -127,12 +128,13 @@ def _exported_route_cost(problem: Path, routes: list[list[int]], vertices: int) 
     return total
 
 
-def _raw_report_for_result(raw: int | float | Decimal | None, provenance: dict[str, Any]) -> int | float | None:
-    if not isinstance(raw, Decimal):
-        return raw
-    provenance["reported_cost_raw_text"] = str(raw)
-    projected = float(raw)
-    return projected if math.isfinite(projected) else None
+def _solver_report(token: str | None, plan: ScalePlan, integer_model: bool) -> dict[str, Any] | None:
+    if token is None:
+        return None
+    encoding = "integer" if integer_model and token.lstrip("+-").isdigit() else "decimal-text"
+    return make_solver_report(
+        "total-arc-cost", token, encoding=encoding, unit=plan.family_units_per_solver_unit,
+    )
 
 
 def _last_log_lines(log_tail: str, *, lines: int = 3, width: int = 200) -> str:
@@ -576,7 +578,6 @@ class ExternalSolver:
             **base,
             wall_time=wall,
             cost_scale=plan.factor,
-            cost_exact=plan.exact,
             stopped_early=outcome.termination == "cancelled",
             provenance=provenance,
             metadata={"progress_best_cost": unscale_cost(outcome.best_cost, plan)[0]},
@@ -599,16 +600,20 @@ class ExternalSolver:
         text = solution.read_text(encoding="utf-8", errors="replace")
         num_customers = int(prepared.checkable.num_customers)
         integer_report = self.capabilities.integer_costs
+        lkh = self.descriptor.output_format == "lkh-mtsp"
         try:
-            if self.descriptor.output_format == "lkh-mtsp":
-                raw_routes, penalty, raw_cost = parse_lkh_mtsp_solution(text, exact_report=integer_report)
-                if penalty:
-                    return SolveResult(**common, status="infeasible",
-                                       solver_cost_raw=_raw_report_for_result(raw_cost, provenance),
-                                       error=f"{self.label} reports a penalty of {penalty} (no feasible solution)")
+            if lkh:
+                raw_routes, penalty, raw_cost = parse_lkh_mtsp_solution(text, exact_report="text")
+            else:
+                raw_routes, raw_cost = parse_solution_text(text, filename=solution.name, exact_report="text")
+                penalty = None
+            common["solver_report"] = _solver_report(raw_cost, plan, integer_report)
+            if penalty:
+                return SolveResult(**common, status="infeasible",
+                                   error=f"{self.label} reports a penalty of {penalty} (no feasible solution)")
+            if lkh:
                 routes = normalize_routes([[node - 1 for node in route] for route in raw_routes], num_customers, convention="one-based")
             else:
-                raw_routes, raw_cost = parse_solution_text(text, filename=solution.name, exact_report=integer_report)
                 # The descriptor states the numbering: guessing it can complete an incomplete answer.
                 convention = self.descriptor.id_convention
                 provenance["solution_ids"] = resolve_convention(raw_routes, num_customers, convention)
@@ -625,23 +630,20 @@ class ExternalSolver:
             return SolveResult(**common, status="failed", error=f"unreadable solution file: {error}")
         remarks: list[str] = []
         match_key = "reported_cost_matches_exported_model"
-        if isinstance(raw_cost, Decimal):
-            provenance[match_key] = False
-            common["cost_exact"] = False
-            reason = "outside the representable range" if raw_cost == raw_cost.to_integral_value() else "fractional"
-            remarks.append(f"{self.label} reported {raw_cost} solver units ({reason} for this integer model)")
-        elif raw_cost is not None and integer_report and self.descriptor.input_format in ("lkh", "cvrplib-explicit"):
-            try:
-                exported_cost = _exported_route_cost(prepared.problem, routes, num_customers + 1)
-            except (OSError, ValueError) as error:
-                remarks.append(f"could not compare the reported cost with the exported matrix: {error}")
-            else:
-                matches = raw_cost == exported_cost
-                provenance[match_key] = matches
-                if not matches:
-                    remarks.append(f"{self.label} reported {raw_cost} solver units. Its routes cost "
-                                   f"{exported_cost} units in the exported matrix")
-        solver_cost, _ = unscale_cost(raw_cost, plan)
+        if raw_cost is not None and integer_report:
+            reported = Decimal(raw_cost)
+            if reported != reported.to_integral_value():
+                remarks.append(f"{self.label} reported {raw_cost} solver units (fractional for this integer model)")
+            if self.descriptor.input_format in ("lkh", "cvrplib-explicit"):
+                try:
+                    exported_cost = _exported_route_cost(prepared.problem, routes, num_customers + 1)
+                except (OSError, ValueError) as error:
+                    remarks.append(f"could not compare the reported cost with the exported matrix: {error}")
+                else:
+                    provenance[match_key] = reported == exported_cost
+                    if not provenance[match_key]:
+                        remarks.append(f"{self.label} reported {raw_cost} solver units. Its routes cost "
+                                       f"{exported_cost} units in the exported matrix")
         status = "timeout" if outcome.termination == "timeout" else "feasible"
         if outcome.returncode not in (0, None) and status == "feasible":
             remarks.append(f"the solver exited with code {outcome.returncode} after writing a solution")
@@ -649,7 +651,5 @@ class ExternalSolver:
             **common,
             status=status,
             routes=routes,
-            solver_cost=solver_cost,
-            solver_cost_raw=_raw_report_for_result(raw_cost, provenance),
             error="; ".join(remarks) or None,
         )

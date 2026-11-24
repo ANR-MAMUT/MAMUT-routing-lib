@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -35,7 +36,11 @@ def test_solve_and_update_bks_creates_bks_when_none_exists(tmp_path: Path, toy_c
     assert update_result is not None
     assert update_result.action == "created"
     expected_bks_path = get_bks_path_for_instance(instance_path, ObjectiveFunction.MONO_COST)
-    assert expected_bks_path.exists()
+    record = json.loads(expected_bks_path.read_text())
+    assert record["metadata"]["solver"] == "pyvrp"
+    assert record["metadata"]["solver_report"] == method_result.solver_report
+    assert record["metadata"]["solver_cost"] == method_result.solver_cost
+    assert "cost_exact" not in record["metadata"]
 
 
 def test_solve_and_update_bks_repeated_run_keeps_or_replaces(tmp_path: Path, toy_cvrp_instance) -> None:
@@ -70,7 +75,16 @@ def test_solve_and_update_bks_handles_vrptw_hierarchical(tmp_path: Path, toy_vrp
     expected_path = get_bks_path_for_instance(
         instance_path, ObjectiveFunction.HIERARCHICAL_VEHICLE_COST
     )
-    assert expected_path.exists()
+    metadata = json.loads(expected_path.read_text())["metadata"]
+    report = metadata["solver_report"]
+    assert report == method_result.solver_report
+    assert report["objective"] == "vehicle-penalized-cost"
+    assert report["encoding"] == "integer"
+    assert report["family_units_per_solver_unit"] == {"numerator": "1", "denominator": "1"}
+    component = report["routing_cost_component"]
+    assert component["objective"] == "total-arc-cost" and component["encoding"] == "integer"
+    assert int(component["value"]) == metadata["solver_cost"] == method_result.solver_cost
+    assert int(report["value"]) == int(component["value"]) + method_result.vehicle_penalty * method_result.route_count
 
 
 def test_solve_and_update_bks_requires_authors(tmp_path: Path, toy_cvrp_instance) -> None:

@@ -123,7 +123,14 @@ class ParsedSolution:
 _MAX_REPORT_EXPONENT = Decimal(2 * sys.maxsize * int(sys.float_info.max) * math.ulp(0.0).as_integer_ratio()[1]).adjusted()
 
 
-def _reported_number(token: str | int | float | Decimal, exact: bool) -> int | float | Decimal:
+_ReportMode = bool | Literal["text"]
+
+
+class _JsonNumberToken(str):
+    """Distinguish JSON numbers from quoted strings while retaining their original spelling."""
+
+
+def _reported_number(token: str | int | float | Decimal, exact: _ReportMode) -> int | float | Decimal | str:
     if not exact:
         return _finite_cost(token)
     if isinstance(token, str) and not re.fullmatch(_NUMBER, token):
@@ -134,6 +141,8 @@ def _reported_number(token: str | int | float | Decimal, exact: bool) -> int | f
         raise SolutionFormatError("Unrepresentable decimal cost.") from error
     if not number.is_finite():
         raise SolutionFormatError("Expected a finite numerical cost.")
+    if exact == "text":
+        return str(token)
     if number.is_zero():
         return 0
     if number.adjusted() <= _MAX_REPORT_EXPONENT and number == number.to_integral_value():
@@ -147,12 +156,15 @@ def _report_json_integer(token: str) -> int | Decimal:
     return int(Decimal(token)) if len(token.lstrip("-")) <= _MAX_REPORT_EXPONENT + 1 else Decimal(token)
 
 
-def parse_solution_text(text: str, *, filename: str = "", exact_report: bool = False) -> tuple[list[list[int]], int | float | Decimal | None]:
+def parse_solution_text(
+    text: str, *, filename: str = "", exact_report: _ReportMode = False,
+) -> tuple[list[list[int]], int | float | Decimal | str | None]:
     """Routes (raw stop ids) and declared cost from a CVRPLIB ``.sol`` or a JSON solution.
 
     Accepts ``Route #k: a b c`` lines with an optional ``Cost <value>`` line, or
     JSON as either ``{"routes": [[...]]}`` or a bare array of routes. The stop ids
     are returned as written; :func:`normalize_routes` maps them onto the instance.
+    With ``exact_report="text"`` the declared cost retains its numeric token, including trailing zeros and exponents.
     """
     stripped = text.strip()
     if not stripped:
@@ -195,11 +207,15 @@ def _finite_cost(value: int | float | str | Decimal) -> float:
 
 
 def _parse_json_solution(
-    text: str, *, exact_report: bool = False,
-) -> tuple[list[list[int]], int | float | Decimal | None, dict | None, BenchmarkBKS | None]:
+    text: str, *, exact_report: _ReportMode = False,
+) -> tuple[list[list[int]], int | float | Decimal | str | None, dict | None, BenchmarkBKS | None]:
     try:
-        payload = (strict_json_loads(text, parse_float=Decimal, parse_int=_report_json_integer)
-                   if exact_report else strict_json_loads(text))
+        if exact_report == "text":
+            payload = strict_json_loads(text, parse_float=_JsonNumberToken, parse_int=_JsonNumberToken)
+        elif exact_report:
+            payload = strict_json_loads(text, parse_float=Decimal, parse_int=_report_json_integer)
+        else:
+            payload = strict_json_loads(text)
     except (ValueError, InvalidOperation) as exc:
         raise SolutionFormatError(f"Not valid JSON: {exc}") from exc
     declared = metadata = None
@@ -219,9 +235,13 @@ def _parse_json_solution(
             raise SolutionFormatError("Every entry of 'routes' must be a list of stops.")
         if not route:
             raise SolutionFormatError("JSON routes cannot contain an empty route.")
+        if exact_report == "text":
+            for index, stop in enumerate(route):
+                if isinstance(stop, _JsonNumberToken) and re.fullmatch(r"-?[0-9]+", stop):
+                    route[index] = _report_json_integer(stop)
         if any(type(stop) is not int for stop in route):
             raise SolutionFormatError("Route stops must be integers.")
-    if declared is not None and type(declared) not in (int, float, Decimal):
+    if declared is not None and type(declared) not in (int, float, Decimal, _JsonNumberToken):
         raise SolutionFormatError(f"JSON 'cost' must be a number, got {declared!r}.")
     cost = None if declared is None else _reported_number(declared, exact_report)
     metadata = metadata if isinstance(metadata, dict) else None
@@ -241,13 +261,13 @@ def _parse_json_solution(
 
 
 def parse_lkh_mtsp_solution(
-    text: str, *, exact_report: bool = False,
-) -> tuple[list[list[int]], int | float | Decimal | None, int | float | Decimal | None]:
+    text: str, *, exact_report: _ReportMode = False,
+) -> tuple[list[list[int]], int | float | Decimal | None, int | float | Decimal | str | None]:
     """Routes (1-based node ids, depot node 1 removed), penalty and cost of an LKH-3 MTSP solution file.
 
     LKH-3 writes each vehicle as ``1 a b c 1 (#3)  Cost: X`` and empty vehicles as
     ``1 1 (#0)  Cost: 0`` (with ``MTSP_MIN_SIZE = 0``); empty routes are dropped. A
-    non-zero penalty means LKH-3 found no feasible solution.
+    non-zero penalty means LKH-3 found no feasible solution. With ``exact_report="text"`` the cost is the original token and the penalty is numeric.
     """
     lines = text.strip().splitlines()
     if not lines:
@@ -255,7 +275,7 @@ def parse_lkh_mtsp_solution(
     penalty = cost = None
     header = _LKH_HEADER.search(lines[0])
     if header:
-        penalty = _reported_number(header.group(1), exact_report)
+        penalty = _reported_number(header.group(1), bool(exact_report))
         cost = _reported_number(header.group(2), exact_report)
     elif re.search(r"Cost:", lines[0], re.IGNORECASE):
         raise SolutionFormatError("Malformed LKH-3 penalty and cost header.")

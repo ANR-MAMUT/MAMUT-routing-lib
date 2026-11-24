@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, Protocol, runtime_checkable
 
 from mamut_routing_lib.enums import ObjectiveFunction, ProblemType
+from mamut_routing_lib.solvers.report import solver_cost_display, solver_report_metadata
 
 __all__ = [
     "INFEASIBLE_COST",
@@ -451,11 +452,9 @@ class SolveRequest:
 class SolveResult:
     """What a solver returned, before (and independent of) the reference checker's verdict.
 
-    ``solver_cost`` is the solver's own objective value brought back to instance units (informational:
-    the checker's cost is authoritative); ``solver_cost_raw`` is the value as the solver reported it,
-    in its own (scaled) units. For external integer input, provenance records the exact rational
-    cost unit. ``cost_scale`` gives its reciprocal for display when representable. ``cost_exact``
-    describes the fidelity of the search input. The checker owns the final route evaluation.
+    ``solver_report`` preserves the reported objective, value, numeric encoding and unit.
+    ``solver_cost`` is the optional nearest-binary64 projection of its routing component
+    in family units. The checker computes the route set's authoritative cost separately.
     """
 
     solver: str
@@ -468,15 +467,17 @@ class SolveResult:
     wall_time: float
     status: SolveStatus
     routes: list[list[int]] = field(default_factory=list)
-    solver_cost: float | None = None
-    solver_cost_raw: int | float | None = None
+    solver_report: dict[str, Any] | None = None
     cost_scale: int | float | None = 1.0
-    cost_exact: bool | None = None
     stopped_early: bool = False
     error: str | None = None
     solver_version: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     provenance: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def solver_cost(self) -> float | None:
+        return solver_cost_display(self.solver_report)
 
     @property
     def has_routes(self) -> bool:
@@ -494,10 +495,8 @@ class SolveResult:
             "wall_time": self.wall_time,
             "status": self.status,
             "routes": self.routes,
-            "solver_cost": self.solver_cost,
-            "solver_cost_raw": self.solver_cost_raw,
+            **solver_report_metadata(self.solver_report),
             "cost_scale": self.cost_scale,
-            "cost_exact": self.cost_exact,
             "stopped_early": self.stopped_early,
             "error": self.error,
             "solver_version": self.solver_version,

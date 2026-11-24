@@ -69,7 +69,8 @@ def solve(instance, params=None, *, time_limit=None, seed=0, on_incumbent=None):
     if mode == "stall":
         # The real search once it stops improving: no incumbent, so no way back into Python.
         time.sleep(20)
-    return _Solution(routes=routes, duration=99.0, route_durations=[50.0, 49.0], status="time_limit", iterations=1)
+    duration = {"missing-duration": None, "infinite-duration": float("inf")}.get(mode, 99.0)
+    return _Solution(routes=routes, duration=duration, route_durations=[50.0, 49.0], status="time_limit", iterations=1)
 '''
 
 
@@ -110,10 +111,27 @@ def test_kayros_results_are_checked_by_the_td_checker(fake_kayros, td_instance: 
     assert solved.objective is ObjectiveFunction.DURATION
     assert solved.result.status == "feasible" and solved.valid
     assert solved.cost == solved.check.routing_cost  # the lib's TD checker, not KAYROS's own number
+    report = solved.bks_metadata()["solver_report"]
+    assert report == {
+        "objective": "total-route-duration", "encoding": "binary64", "value": 99.0,
+        "family_units_per_solver_unit": {"numerator": "1", "denominator": "1"},
+    }
+    assert isinstance(report["value"], float)
+    assert solved.bks_metadata()["solver_cost"] == 99.0
+    assert "cost_exact" not in solved.bks_metadata()
     assert solved.result.metadata["status"] == "time_limit"
     assert solved.result.metadata["route_durations"] == [50.0, 49.0]
     assert ticks and ticks[-1].best_cost == 99.0
     assert "artifacts_dir" not in solved.result.provenance  # the temporary workdir is removed
+
+
+@pytest.mark.parametrize("mode", ["missing-duration", "infinite-duration"])
+def test_kayros_with_routes_but_no_finite_duration_keeps_only_the_checker_cost(fake_kayros, td_instance, mode):
+    fake_kayros(mode)
+    solved = run_solver("kayros", td_instance, time_limit_s=1)
+    assert solved.valid and solved.result.routes
+    assert solved.result.solver_report is None and solved.result.solver_cost is None
+    assert "solver_report" not in solved.bks_metadata() and "solver_cost" not in solved.bks_metadata()
 
 
 def test_the_worker_runs_the_library_of_the_parent(fake_kayros, td_instance: Path, monkeypatch) -> None:
@@ -203,6 +221,10 @@ def test_a_worker_killed_by_the_system_keeps_its_last_incumbent(fake_kayros, td_
     assert "the KAYROS worker was killed by SIGKILL" in result.error and "last incumbent it saved" in result.error
     assert result.provenance["returncode"] == -9 and result.provenance["recovered_from_checkpoint"] is True
     assert result.metadata == {"iterations": 1}
+    assert solved.bks_metadata()["solver_report"] == {
+        "objective": "total-route-duration", "encoding": "binary64", "value": 99.0,
+        "family_units_per_solver_unit": {"numerator": "1", "denominator": "1"},
+    }
 
 
 def test_the_command_line_keeps_the_incumbent_of_a_killed_worker(fake_kayros, td_instance: Path) -> None:

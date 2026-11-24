@@ -382,6 +382,10 @@ class _SolutionValidationMixin(BaseModel):
     @field_validator("metadata")
     @classmethod
     def validate_optimality_metadata(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if "solver_report" in value:
+            from mamut_routing_lib.solvers.report import checked_solver_metadata
+
+            value = checked_solver_metadata(value)
         if "optimality" in value:
             claim = value["optimality"]
             model = SolverReportedOptimality if isinstance(claim, dict) and "status" in claim else OptimalityMetadata

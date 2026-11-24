@@ -44,24 +44,9 @@ _CAPABILITIES = SolverCapabilities(
 
 
 def method_result_to_solve_result(method_result: Any, *, stopped_early: bool = False) -> SolveResult:
-    """Translate a PyVRP ``MethodResult`` (scaled solver units) into a ``SolveResult``.
-
-    PyVRP's objective is in milli-units for float matrices and, under the hierarchical
-    objective, includes ``vehicle_penalty`` per route; ``solver_cost`` is the returned
-    solution's distance in instance units (``metadata["solver_distance"] / scale``).
-    """
+    """Pass the PyVRP objective report and returned routes to the registry."""
     metadata = dict(method_result.metadata or {})
-    scale = float(metadata.get("arc_cost_scale", 1) or 1)
     feasible = bool(method_result.solver_is_feasible)
-    raw = method_result.solver_cost if feasible else None
-    solver_cost = None
-    if raw is not None:
-        distance = metadata.get("solver_distance")
-        if distance is not None:
-            solver_cost = float(distance) / scale
-        else:  # results built before solver_distance was recorded
-            penalty = float(method_result.vehicle_penalty or 0) * int(method_result.route_count or 0)
-            solver_cost = (float(raw) - penalty) / scale
     return SolveResult(
         solver="pyvrp",
         method=method_result.method,
@@ -74,10 +59,8 @@ def method_result_to_solve_result(method_result: Any, *, stopped_early: bool = F
         # A stop request (cancellation) ends the search early; the routes are the incumbent at the stop.
         status="cancelled" if stopped_early else ("feasible" if feasible else "infeasible"),
         routes=[list(route) for route in method_result.routes] if feasible else [],
-        solver_cost=solver_cost,
-        solver_cost_raw=raw,
-        cost_scale=scale,
-        cost_exact=metadata.get("cost_exact"),
+        solver_report=method_result.solver_report if feasible else None,
+        cost_scale=metadata.get("arc_cost_scale", 1),
         stopped_early=stopped_early,
         solver_version=package_version("pyvrp"),
         metadata=metadata,

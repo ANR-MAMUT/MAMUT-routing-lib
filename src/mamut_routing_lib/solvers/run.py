@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from mamut_routing_lib.enums import ObjectiveFunction
+from mamut_routing_lib.solvers.report import solver_report_metadata
 from mamut_routing_lib.solvers.base import (
     InstanceNotSupportedError,
     Solver,
@@ -45,7 +46,7 @@ BKS_PROVENANCE_KEYS = (
     "time_limit_s",
     "wall_time",
     "solver_cost",
-    "cost_exact",
+    "solver_report",
     "machine",
     "vehicle_penalty",
     "executable_sha256",
@@ -107,7 +108,7 @@ class CheckedSolve:
         """
         from mamut_routing_lib.solutions import STORE_METADATA_KEYS
 
-        clash = sorted(key for key in extra if key in BKS_PROVENANCE_KEYS or key in STORE_METADATA_KEYS)
+        clash = sorted(key for key in extra if key in BKS_PROVENANCE_KEYS or key in STORE_METADATA_KEYS or key == "cost_exact")
         if clash:
             raise ValueError(f"bks_metadata cannot override {', '.join(clash)}")
         result = self.result
@@ -118,8 +119,7 @@ class CheckedSolve:
             "seed": result.seed,
             "time_limit_s": result.time_limit_s,
             "wall_time": round(result.wall_time, 3),
-            "solver_cost": result.solver_cost,
-            "cost_exact": result.cost_exact,
+            **solver_report_metadata(result.solver_report),
             "machine": result.provenance.get("machine"),
         }
         if "vehicle_penalty" in result.metadata:

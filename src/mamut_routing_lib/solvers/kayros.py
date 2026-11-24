@@ -24,12 +24,14 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import math
 import os
 import shutil
 import signal
 import sys
 import tempfile
 import time
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +47,7 @@ from mamut_routing_lib.solvers.base import (
     capability_support,
 )
 from mamut_routing_lib.solvers.provenance import declared_requirement, environment, lib_version, package_version, satisfies
+from mamut_routing_lib.solvers.report import make_solver_report
 
 __all__ = ["KayrosSolver"]
 
@@ -82,6 +85,12 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 
 def _routes(payload: dict[str, Any] | None) -> list[list[int]]:
     return [[int(stop) for stop in route] for route in (payload or {}).get("routes") or []]
+
+
+def _duration_report(value: float | None) -> dict[str, Any] | None:
+    if value is None or not math.isfinite(value):
+        return None
+    return make_solver_report("total-route-duration", float(value), encoding="binary64", unit=Fraction(1))
 
 
 def _how_it_ended(returncode: int | None) -> str:
@@ -215,9 +224,7 @@ class KayrosSolver:
                 wall_time=wall_time,
                 status="cancelled" if stopped else ("feasible" if routes else "infeasible"),
                 routes=routes,
-                solver_cost=float(result["duration"]),
-                solver_cost_raw=float(result["duration"]),
-                cost_exact=True,
+                solver_report=_duration_report(result.get("duration")) if routes else None,
                 stopped_early=stopped,
                 metadata={
                     "status": result.get("status"),
@@ -226,13 +233,12 @@ class KayrosSolver:
                 },
             )
         # Whatever follows has no finished solution: the last incumbent that the worker saved is the answer.
-        value = (incumbent or {}).get("value")
+        routes = _routes(incumbent)
         common = dict(
             **base,
             wall_time=wall_time,
-            routes=_routes(incumbent),
-            solver_cost=None if value is None else float(value),
-            solver_cost_raw=None if value is None else float(value),
+            routes=routes,
+            solver_report=_duration_report(incumbent.get("value")) if routes else None,
             metadata={"iterations": (incumbent or {}).get("iteration")},
         )
         if outcome.termination == "exited":

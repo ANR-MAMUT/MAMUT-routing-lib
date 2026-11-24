@@ -186,7 +186,7 @@ from mamut_routing_lib import run_solver, submit_bks
 
 solved = run_solver("pyvrp", "path/to/instance.vrp.json", time_limit_s=30, seed=42)
 print(solved.valid, solved.cost, solved.num_routes)        # the checker's verdict and cost
-print(solved.result.status, solved.result.solver_cost)     # the solver's own report
+print(solved.result.solver_report, solved.result.solver_cost)  # original report and optional family-unit display
 
 if solved.valid:                                           # store only if strictly better
     update = submit_bks(solved.instance_path, solved.result.routes,
@@ -194,6 +194,8 @@ if solved.valid:                                           # store only if stric
                         checkable=solved.checkable)        # the instance the check already loaded
     print(update.action)                                   # created / replaced / kept_existing
 ```
+
+A solver report preserves the objective, the original numerical value and its unit. Integer and printed decimal values retain their tokens as strings. A finite binary64 API value is a JSON number. The optional `routing_cost_component` holds a separately reported route cost, for example the distance component of PyVRP's vehicle-penalized objective. `solver_cost` rounds the comparable component times `family_units_per_solver_unit` once to binary64. A solver can submit routes without a numerical report. BKS comparisons use the checker's rational evaluation.
 
 One solve reads a large distance matrix (or a TD instance's travel-time
 functions) once: the solver's input, the check and, through `checkable=`, the

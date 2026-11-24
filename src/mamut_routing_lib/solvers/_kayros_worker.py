@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import threading
@@ -31,10 +32,14 @@ from typing import Any
 CHECKPOINT_INTERVAL_S = 0.1
 
 
+def _finite_duration(value: float | None) -> float | None:
+    return float(value) if value is not None and math.isfinite(value) else None
+
+
 def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     """Write ``payload`` so that a reader, or a kill, never sees half a file."""
     temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps(payload), encoding="utf-8")
+    temporary.write_text(json.dumps(payload, allow_nan=False), encoding="utf-8")
     os.replace(temporary, path)
 
 
@@ -55,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
 
     def on_incumbent(incumbent: Any, routes: list[list[int]]) -> None:
         with lock:
-            latest["value"] = float(incumbent.value)
+            latest["value"] = _finite_duration(getattr(incumbent, "value", None))
             latest["iteration"] = int(getattr(incumbent, "iteration", 0) or 0)
             latest["routes"] = [list(route) for route in routes]
         dirty.set()
@@ -67,7 +72,8 @@ def main(argv: list[str] | None = None) -> int:
         with lock:
             snapshot = dict(latest)
         write_json_atomic(checkpoint_path, snapshot)
-        print(f"incumbent cost={snapshot['value']!r} iterations={snapshot['iteration']}", flush=True)
+        if snapshot["value"] is not None:
+            print(f"incumbent cost={snapshot['value']!r} iterations={snapshot['iteration']}", flush=True)
 
     def writer() -> None:
         while not finished.wait(CHECKPOINT_INTERVAL_S):
@@ -96,10 +102,10 @@ def main(argv: list[str] | None = None) -> int:
         {
             "ok": True,
             "routes": [list(route) for route in solution.routes],
-            "duration": float(solution.duration),
+            "duration": _finite_duration(getattr(solution, "duration", None)),
             "status": getattr(solution, "status", None),
             "iterations": getattr(solution, "iterations", None),
-            "route_durations": [float(value) for value in (getattr(solution, "route_durations", None) or [])],
+            "route_durations": [_finite_duration(value) for value in (getattr(solution, "route_durations", None) or [])],
             **_library_identity(),
         },
     )

@@ -90,7 +90,10 @@ def test_coordinate_solver_on_a_euclidean_collection_instance(collection: Path) 
     solved = run_solver(ExternalSolver(FAKE_X), _variant(collection, "CVRP", "euclidean"), time_limit_s=5, seed=4)
     result = solved.result
     assert result.status == "feasible" and solved.valid
-    assert result.solver == "fake-x" and result.cost_exact is False
+    assert result.solver == "fake-x"
+    assert result.solver_report["encoding"] == "decimal-text"
+    assert "reported_cost_matches_exported_model" not in result.provenance
+    assert "cost_exact" not in result.to_json()
     assert result.provenance["scale"]["mode"] == "coordinates"
     assert result.solver_cost == pytest.approx(solved.cost, abs=1e-3)
     assert result.provenance["input_sha256"] and result.provenance["argv"][0] == sys.executable
@@ -158,7 +161,8 @@ def test_lkh_style_solver_scales_exactly_and_cross_checks_its_cost(collection: P
     solved = run_solver(ExternalSolver(FAKE_LKH), _variant(collection, "CVRP", "fastest"), time_limit_s=5)
     result = solved.result
     assert solved.valid
-    assert result.cost_exact is True and result.cost_scale == 4
+    assert result.solver_report["encoding"] == "integer"
+    assert result.solver_report["family_units_per_solver_unit"] == {"numerator": "1", "denominator": "4"}
     assert result.provenance["scale"]["cost_unit"] == {"numerator": "1", "denominator": "4"}
     assert result.provenance["problem_type_line"] == "CVRP"
     assert result.provenance["reported_cost_matches_exported_model"] is True
@@ -175,8 +179,16 @@ def test_bounded_integer_search_is_priced_on_the_materialized_binary64(toy_cvrp_
     path = _write(data, tmp_path)
     descriptor = FAKE_LKH.with_overrides(limits=Limits(max_arc_cost=1000))
     solved = run_solver(ExternalSolver(descriptor), path, time_limit_s=5)
-    assert solved.valid and solved.result.solver_cost_raw == 3
-    assert not solved.result.cost_exact
+    assert solved.valid
+    assert solved.result.solver_report == {
+        "objective": "total-arc-cost",
+        "value": "3",
+        "encoding": "integer",
+        "family_units_per_solver_unit": {"numerator": "1", "denominator": "10"},
+    }
+    assert solved.result.solver_cost == 0.3
+    assert solved.result.provenance["reported_cost_matches_exported_model"] is True
+    assert "reported_cost_matches_exported_model" not in solved.bks_metadata()
     assert solved.result.provenance["scale"]["search_model"] == "shortest-decimal-grid"
     expected = 3 * Fraction(0.1)
     assert solved.check.exact_evaluation["authoritative_cost"] == {
@@ -270,8 +282,9 @@ def test_a_wrong_reported_cost_is_flagged_and_ignored(collection: Path, monkeypa
     assert solved.cost == pytest.approx(solved.result.solver_cost - 250.0)  # 1,000 units of 1/4
     # The routes are kept (the checker priced them), and the result says that the solver's number is another one.
     assert solved.result.status == "feasible"
-    assert f"reported {solved.result.solver_cost_raw} solver units" in solved.result.error
-    assert f"Its routes cost {solved.result.solver_cost_raw - 1000} units in the exported matrix" in solved.result.error
+    raw = int(solved.result.solver_report["value"])
+    assert f"reported {raw} solver units" in solved.result.error
+    assert f"Its routes cost {raw - 1000} units in the exported matrix" in solved.result.error
 
 
 def test_module_invocation_does_not_credit_unused_script(tmp_path, collection):
@@ -285,7 +298,6 @@ def test_module_invocation_does_not_credit_unused_script(tmp_path, collection):
 
 
 def test_integer_report_uses_written_digits_and_checks_actual_export(tmp_path, toy_cvrp_instance):
-    from decimal import Decimal
     from mamut_routing_lib.solutions import parse_lkh_mtsp_solution, parse_solution_text
     from mamut_routing_lib.solvers.external.adapter import _exported_route_cost
 
@@ -307,9 +319,22 @@ def test_integer_report_uses_written_digits_and_checks_actual_export(tmp_path, t
     solved = run_solver(ExternalSolver(desc), _write(toy_cvrp_instance, tmp_path), time_limit_s=5)
     assert solved.valid
     assert solved.result.provenance["reported_cost_matches_exported_model"] is False
-    text = solved.result.provenance["reported_cost_raw_text"]
-    assert Decimal(text) == Decimal("14.00000000000000001") and text in solved.result.error
-    assert solved.result.cost_exact is False
+    report = solved.result.solver_report
+    assert report["encoding"] == "decimal-text"
+    assert report["value"] == "14.00000000000000001" and report["value"] in solved.result.error
+
+
+def test_missing_report_still_checks_routes_without_an_export_comparison(tmp_path, toy_cvrp_instance):
+    script = tmp_path / "routes_only.py"
+    script.write_text("import sys\nfrom pathlib import Path\n"
+                      "Path(sys.argv[1]).write_text('Route #1: 1 2')\n")
+    desc = FAKE_LKH.with_overrides(executable=str(script), argv=("{python}", "{executable}", "{solution}"),
+                                   output_format="cvrplib-sol")
+    solved = run_solver(ExternalSolver(desc), _write(toy_cvrp_instance, tmp_path), time_limit_s=5)
+    assert solved.valid and solved.cost is not None
+    assert solved.result.solver_report is None and solved.result.solver_cost is None
+    assert "solver_report" not in solved.bks_metadata()
+    assert "reported_cost_matches_exported_model" not in solved.result.provenance
 
 
 def test_unrepresentable_window_is_refused_before_launch(tmp_path, toy_vrptw_instance):
@@ -528,7 +553,8 @@ def test_full_matrix_solver_takes_asymmetric_road_metrics(collection: Path, toy_
     for path in (_variant(collection, "CVRP", "fastest"), _write(asym, tmp_path)):
         solved = run_solver(ExternalSolver(FAKE_MATRIX), path, time_limit_s=5)
         assert solved.valid, solved.result.error
-        assert solved.result.cost_exact is True and solved.result.provenance["scale"]["rounding"] == "float"
+        assert solved.result.solver_report["encoding"] == "decimal-text"
+        assert solved.result.provenance["scale"]["rounding"] == "float"
         assert solved.result.solver_cost == pytest.approx(solved.cost)
         assert "reported_cost_matches_exported_model" not in solved.result.provenance  # float solver: no exact cross-check
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from fractions import Fraction
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,6 +12,7 @@ from mamut_routing_lib.cli import app
 from mamut_routing_lib.enums import ObjectiveFunction
 from mamut_routing_lib.json_utils import save_json_to_file
 from mamut_routing_lib.models import BenchmarkInstanceVRPTW
+from mamut_routing_lib.solvers.report import make_solver_report
 
 
 pytest.importorskip("pyvrp")
@@ -74,7 +76,7 @@ def _fake_method_result(*, instance_name: str, problem_type: str = "CVRP", route
         wall_time=0.05,
         solver_is_feasible=True,
         routes=routes,
-        solver_cost=14,
+        solver_report=make_solver_report("total-arc-cost", "14", encoding="integer", unit=Fraction(1)),
         route_count=len(routes),
         vehicle_penalty=0,
         metadata={},
