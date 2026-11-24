@@ -263,38 +263,13 @@ The numbering is not guessed unless the solver asks for it, because a guess can 
 `Route #1: 0 1 2` for 3 customers is a complete zero-based file, or a one-based file that writes the depot and
 misses customer 3. The four built-in solvers write one-based files.
 
-Each run writes the solver's input into a scratch directory
-(`--keep-artifacts DIR` keeps it), scaled to the integers the solver needs:
-exactly (x1000 for 3-decimal matrices; the solver's cost then unscales exactly
-and is cross-checked) when the solver's limits allow, otherwise approximately --
-conservatively for time windows, so a schedule the solver finds feasible is
-feasible on the published data. HGS-CVRP computes in doubles, so it reads the
-published matrix as is (divided by 10, exactly, where a distance exceeds its 1e5
-limit), with the coordinates only for SWAP*'s polar sectors. Coordinate solvers
-get coordinates in a unit that fits their limits (FILO2 millimetres). The
-solver runs in its own process group with a hard timeout (budget + grace) and is
-killed with its children on cancellation. A run that ends without a solution
-file reports the last lines the solver printed (an unpatched build rejecting the
-input, a missing library), since the scratch directory is gone by then. When an
-integer solver on an exact scale reports another cost than the checker's for its
-own routes, the result says so next to the instance: the routes and the checker's
-cost are kept, and the solver worked on other costs than the instance's.
-Provenance (command, executable and input sha256, scale, version, machine) goes
-into the run result and into a BKS stored from it. The executable hash is the
-hash of the solver file: the native executable, the jar, or the script of a
-`runtime = "python"` solver, named in `executable` and run as
-`argv = ["{python}", "{executable}", ...]`. The interpreter or the JVM that ran
-it is recorded next to it in the run result (`runtime_executable`,
-`runtime_version`).
+Each run writes its input to a scratch directory. Use `--keep-artifacts DIR` to retain it. For an explicit integer matrix, the adapter scales each arc cost to an integer in solver units. A 3-decimal matrix, for example, can use a factor of 1,000 if it fits the solver's limits. Coarser exports round costs and time windows and refuse a window that becomes empty. HGS-CVRP accepts a floating-point matrix through its patched reader. Coordinate solvers calculate distances themselves.
 
-With `input_format = "lkh"`, `extra_args` are literal lines appended to the
-LKH-3 parameter file (`extra_args = ["RUNS = 10"]`), whatever the `argv` -- a
-command wrapped in `taskset` or a launcher script keeps them. A line that sets
-a parameter of the run (`PROBLEM_FILE`, `MTSP_SOLUTION_FILE`, `SEED`,
-`TIME_LIMIT`, `PRECISION`) is a config error: LKH-3 keeps the last occurrence
-of a parameter, so the run would not have the seed, the budget or the scale
-that its result records. For every other format they are extra command-line
-tokens.
+When an integer solver returns routes and a cost for an explicit matrix, the adapter sums the actual exported weights, including the depot legs, and compares the report in solver units. A disagreement or fractional integer-solver report produces a warning. The benchmark checker still validates and prices the routes independently. A solver that only prints a rounded floating-point estimate can supply a route without this comparison.
+
+The runner stops the solver process group on cancellation or hard timeout and includes the final log lines if a solver exits without a solution file. Run provenance records the command, input digest, scale and identifiable solver file. A Python module invocation can identify its interpreter even when the code has no single script to hash. A configured script used as the Python entry point and a Java jar passed to the JVM are recorded by their file hashes.
+
+With `input_format = "lkh"`, each `extra_args` item supplies one parameter line, such as `RUNS = 10`. The runner owns `PROBLEM_FILE`, `MTSP_SOLUTION_FILE`, `SEED`, `TIME_LIMIT`, `PRECISION` and `SCALE`. Other input formats append `extra_args` to the command line.
 
 ### Solutions found elsewhere
 

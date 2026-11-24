@@ -81,8 +81,8 @@ def test_solve_with_a_configured_external_solver_and_kept_artifacts(tmp_path: Pa
     assert bks["metadata"]["solver"] == "fake" and bks["metadata"]["input_sha256"]
 
 
-def test_solve_says_when_the_solver_worked_on_other_costs(tmp_path: Path, toy_cvrp_instance, monkeypatch) -> None:
-    """A cost that differs from the checker's on an exact integer scale used to be written to the provenance only."""
+def test_solve_warns_when_the_report_disagrees_with_the_export(tmp_path: Path, toy_cvrp_instance, monkeypatch) -> None:
+    """A mismatched report is visible even when the returned routes pass the benchmark checker."""
     monkeypatch.setenv("FAKE_MODE", "wrong-cost")
     result = CliRunner().invoke(
         app,
@@ -90,7 +90,7 @@ def test_solve_says_when_the_solver_worked_on_other_costs(tmp_path: Path, toy_cv
          "--time-limit-s", "5"],
     )
     assert result.exit_code == 0, result.output  # the routes are valid, and COST is the checker's
-    assert "the solver worked on other costs than this instance's" in result.stderr
+    assert "solver units" in result.stderr and "units in the exported matrix" in result.stderr
 
 
 def test_solve_with_an_unavailable_external_solver_is_a_usage_error(tmp_path: Path, toy_cvrp_instance, monkeypatch) -> None:
@@ -200,6 +200,72 @@ def test_sigterm_ends_a_solve_the_way_ctrl_c_does(tmp_path: Path, toy_cvrp_insta
     assert "Stopped by SIGTERM: every running solve was stopped and wrote no BKS" in output
     assert not list(tmp_path.glob("*.bks.*.json"))
     assert _solver_processes(artifacts) == []
+
+
+def test_interrupt_during_batch_submission_stops_workers_before_waiting(
+    tmp_path: Path, toy_cvrp_instance, toy_vrptw_instance, monkeypatch
+) -> None:
+    import signal
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    from types import SimpleNamespace
+
+    from mamut_routing_lib import cli, solvers
+    from mamut_routing_lib.solvers.external.process import TerminationSignal
+
+    running = threading.Event()
+    stopped = threading.Event()
+
+    def solve_until_stopped(*args, monitor, **kwargs):
+        running.set()
+        deadline = time.monotonic() + 3
+        while not monitor.stop_requested and time.monotonic() < deadline:
+            time.sleep(0.01)
+        if monitor.stop_requested:
+            stopped.set()
+        return SimpleNamespace(result=SimpleNamespace(status="cancelled", wall_time=0.0))
+
+    class InterruptSubmission(ThreadPoolExecutor):
+        def submit(self, operation, *args):
+            super().submit(operation, *args)
+            # Queue the job, then deliver the signal before the caller receives its future.
+            assert running.wait(timeout=3)
+            raise TerminationSignal(signal.SIGTERM)
+
+    monkeypatch.setattr(solvers, "run_solver", solve_until_stopped)
+    monkeypatch.setattr(cli, "ThreadPoolExecutor", InterruptSubmission)
+    paths = [_instance(toy_cvrp_instance, tmp_path), _instance(toy_vrptw_instance, tmp_path)]
+    result = CliRunner().invoke(
+        app, ["solve", *map(str, paths), "--jobs", "1", "--solver", "fake", "--solvers-config", str(_config(tmp_path))],
+    )
+    assert result.exit_code == 143, result.output
+    assert stopped.is_set()
+
+
+def test_interrupt_reports_completed_bks_even_before_collecting_futures(
+    tmp_path: Path, toy_cvrp_instance, toy_vrptw_instance, monkeypatch
+) -> None:
+    import signal
+    from concurrent.futures import wait
+
+    from mamut_routing_lib import cli
+    from mamut_routing_lib.solvers.external.process import TerminationSignal
+
+    def interrupt_collection(futures):
+        done, pending = wait(futures, timeout=15)
+        assert len(done) == 2 and not pending
+        raise TerminationSignal(signal.SIGTERM)
+
+    monkeypatch.setattr(cli, "as_completed", interrupt_collection)
+    paths = [_instance(toy_cvrp_instance, tmp_path), _instance(toy_vrptw_instance, tmp_path)]
+    result = CliRunner().invoke(
+        app, ["solve", *map(str, paths), "--jobs", "2", "--solver", "fake", "--solvers-config", str(_config(tmp_path)),
+              "--time-limit-s", "5", "--save-bks", "--authors", "Tester"],
+    )
+    assert result.exit_code == 143, result.output
+    assert len(list(tmp_path.glob("*.bks.*.json"))) == 2
+    assert "BKS files written: 2" in result.stderr
 
 
 def test_a_killed_command_leaves_no_solver_behind(tmp_path: Path, toy_cvrp_instance, toy_vrptw_instance) -> None:

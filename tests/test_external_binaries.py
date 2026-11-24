@@ -86,8 +86,8 @@ def test_real_solver_returns_checker_valid_routes(tmp_path: Path, name: str, met
     assert result.status == "feasible", (result.error, result.provenance.get("log_tail"))
     assert solved.valid, solved.check.error_message if solved.check else result.error
     assert result.solver_cost == pytest.approx(solved.cost, rel=1e-5)  # HGS prints 6 significant digits
-    if result.provenance.get("reported_cost_matches_checker") is not None:
-        assert result.provenance["reported_cost_matches_checker"] is True
+    if result.provenance.get("reported_cost_matches_exported_model") is not None:
+        assert result.provenance["reported_cost_matches_exported_model"] is True
     if name == "lkh3" and metric == "fastest":
         assert result.provenance["problem_type_line"] == "ACVRP"
 

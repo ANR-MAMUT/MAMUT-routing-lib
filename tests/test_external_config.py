@@ -96,6 +96,8 @@ def test_extends_makes_a_named_variant(tmp_path: Path) -> None:
         ("[other]\nkey = 1\n", "top-level"),
         ('[solvers.filo2]\nsolution_file = "/home/user/notes.txt"\n', "inside the work directory"),
         ('[solvers.filo2]\nsolution_file = "../../x.sol"\n', "inside the work directory"),
+        ('[solvers.lkh3]\nextra_args = ["RUNS = 10\\nSEED = 1"]\n', "one physical parameter line"),
+        ('[solvers.lkh3]\nextra_args = ["SCALE = 10"]\n', "sets SCALE"),
         ('[solvers.lkh3]\nextra_args = ["SEED = 1"]\n', r"lkh3\.extra_args: 'SEED = 1' sets SEED, the seed of the run"),
         ('[solvers.lkh3]\nextra_args = ["RUNS = 10", "time_limit=9999"]\n', "sets TIME_LIMIT, the time limit of the run"),
         ('[solvers.long]\nextends = "lkh3"\nextra_args = ["PRECISION 10"]\n', r"long\.extra_args: .* sets PRECISION"),

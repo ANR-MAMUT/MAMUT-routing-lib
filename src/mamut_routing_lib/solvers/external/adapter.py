@@ -10,9 +10,7 @@ One solve, in order:
 3. run the executable (``process``): own process group, budget + grace,
    cooperative stop through the monitor, progress lines as live incumbents;
 4. read the solution file (``solutions`` parsers), map its ids onto the
-   library's, and bring the reported cost back to instance units -- exactly
-   when the scale was exact, in which case it is cross-checked against the
-   checker's exact decimal cost.
+   library's, and check an integer cost report against the weights in the exported matrix.
 
 The routes still go through the reference checker afterwards
 (``solvers.run.run_solver``): a solver's own cost is never trusted.
@@ -29,7 +27,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from decimal import Decimal
-from fractions import Fraction
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -108,12 +106,25 @@ def _fmt_seconds(value: float) -> str:
     return str(int(value)) if float(value).is_integer() else f"{float(value):g}"
 
 
-def _cost_text(value: Fraction) -> str:
-    """An exact cost as a decimal with every digit: ``1234.5``, never ``2469/2`` or a rounded float."""
-    if value.denominator == 1:
-        return str(value.numerator)
-    text = format(Decimal(value.numerator) / Decimal(value.denominator), "f")
-    return text.rstrip("0").rstrip(".") if "." in text else text
+def _exported_route_cost(problem: Path, routes: list[list[int]], vertices: int) -> int:
+    """Sum just the visited edges from the emitted FULL_MATRIX, in solver units."""
+    successors = [[] for _ in range(vertices)]
+    for route in routes:
+        for source, target in pairwise([0, *route, 0]):
+            successors[source].append(target)
+    with problem.open(encoding="ascii") as stream:
+        for line in stream:
+            if line.strip() == "EDGE_WEIGHT_SECTION":
+                break
+        else:
+            raise ValueError("missing EDGE_WEIGHT_SECTION")
+        total = 0
+        for neighbors in successors:
+            weights = stream.readline().split()
+            if len(weights) != vertices:
+                raise ValueError("incomplete exported matrix row")
+            total += sum(int(weights[target]) for target in neighbors)
+    return total
 
 
 def _last_log_lines(log_tail: str, *, lines: int = 3, width: int = 200) -> str:
@@ -209,16 +220,6 @@ class ExternalSolver:
         if self.descriptor.runtime == "python" and not self.descriptor.executable:
             return None
         return self.resolve_executable()[0]
-
-    def _runtime_identity(self) -> dict[str, Any]:
-        """What runs the solver file, when it does not run by itself: the interpreter or the JVM."""
-        if self.descriptor.runtime == "python":
-            return {"runtime_executable": sys.executable, "runtime_version": platform.python_version()}
-        if self.descriptor.runtime == "java":
-            java = self._java()[0]
-            if java is not None:
-                return {"runtime_executable": str(Path(java).resolve()), "runtime_version": java_release(java)}
-        return {}
 
     def availability(self) -> Availability:
         executable, reason = self.resolve_executable()
@@ -399,16 +400,25 @@ class ExternalSolver:
         )
 
     def build_argv(self, prepared: PreparedInput, request: SolveRequest) -> list[str]:
+        return self._invocation(prepared, request)[0]
+
+    def _invocation(self, prepared: PreparedInput, request: SolveRequest) -> tuple[list[str], str | None, dict[str, Any]]:
+        """Resolve the command and identify the artifacts used in that invocation."""
+        from mamut_routing_lib.solvers.base import SolverUnavailableError
+
         descriptor = self.descriptor
         executable, reason = self.resolve_executable()
         if executable is None:
-            from mamut_routing_lib.solvers.base import SolverUnavailableError
-
             raise SolverUnavailableError(f"{self.name}: {reason} ({self._config_hint()})")
+        java = None
+        if descriptor.runtime == "java":
+            java, reason = self._java()
+            if java is None:
+                raise SolverUnavailableError(f"{self.name}: {reason}")
         values = {
             "executable": executable,
             "jar": executable if descriptor.runtime == "java" else "",
-            "java": self._java()[0] or descriptor.java,
+            "java": java or descriptor.java,
             "python": sys.executable,
             "problem": str(prepared.problem),
             "params": str(prepared.params or ""),
@@ -429,7 +439,33 @@ class ExternalSolver:
             argv.extend(token.format_map(values) for token in descriptor.fleet_args)
         if descriptor.input_format != "lkh":  # LKH reads its extra_args from the parameter file
             argv.extend(token.format_map(values) for token in descriptor.extra_args)
-        return argv
+        solver_file = None
+        identity: dict[str, Any] = {}
+        if descriptor.runtime == "python" and sys.executable in argv:
+            identity.update(runtime_executable=sys.executable, runtime_version=platform.python_version())
+            # A Python module or command may receive a script path as an ordinary argument.
+            # The first positional interpreter argument identifies the executed script.
+            options = iter(argv[argv.index(sys.executable) + 1:])
+            for arg in options:
+                if arg.startswith(("-m", "-c")):
+                    break
+                if arg in ("-W", "-X", "--check-hash-based-pycs"):
+                    next(options, None)
+                    continue
+                if arg == "--":
+                    continue
+                if not arg.startswith("-"):
+                    if descriptor.executable and arg == executable:
+                        solver_file = executable
+                    break
+        elif descriptor.runtime == "java" and java in argv:
+            identity.update(runtime_executable=str(Path(java).resolve()), runtime_version=java_release(java))
+            java_args = argv[argv.index(java) + 1:]
+            if ("-jar", executable) in pairwise(java_args):
+                solver_file = executable
+        elif descriptor.runtime == "native" and executable in argv:
+            solver_file = executable
+        return argv, solver_file, identity
 
     # -- solve ----------------------------------------------------------------------------------
 
@@ -457,14 +493,12 @@ class ExternalSolver:
                                        provenance=provenance)
                 monitor.phase("preparing input")
             prepared = self.prepare(request, workdir)
-            argv = self.build_argv(prepared, request)
-            solver_file = self.solver_file()
+            argv, solver_file, identity = self._invocation(prepared, request)
             provenance.update(
                 argv=argv,
-                # The solver itself, not what launches it: a wrapper (`taskset`), an interpreter, a JVM.
                 executable=solver_file or argv[0],
                 executable_sha256=file_sha256(solver_file) if solver_file else None,
-                **self._runtime_identity(),
+                **identity,
                 input_sha256=file_sha256(prepared.problem, cache=False),
                 params_sha256=file_sha256(prepared.params, cache=False) if prepared.params else None,
                 scale=prepared.plan.to_json(),
@@ -554,15 +588,16 @@ class ExternalSolver:
         provenance["solution_sha256"] = file_sha256(solution, cache=False)
         text = solution.read_text(encoding="utf-8", errors="replace")
         num_customers = int(prepared.checkable.num_customers)
+        integer_report = self.capabilities.integer_costs
         try:
             if self.descriptor.output_format == "lkh-mtsp":
-                raw_routes, penalty, raw_cost = parse_lkh_mtsp_solution(text)
+                raw_routes, penalty, raw_cost = parse_lkh_mtsp_solution(text, exact_report=integer_report)
                 if penalty:
-                    return SolveResult(**common, status="infeasible", solver_cost_raw=raw_cost,
+                    return SolveResult(**common, status="infeasible", solver_cost_raw=float(raw_cost) if isinstance(raw_cost, Decimal) else raw_cost,
                                        error=f"{self.label} reports a penalty of {penalty:g} (no feasible solution)")
                 routes = normalize_routes([[node - 1 for node in route] for route in raw_routes], num_customers, convention="one-based")
             else:
-                raw_routes, raw_cost = parse_solution_text(text, filename=solution.name)
+                raw_routes, raw_cost = parse_solution_text(text, filename=solution.name, exact_report=integer_report)
                 # The descriptor states the numbering: guessing it can complete an incomplete answer.
                 convention = self.descriptor.id_convention
                 provenance["solution_ids"] = resolve_convention(raw_routes, num_customers, convention)
@@ -577,27 +612,27 @@ class ExternalSolver:
                     raise
         except SolutionFormatError as error:
             return SolveResult(**common, status="failed", error=f"unreadable solution file: {error}")
-        solver_cost, exact_cost = unscale_cost(raw_cost, plan)
-        # What a caller has to be told about a result that still has routes to check.
         remarks: list[str] = []
-        # Only integer-cost solvers report a cost that can match the checker's exact decimal cost;
-        # HGS-CVRP prints six significant digits, so its integral-looking costs are rounded.
-        if exact_cost is not None and self.capabilities.integer_costs:
+        match_key = "reported_cost_matches_exported_model"
+        if isinstance(raw_cost, Decimal):
+            # The parser retains the complete fractional report until this diagnostic is recorded.
+            provenance["reported_cost_raw_text"] = str(raw_cost)
+            provenance[match_key] = False
+            common["cost_exact"] = False
+            remarks.append(f"{self.label} declared integer costs but reported {raw_cost} solver units")
+            raw_cost = float(raw_cost)
+        elif raw_cost is not None and integer_report and self.descriptor.input_format in ("lkh", "cvrplib-explicit"):
             try:
-                from mamut_routing_lib.checker import compute_exact_solution_cost
-
-                checker_exact = compute_exact_solution_cost(prepared.checkable, routes)
-            except Exception:  # noqa: BLE001 - the checker will reject the routes anyway
-                provenance["reported_cost_matches_checker"] = False
+                exported_cost = _exported_route_cost(prepared.problem, routes, num_customers + 1)
+            except (OSError, ValueError) as error:
+                remarks.append(f"could not compare the reported cost with the exported matrix: {error}")
             else:
-                matches = checker_exact == exact_cost
-                provenance["reported_cost_matches_checker"] = matches
+                matches = raw_cost == exported_cost
+                provenance[match_key] = matches
                 if not matches:
-                    # The checker's cost stays the cost of the routes. The solver searched with other numbers.
-                    remarks.append(
-                        f"{self.label} reports a cost of {_cost_text(exact_cost)} and the checker prices its routes at "
-                        f"{_cost_text(checker_exact)}, on an exact integer scale: the solver worked on other costs than this instance's"
-                    )
+                    remarks.append(f"{self.label} reported {raw_cost} solver units. Its routes cost "
+                                   f"{exported_cost} units in the exported matrix")
+        solver_cost, _ = unscale_cost(raw_cost, plan)
         status = "timeout" if outcome.termination == "timeout" else "feasible"
         if outcome.returncode not in (0, None) and status == "feasible":
             remarks.append(f"the solver exited with code {outcome.returncode} after writing a solution")

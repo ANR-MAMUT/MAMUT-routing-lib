@@ -178,6 +178,7 @@ LKH_RUN_PARAMETERS = {
     "SEED": "the seed of the run",
     "TIME_LIMIT": "the time limit of the run",
     "PRECISION": "the scale of the costs",
+    "SCALE": "the multiplier for input weights",
 }
 
 _LKH_KEYWORD = re.compile(r"[=\s]*([^=\s]+)")
@@ -197,6 +198,8 @@ def lkh_parameter_key(line: str) -> str:
 def check_lkh_extra_lines(extra: Sequence[str]) -> None:
     """Refuse (``ValueError``) an extra parameter line that sets a parameter of the run."""
     for line in extra:
+        if "\n" in line or "\r" in line:
+            raise ValueError("Each LKH extra_args entry must contain one physical parameter line")
         key = lkh_parameter_key(line)
         if key in LKH_RUN_PARAMETERS:
             raise ValueError(
@@ -233,6 +236,7 @@ def render_lkh_params(
     yield f"TIME_LIMIT = {float(time_limit_s):.1f}"
     yield f"SEED = {int(seed)}"
     yield "PRECISION = 1"
+    yield "SCALE = 1"
     yield "MTSP_MIN_SIZE = 0"
     yield "TRACE_LEVEL = 1"
     yield from extra

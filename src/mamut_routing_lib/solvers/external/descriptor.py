@@ -64,7 +64,7 @@ class ExternalSolverDescriptor:
     #: covers 0..n-1 exactly once as zero-based and anything else as one-based. ``auto`` reads a
     #: one-based file that writes the depot once and misses customer n as a complete zero-based
     #: one, so it is a choice and never the default. ``lkh-mtsp`` files have one numbering.
-    id_convention: IdConvention = "one-based"
+    id_convention: IdConvention = field(default="one-based", kw_only=True)
     #: How the solver measures distances on coordinates: ``nint`` rounds to integers.
     distance_model: Literal["float", "nint", "integer"] = "float"
     coordinate_scales: tuple[float, ...] = (1.0,)
@@ -89,6 +89,8 @@ class ExternalSolverDescriptor:
     source: str = "builtin"
 
     def __post_init__(self) -> None:
+        if self.id_convention not in ("auto", "one-based", "zero-based"):
+            raise ValueError(f"Invalid id_convention: {self.id_convention!r}")
         if self.input_format == "lkh":
             check_lkh_extra_lines(self.extra_args)  # ValueError: a line that would contradict the recorded run
 

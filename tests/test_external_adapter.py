@@ -160,7 +160,7 @@ def test_lkh_style_solver_scales_exactly_and_cross_checks_its_cost(collection: P
     assert solved.valid
     assert result.cost_exact is True and result.cost_scale == 1000
     assert result.provenance["problem_type_line"] == "CVRP"
-    assert result.provenance["reported_cost_matches_checker"] is True
+    assert result.provenance["reported_cost_matches_exported_model"] is True
     assert result.solver_cost == pytest.approx(solved.cost)
 
 
@@ -243,17 +243,83 @@ def test_a_wrong_reported_cost_is_flagged_and_ignored(collection: Path, monkeypa
     _env(monkeypatch, FAKE_MODE="wrong-cost")
     solved = run_solver(ExternalSolver(FAKE_LKH), _variant(collection, "CVRP", "fastest"), time_limit_s=5)
     assert solved.valid
-    assert solved.result.provenance["reported_cost_matches_checker"] is False
+    assert solved.result.provenance["reported_cost_matches_exported_model"] is False
     assert solved.cost == pytest.approx(solved.result.solver_cost - 1.0)  # 1000 scaled units = 1.0
     # The routes are kept (the checker priced them), and the result says that the solver's number is another one.
     assert solved.result.status == "feasible"
-    assert "the solver worked on other costs than this instance's" in solved.result.error
-    assert f"the checker prices its routes at {solved.cost:.12g}" in solved.result.error
+    assert f"reported {solved.result.solver_cost_raw} solver units" in solved.result.error
+    assert f"Its routes cost {solved.result.solver_cost_raw - 1000} units in the exported matrix" in solved.result.error
+
+
+def test_module_invocation_does_not_credit_unused_script(tmp_path, collection):
+    unused = tmp_path / "unused.py"
+    unused.write_text("raise AssertionError()")
+    desc = FAKE_LKH.with_overrides(executable=str(unused), extra_args=())
+    solved = run_solver(ExternalSolver(desc), _variant(collection, "CVRP", "fastest"), time_limit_s=5)
+    assert solved.valid
+    assert solved.result.provenance["executable_sha256"] is None
+    assert "executable_sha256" not in solved.bks_metadata()
+
+
+def test_integer_report_uses_written_digits_and_checks_actual_export(tmp_path, toy_cvrp_instance):
+    from decimal import Decimal
+    from mamut_routing_lib.solutions import parse_lkh_mtsp_solution, parse_solution_text
+    from mamut_routing_lib.solvers.external.adapter import _exported_route_cost
+
+    raw = 9007199254740993
+    for text in [f"Route #1: 1\nCost {raw}.0", f'{{"routes":[[1]],"cost":{raw}.0}}']:
+        _, cost = parse_solution_text(text, exact_report=True)
+        assert type(cost) is int and cost == raw
+    _, _, cost = parse_lkh_mtsp_solution(f"instance, Cost: 0_{raw}\n1 2 1 (#1) Cost: 0", exact_report=True)
+    assert type(cost) is int and cost == raw
+    path = tmp_path / "problem.vrp"
+    path.write_text(f"EDGE_WEIGHT_SECTION\n0 {raw - 1}\n1 0\nEOF\n")
+    assert _exported_route_cost(path, [[1]], 2) == raw
+
+    script = tmp_path / "solver.py"
+    script.write_text("import sys\nfrom pathlib import Path\n"
+                      "Path(sys.argv[1]).write_text('Route #1: 1 2\\nCost 14.00000000000000001\\n')\n")
+    desc = FAKE_LKH.with_overrides(executable=str(script), argv=("{python}", "{executable}", "{solution}"),
+                                   output_format="cvrplib-sol")
+    solved = run_solver(ExternalSolver(desc), _write(toy_cvrp_instance, tmp_path), time_limit_s=5)
+    assert solved.valid
+    assert solved.result.provenance["reported_cost_matches_exported_model"] is False
+    text = solved.result.provenance["reported_cost_raw_text"]
+    assert Decimal(text) == Decimal("14.00000000000000001") and text in solved.result.error
+    assert solved.result.cost_exact is False
+
+
+def test_unrepresentable_window_is_refused_before_launch(tmp_path, toy_vrptw_instance):
+    from mamut_routing_lib.solvers.external.scaling import Limits
+
+    data = toy_vrptw_instance.model_copy(update={"time_windows": [(0, 100), (5, 6), (0, 50)]})
+    desc = FAKE_LKH.with_overrides(limits=Limits(max_time_value=20))
+    with pytest.raises(InstanceNotSupportedError, match="empties the time window at vertex 1"):
+        run_solver(ExternalSolver(desc), _write(data, tmp_path), workdir=tmp_path / "run", time_limit_s=5)
+    assert not (tmp_path / "run" / "solver.log").exists()
+
+
+def test_python_descriptor_preserves_positions_and_rejects_unknown_ids():
+    from dataclasses import fields
+    from mamut_routing_lib.solutions import SolutionFormatError, normalize_routes
+
+    positional = []
+    for field in fields(FAKE_X):
+        if field.name == "distance_model":
+            break
+        if not field.kw_only:
+            positional.append(getattr(FAKE_X, field.name))
+    desc = ExternalSolverDescriptor(*positional, "nint")
+    assert desc.distance_model == "nint" and desc.id_convention == "one-based"
+    with pytest.raises(ValueError, match="id_convention"):
+        desc.with_overrides(id_convention="typo")
+    with pytest.raises(SolutionFormatError, match="id_convention"):
+        normalize_routes([[0, 1, 2]], 3, convention="typo")
 
 
 def test_a_matching_reported_cost_leaves_no_remark(collection: Path) -> None:
     solved = run_solver(ExternalSolver(FAKE_LKH), _variant(collection, "CVRP", "fastest"), time_limit_s=5)
-    assert solved.result.provenance["reported_cost_matches_checker"] is True and solved.result.error is None
+    assert solved.result.provenance["reported_cost_matches_exported_model"] is True and solved.result.error is None
 
 
 def test_nonzero_exit_with_a_solution_keeps_the_solution(collection: Path, monkeypatch) -> None:
@@ -441,7 +507,7 @@ def test_full_matrix_solver_takes_asymmetric_road_metrics(collection: Path, toy_
         assert solved.valid, solved.result.error
         assert solved.result.cost_exact is True and solved.result.provenance["scale"]["rounding"] == "float"
         assert solved.result.solver_cost == pytest.approx(solved.cost)
-        assert "reported_cost_matches_checker" not in solved.result.provenance  # float solver: no exact cross-check
+        assert "reported_cost_matches_exported_model" not in solved.result.provenance  # float solver: no exact cross-check
 
 
 def test_builtin_hgs_reads_the_full_matrix(collection: Path, tmp_path: Path, monkeypatch) -> None:

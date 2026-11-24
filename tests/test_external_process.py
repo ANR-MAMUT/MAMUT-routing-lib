@@ -268,6 +268,59 @@ def test_a_killed_parent_leaves_no_solver_behind(tmp_path: Path, signal_name: st
                 pass
 
 
+def test_parent_death_during_guard_startup_never_runs_solver(tmp_path: Path) -> None:
+    import signal
+    import subprocess
+
+    # Pause the runner exactly between creating the process group and installing its guard.
+    parent_code = """
+import os, signal, sys
+from pathlib import Path
+from mamut_routing_lib.solvers.external import process
+work = Path(sys.argv[1])
+def pause_startup(group, grace):
+    (work / 'ready.tmp').write_text(str(group))
+    os.replace(work / 'ready.tmp', work / 'ready')
+    signal.pause()
+process._start_guard = pause_startup
+process.run_process(
+    [sys.executable, '-c', "from pathlib import Path; import time; Path('started').touch(); time.sleep(5)"],
+    cwd=work, log_path=work / 'log', time_limit_s=5,
+)
+"""
+    parent = subprocess.Popen([sys.executable, "-c", parent_code, str(tmp_path)])
+    group = None
+    try:
+        ready = tmp_path / "ready"
+        assert _wait_until(ready.exists, timeout_s=10)
+        group = int(ready.read_text())
+        parent.kill()
+        parent.wait(timeout=5)
+        assert _wait_until(lambda: not _alive(group), timeout_s=3)
+        assert not (tmp_path / "started").exists()
+    finally:
+        if parent.poll() is None:
+            parent.kill()
+            parent.wait(timeout=5)
+        if group is not None and _alive(group):
+            os.killpg(group, signal.SIGKILL)
+
+
+def test_guard_startup_failure_is_an_error_before_solver_execution(tmp_path: Path, monkeypatch) -> None:
+    from mamut_routing_lib.solvers.external import process
+
+    def unavailable(group, grace):
+        raise OSError("guard process unavailable")
+
+    monkeypatch.setattr(process, "_start_guard", unavailable)
+    outcome = run_process(
+        [sys.executable, "-c", "from pathlib import Path; Path('started').touch()"],
+        cwd=tmp_path, log_path=tmp_path / "log", time_limit_s=2,
+    )
+    assert outcome.termination == "error" and "guard process unavailable" in outcome.error
+    assert not (tmp_path / "started").exists() and live_process_count() == 0
+
+
 def test_a_run_that_ends_releases_its_guard(tmp_path: Path) -> None:
     """The guard of a finished run exits without a signal: nothing is left running, and nothing is killed late."""
     from mamut_routing_lib.solvers.external import process as runner
