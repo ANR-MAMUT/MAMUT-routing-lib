@@ -85,7 +85,7 @@ from mamut_routing_lib.manifests import VerifiedManifest, manifest_path_for, ver
 from mamut_routing_lib.exact import evaluate_exact, prepare_exact
 from mamut_routing_lib.exact_static import prepare_static
 from mamut_routing_lib.exact_td import prepare_td
-from mamut_routing_lib.exact_types import ExactEvaluation, ExactRouteError, ExactRouteEvaluation, STATIC_PROFILE, TD_PROFILE
+from mamut_routing_lib.exact_types import ExactEvaluation, ExactRouteError, ExactRouteEvaluation, ExactRouteKnot, STATIC_PROFILE, TD_PROFILE
 from mamut_routing_lib.cvrplib import (
     ExportResult,
     UnsupportedInstanceError,
@@ -161,6 +161,7 @@ __all__ = [
     "prepare_td",
     "ExactEvaluation",
     "ExactRouteEvaluation",
+    "ExactRouteKnot",
     "ExactRouteError",
     "STATIC_PROFILE",
     "TD_PROFILE",

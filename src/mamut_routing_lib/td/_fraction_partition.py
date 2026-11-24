@@ -6,6 +6,8 @@ from bisect import bisect_left
 from dataclasses import dataclass
 from fractions import Fraction
 
+from mamut_routing_lib.exact_types import ExactRouteKnot
+
 
 @dataclass(frozen=True, slots=True)
 class Stage:
@@ -46,10 +48,9 @@ def _forward(stages: list[Stage], departure: Fraction) -> Fraction | None:
     return time
 
 
-def solve(arcs, windows, services, low, high, depot_close) -> tuple[Fraction, Fraction] | None:
-    """Return the minimum duration and its earliest attaining departure, or None."""
+def _partition(arcs, windows, services, low, high, depot_close) -> tuple[list[Stage], set[Fraction]]:
     if high < low:
-        return None
+        return [], set()
     stages = []
     for index, (xs, ys) in enumerate(arcs):
         stages.append(Stage(tuple(map(Fraction, xs)), tuple(map(Fraction, ys))))
@@ -78,10 +79,33 @@ def solve(arcs, windows, services, low, high, depot_close) -> tuple[Fraction, Fr
                 if left < cut < right:
                     cuts.add(cut)
         prefix.append(stage)
+    return stages, cuts
 
+
+def solve(arcs, windows, services, low, high, depot_close) -> tuple[Fraction, Fraction] | None:
+    """Return the minimum duration and its earliest attaining departure, or None."""
+    stages, cuts = _partition(arcs, windows, services, low, high, depot_close)
     # A nonconstant affine duration has no interior minimum. The attained
     # lower value at each jump ensures a flat optimal interval includes its
     # left endpoint. Compare (duration, departure) to resolve all ties.
     candidates = ((arrival - departure, departure) for departure in cuts
                   if (arrival := _forward(stages, departure)) is not None)
     return min(candidates, default=None)
+
+
+def curve(arcs, windows, services, low, high, depot_close) -> tuple[ExactRouteKnot, ...] | None:
+    """Recover the complete feasible graph of the final arrival from its departure partition."""
+    stages, cuts = _partition(arcs, windows, services, low, high, depot_close)
+    points = [(x, y) for x in sorted(cuts) if (y := _forward(stages, x)) is not None]
+    if not points:
+        return None
+    knots = []
+    for (left, arrival), (right, next_arrival) in zip(points, points[1:]):
+        # The open segment is affine and its value at the upper endpoint is
+        # attained by left continuity. Extrapolate from the exact midpoint.
+        mid_arrival = _forward(stages, (left + right) / 2)
+        assert mid_arrival is not None  # FIFO and upper deadlines give an interval of feasible departures.
+        knots.append(ExactRouteKnot(left, arrival, 2 * mid_arrival - next_arrival))
+    last, arrival = points[-1]
+    knots.append(ExactRouteKnot(last, arrival, arrival))
+    return tuple(knots)

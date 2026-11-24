@@ -187,19 +187,26 @@ public:
         }
     }
 
-    py::object solve() const {
-        if (high < low) return py::none();
+private:
+    Map arrival_curve() const {
+        if (high < low) return {};
         Map prefix{{low, low, low}};
         if (high > low) prefix.push_back({high, high, high});
         for (size_t i = 0; i < arcs.size(); ++i) {
             // Travel, waiting and service are nonnegative, so all prefix
             // values on the remaining domain are already >= the common h0.
             restrict_upper(prefix, arcs[i].knots.back().x);
-            if (prefix.empty()) return py::none();
+            if (prefix.empty()) return {};
             prefix = compose(prefix, arcs[i]);
             if (i < customers.size()) customers[i].visit(prefix);
         }
         if (depot_close) restrict_upper(prefix, *depot_close);
+        return prefix;
+    }
+
+public:
+    py::object solve() const {
+        const Map prefix = arrival_curve();
         if (prefix.empty()) return py::none();
         Q best = prefix.front().at - prefix.front().x;
         size_t earliest = 0;
@@ -212,8 +219,16 @@ public:
         }
         return py::make_tuple(fraction_pair(best), fraction_pair(prefix[earliest].x));
     }
-
-
+    py::object curve() const {
+        const Map prefix = arrival_curve();
+        if (prefix.empty()) return py::none();
+        py::tuple result(prefix.size());
+        for (size_t i = 0; i < prefix.size(); ++i) {
+            const auto &k = prefix[i];
+            result[i] = py::make_tuple(fraction_pair(k.x), fraction_pair(k.at), fraction_pair(k.right));
+        }
+        return result;
+    }
 };
 
 PYBIND11_MODULE(_td_exact, m) {
@@ -222,5 +237,6 @@ PYBIND11_MODULE(_td_exact, m) {
                       const std::vector<double>&, double, double, std::optional<double>>(),
              py::arg("arcs"), py::arg("windows"), py::arg("services"), py::arg("lo"),
              py::arg("hi"), py::arg("depot_close") = py::none())
-        .def("solve", &PreparedRoute::solve);
+        .def("solve", &PreparedRoute::solve)
+        .def("curve", &PreparedRoute::curve);
 }

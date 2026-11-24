@@ -63,6 +63,15 @@ class ExactRouteEvaluation:
         return {"duration": _fraction_record(self.duration), "departure_time": _fraction_record(self.departure_time)}
 
 
+@dataclass(frozen=True, slots=True)
+class ExactRouteKnot:
+    """A departure, its attained depot arrival and the arrival limit immediately to its right."""
+
+    departure: Fraction
+    arrival: Fraction
+    right_arrival: Fraction
+
+
 @dataclass(frozen=True)
 class ExactEvaluation:
     """A feasible submission. TD witnesses follow canonical stored route order."""

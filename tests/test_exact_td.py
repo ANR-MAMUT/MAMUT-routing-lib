@@ -8,7 +8,7 @@ import pytest
 
 from mamut_routing_lib.enums import ObjectiveFunction
 from mamut_routing_lib.exact_td import prepare_td
-from mamut_routing_lib.exact_types import ExactRouteError
+from mamut_routing_lib.exact_types import ExactRouteError, ExactRouteKnot
 from mamut_routing_lib.td.models import BenchmarkInstanceTDVRP, BenchmarkInstanceTDVRPTW
 from mamut_routing_lib.td.pwlf import NDCPWLF
 from td_utils import make_toy_atfs, toy_instance_payload
@@ -57,6 +57,33 @@ def test_worked_example_and_immutable_preparation(backend, identity):
 
 
 @pytest.mark.parametrize('backend', ['python', 'native'], indirect=True)
+def test_curve_waiting_window_and_non_dyadic_optimum(backend):
+    instance, atfs = example()
+    checker = prepare_td(instance, atfs, backend=backend)
+    knots = checker.route_curve([1])
+    assert knots == (ExactRouteKnot(0, 8, 8), ExactRouteKnot(Fraction(10, 3), 8, 8), ExactRouteKnot(4, 9, 9))
+    assert all(isinstance(q, Fraction) for k in knots for q in (k.departure, k.arrival, k.right_arrival))
+    witness = checker.route_timing([1])
+    assert min((k.arrival - k.departure, k.departure) for k in knots) == (witness.duration, witness.departure_time)
+
+
+@pytest.mark.parametrize('backend', ['python', 'native'], indirect=True)
+def test_curve_preserves_attained_value_at_jump_and_earliest_flat_minimum(backend):
+    instance = BenchmarkInstanceTDVRP.model_validate(toy_instance_payload(with_time_windows=False))
+    instance.horizon = (0, 15)
+    instance.service_times = [0, 0, 0]
+    atfs = make_toy_atfs()
+    atfs.horizon = instance.horizon
+    atfs.arcs = {(0, 1): NDCPWLF([0, 5, 5, 15], [0, 5, 6, 16]), (1, 0): NDCPWLF([0, 15], [0, 15])}
+    checker = prepare_td(instance, atfs, backend=backend)
+    assert checker.route_curve([1]) == (ExactRouteKnot(0, 0, 0), ExactRouteKnot(5, 5, 6), ExactRouteKnot(14, 15, 15))
+    assert checker.route_timing([1]).departure_time == 0
+    for invalid in ([], [0]):
+        with pytest.raises(ExactRouteError):
+            checker.route_curve(invalid)
+
+
+@pytest.mark.parametrize('backend', ['python', 'native'], indirect=True)
 def test_jump_plateau_closed_singleton_and_depot_deadline(backend):
     instance, atfs = example()
     instance.time_windows = [(5, 8), (0, 15), (0, 15)]
@@ -64,11 +91,16 @@ def test_jump_plateau_closed_singleton_and_depot_deadline(backend):
     atfs.arcs[0, 1] = NDCPWLF([0, 5, 15], [7, 7, 20])
     atfs.arcs[1, 0] = NDCPWLF([0, 7, 7, 15], [1, 8, 25, 33])
     atfs.arcs[0, 2] = atfs.arcs[2, 0] = NDCPWLF([0, 15], [0, 15])
-    result = prepare_td(instance, atfs, backend=backend).evaluate([[2], [1]])
+    checker = prepare_td(instance, atfs, backend=backend)
+    result = checker.evaluate([[2], [1]])
     assert (result.route_evaluations[0].duration, result.route_evaluations[0].departure_time) == (3, 5)
+    assert checker.route_curve([1]) == (ExactRouteKnot(5, 8, 8),)
     instance.time_windows[0] = (5, 7)
+    checker = prepare_td(instance, atfs, backend=backend)
     with pytest.raises(ExactRouteError):
-        prepare_td(instance, atfs, backend=backend).evaluate([[1], [2]])
+        checker.evaluate([[1], [2]])
+    with pytest.raises(ExactRouteError):
+        checker.route_curve([1])
 
 
 @pytest.mark.parametrize('backend', ['python', 'native'], indirect=True)
@@ -107,6 +139,19 @@ def test_bad_instance_or_backend():
         prepare_td(instance, atfs, backend='python')
 
 
+def _essential_knots(curve):
+    """Discard only continuous interior points with equal incoming and outgoing slopes."""
+    knots = list(curve[:1])
+    for a, b, c in zip(curve, curve[1:], curve[2:]):
+        left_slope = (b.arrival - a.right_arrival) / (b.departure - a.departure)
+        right_slope = (c.arrival - b.right_arrival) / (c.departure - b.departure)
+        if b.arrival != b.right_arrival or left_slope != right_slope:
+            knots.append(b)
+    if len(curve) > 1:
+        knots.append(curve[-1])
+    return knots
+
+
 @pytest.mark.parametrize('seed', range(24))
 def test_fraction_and_gmp_agree_on_jumps_and_waiting(seed):
     pytest.importorskip('mamut_routing_lib._td_exact')
@@ -135,6 +180,10 @@ def test_fraction_and_gmp_agree_on_jumps_and_waiting(seed):
             result = native.evaluate(routes)
             assert result.route_evaluations == expected.route_evaluations
             assert result.cost == expected.cost
+            for route, timing in zip(result.routes, result.route_evaluations):
+                graph = native.route_curve(route)
+                assert _essential_knots(graph) == _essential_knots(reference.route_curve(route))
+                assert min((k.arrival - k.departure, k.departure) for k in graph) == (timing.duration, timing.departure_time)
 
 
 @pytest.mark.parametrize(('location', 'value'), [

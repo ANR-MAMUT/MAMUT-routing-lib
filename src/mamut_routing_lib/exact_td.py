@@ -10,7 +10,7 @@ from collections.abc import Callable, Mapping, Sequence
 from mamut_routing_lib.checker import SolutionCheckStatus
 from mamut_routing_lib.enums import ObjectiveFunction
 from mamut_routing_lib.exact_types import (
-    TD_PROFILE, ExactBackend, ExactEvaluation, ExactRouteError, ExactRouteEvaluation, binary64_operand,
+    TD_PROFILE, ExactBackend, ExactEvaluation, ExactRouteError, ExactRouteEvaluation, ExactRouteKnot, binary64_operand,
     canonical_checked_routes, checked_stops, exact_resource, nonnegative_integer,
 )
 from mamut_routing_lib.objectives import base_objective, require_supported_objective
@@ -47,10 +47,10 @@ def _snapshot_arcs(atfs: InstanceATFs, count: int, horizon: Window) -> Mapping[t
     return MappingProxyType(arcs)
 
 
-def _solver(backend: str) -> tuple[str, Callable]:
+def _solver(backend: str) -> tuple[str, Callable, Callable]:
     if backend == "python":
-        from mamut_routing_lib.td._fraction_partition import solve
-        return "python-fraction-partition", solve
+        from mamut_routing_lib.td._fraction_partition import curve, solve
+        return "python-fraction-partition", solve, curve
     if backend != "native":
         raise ValueError(f"unknown TD exact backend {backend!r}")
     try:
@@ -66,7 +66,13 @@ def _solver(backend: str) -> tuple[str, Callable]:
         duration, departure = result
         return Fraction(*duration), Fraction(*departure)
 
-    return "cpp-gmp-compose", solve
+    def curve(*args):
+        knots = PreparedRoute(*args).curve()
+        if knots is None:
+            return None
+        return tuple(ExactRouteKnot(Fraction(*x), Fraction(*at), Fraction(*right)) for x, at, right in knots)
+
+    return "cpp-gmp-compose", solve, curve
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,15 +91,27 @@ class PreparedTD:
     backend: str
     fixed_charge: Fraction
     _solve: Callable = field(repr=False, compare=False)
+    _curve: Callable = field(repr=False, compare=False)
 
     def route_timing(self, route: Sequence[int]) -> ExactRouteEvaluation:
         """Price one nonempty, possibly partial route under the temporal profile."""
-        stops = checked_stops(route, self.num_customers)
-        if not stops:
-            raise ExactRouteError(SolutionCheckStatus.INVALID_CUSTOMER_INDEX, "Cannot time an empty route.")
-        return self._route(stops)
+        return self._timing(checked_stops(route, self.num_customers))
 
-    def _route(self, route: tuple[int, ...]) -> ExactRouteEvaluation:
+    def route_curve(self, route: Sequence[int]) -> tuple[ExactRouteKnot, ...]:
+        """Return the exact depot arrival curve on the closed interval of feasible departure times.
+
+        Each knot gives the arrival at its departure. Between consecutive knots the arrival varies linearly
+        from the first knot's right_arrival to the next knot's arrival. At the final knot both arrivals agree.
+        """
+        return self._run_route(checked_stops(route, self.num_customers), self._curve)
+
+    def _timing(self, route: tuple[int, ...]) -> ExactRouteEvaluation:
+        duration, departure = self._run_route(route, self._solve)
+        return ExactRouteEvaluation(duration=duration, departure_time=departure)
+
+    def _run_route(self, route: tuple[int, ...], operation: Callable):
+        if not route:
+            raise ExactRouteError(SolutionCheckStatus.INVALID_CUSTOMER_INDEX, "Cannot time an empty route.")
         vertices = (0, *route, 0)
         try:
             arcs = [self.arcs[tail, head] for tail, head in zip(vertices, vertices[1:])]
@@ -106,17 +124,17 @@ class PreparedTD:
             opens, close = self.windows[0]
             low, high = max(low, opens), min(high, close)
             windows = [self.windows[v] for v in route]
-        pair = self._solve(arcs, windows, [self.services[v] for v in route], low, high, close)
-        if pair is None:
+        result = operation(arcs, windows, [self.services[v] for v in route], low, high, close)
+        if result is None:
             status = (SolutionCheckStatus.ROUTE_TIMING_INFEASIBLE if self.windows is None
                       else SolutionCheckStatus.TIME_WINDOW_VIOLATED)
             raise ExactRouteError(status, f"route {list(route)} has no feasible depot departure")
-        return ExactRouteEvaluation(duration=pair[0], departure_time=pair[1])
+        return result
 
     def evaluate(self, routes: Sequence[Sequence[int]]) -> ExactEvaluation:
         ordered = canonical_checked_routes(routes, num_customers=self.num_customers, demands=self.demands,
                                           capacity=self.capacity, fleet_limit=self.fleet_limit)
-        evaluations = tuple(self._route(route) for route in ordered)
+        evaluations = tuple(self._timing(route) for route in ordered)
         cost = sum((witness.duration for witness in evaluations), start=self.fixed_charge * len(ordered))
         return ExactEvaluation(profile=TD_PROFILE, backend=self.backend, objective=self.objective,
                                routes=ordered, cost=cost, route_evaluations=evaluations)
@@ -158,6 +176,6 @@ def prepare_td(instance: AnyTDBenchmarkInstance, atfs: InstanceATFs, *, backend:
     if fixed is None and objective == ObjectiveFunction.FLEET_COST_DURATION:
         raise ValueError("FleetCostDuration requires fleet_fixed_cost")
     charge = Fraction(fixed) if objective == ObjectiveFunction.FLEET_COST_DURATION else Fraction(0)
-    name, solve = _solver(backend)
+    name, solve, curve = _solver(backend)
     return PreparedTD(count, demands, capacity, instance.num_vehicles, horizon, windows, services,
-                      _snapshot_arcs(atfs, count, horizon), objective, name, charge, solve)
+                      _snapshot_arcs(atfs, count, horizon), objective, name, charge, solve, curve)
