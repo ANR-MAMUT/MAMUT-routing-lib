@@ -314,12 +314,59 @@ def test_check_preview_and_submit_share_one_loaded_instance(tmp_path: Path, monk
 
     checkable = load_checkable(instance, path)
     assert len(reads) == 1
+
     assert check_routes(instance, path, routes, checkable=checkable).is_valid()
     assert preview_bks_update(path, routes, instance=instance, checkable=checkable)["action"] == "would_create"
     update = submit_bks(path, routes, authors="Ada", instance=instance, checkable=checkable)
     assert update.action == "created" and len(reads) == 1  # nothing read the sidecar again
 
+    second = load_checkable(instance, path)
+    assert len(reads) == 2
+    for held in (checkable, second):
+        assert check_routes(instance, path, routes, checkable=held).is_valid()
+    assert len(reads) == 2
+
     # Without it, each call loads once -- preview no longer three times for one question.
     reads.clear()
     assert preview_bks_update(path, routes, instance=instance)["action"] == "would_keep"
     assert len(reads) == 1
+
+
+def test_manifestless_preload_is_bound_to_the_current_distance_matrix(tmp_path: Path) -> None:
+    from collection_utils import write_toy_collection
+    from mamut_routing_lib.artifacts import load_benchmark_instance
+    from mamut_routing_lib.distances import load_instance_distances, save_instance_distances
+    from mamut_routing_lib.solutions import load_checkable
+
+    family = write_toy_collection(tmp_path) / "Poryos2026"
+    path, = (family / "CVRP" / "fastest").rglob("*.vrp.json")
+    euclidean, = (family / "CVRP" / "euclidean").rglob("*.vrp.json")
+    descriptor = load_benchmark_instance(path)
+    right = load_checkable(descriptor, path)
+    wrong = load_checkable(load_benchmark_instance(euclidean), euclidean)
+    routes = [[1, 2]]
+
+    incumbent = submit_bks(path, [[1], [2]], authors="test", checkable=right).path
+    original = incumbent.read_bytes()
+    for stale in (wrong, right):
+        if stale is right:
+            stale.arc_costs[0][1] = 5
+        with pytest.raises(ValueError, match="descriptor or matrix"):
+            check_routes(descriptor, path, routes, checkable=stale)
+        with pytest.raises(ValueError, match="descriptor or matrix"):
+            preview_bks_update(path, routes, checkable=stale)
+        with pytest.raises(ValueError, match="descriptor or matrix"):
+            submit_bks(path, routes, authors="test", checkable=stale)
+        assert incumbent.read_bytes() == original
+
+    current = load_checkable(descriptor, path)
+    update = submit_bks(path, routes, authors="test", checkable=current)
+    assert update.action == "replaced" and update.candidate_cost == 491.5
+    original = incumbent.read_bytes()
+    sidecar = family / descriptor.arc_costs_source.distances.path
+    distances = load_instance_distances(sidecar)
+    distances.values[0][1] = 5
+    save_instance_distances(distances, sidecar)
+    with pytest.raises(ValueError, match="sha256 mismatch"):
+        submit_bks(path, routes, authors="test", checkable=current)
+    assert incumbent.read_bytes() == original
