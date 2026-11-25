@@ -23,13 +23,13 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field
-from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
 from mamut_routing_lib.checker import shortest_decimal_cost_value, get_objective_tuple
 from mamut_routing_lib.enums import ObjectiveFunction
+from mamut_routing_lib.exact_store import read_result_fraction
 from mamut_routing_lib.exact_types import ExactEvaluation, ExactRouteError, _fraction_record
 
 _TD_STRICT = "TDVRPTW"
@@ -142,8 +142,7 @@ def _stored_cost(payload: dict) -> Fraction | None:
     metadata = payload.get("metadata", {})
     for key in ("standard", "exact_evaluation"):
         if key in metadata:
-            pair = metadata[key]["authoritative_cost"]
-            return Fraction(int(Decimal(pair["numerator"])), int(Decimal(pair["denominator"])))
+            return read_result_fraction(metadata[key]["authoritative_cost"])
     return shortest_decimal_cost_value(payload["cost"]) if payload.get("cost") is not None else None
 
 

@@ -1,5 +1,8 @@
 """Checker-owned fields used to verify an incumbent under an exact profile."""
 
+from collections.abc import Mapping
+from decimal import Decimal
+from fractions import Fraction
 from functools import lru_cache
 from hashlib import sha256
 from importlib import import_module
@@ -9,6 +12,22 @@ from platform import python_implementation, python_version
 
 from mamut_routing_lib.exact_types import ExactEvaluation, TD_PROFILE
 from mamut_routing_lib.models import BenchmarkBKS
+
+
+def read_result_fraction(pair: Mapping[str, object]) -> Fraction:
+    """Read a nonnegative cost, duration or departure from its canonical integer strings."""
+    if not isinstance(pair, Mapping):
+        raise ValueError("Expected a canonical result fraction")
+    numerator, denominator = pair.get("numerator"), pair.get("denominator")
+    if (not isinstance(numerator, str) or not re.fullmatch(r"0|[1-9][0-9]*", numerator)
+            or not isinstance(denominator, str) or not re.fullmatch(r"[1-9][0-9]*", denominator)):
+        raise ValueError("Expected a canonical result fraction with a nonnegative numerator and positive denominator")
+    # Decimal reads arbitrarily long integer strings without changing CPython's digit limit.
+    n, d = int(Decimal(numerator)), int(Decimal(denominator))
+    value = Fraction(n, d)
+    if value.denominator != d:
+        raise ValueError("Expected a canonical result fraction in lowest terms")
+    return value
 
 
 @lru_cache(maxsize=4)

@@ -104,3 +104,31 @@ def test_exact_point_interpolation_at_a_jump_and_adjacent_rationals():
     assert arc.evaluate_exact(1 + delta) == 4 + 4 * delta
     with pytest.raises(PWLFError):
         arc.evaluate_exact(2 + delta)
+
+
+@pytest.mark.parametrize(("n", "d"), [
+    ("2", "4"), ("0", "2"), ("01", "2"), ("1", "02"), ("1", "0"), ("-0", "1"),
+    ("-1", "2"), ("1", "-2"), ("+1", "2"), ("1.9", "2"), ("1e1", "2"),
+    ("１", "2"), ("1\n", "2"), (1, "2"),
+])
+def test_cost_readers_reject_noncanonical_result_fields(n, d):
+    from mamut_routing_lib.cli import _rational_cost
+    from mamut_routing_lib.relaxation import _stored_cost
+
+    record = {"authoritative_cost": {"numerator": n, "denominator": d}}
+    with pytest.raises(ValueError, match="canonical result fraction"):
+        _rational_cost(record)
+    with pytest.raises(ValueError, match="canonical result fraction"):
+        _stored_cost({"cost": 0.5, "metadata": {"standard": record}})
+
+
+def test_result_fraction_readers_preserve_long_coprime_values_and_zero():
+    from mamut_routing_lib.cli import _rational_cost
+    from mamut_routing_lib.relaxation import _stored_cost
+
+    scale = 10**5000
+    for n, d, value in [("1" + "0" * 4999 + "1", "1" + "0" * 5000, Fraction(scale + 1, scale)),
+                        ("0", "1", Fraction(0))]:
+        record = {"authoritative_cost": {"numerator": n, "denominator": d}}
+        assert _rational_cost(record) == value
+        assert _stored_cost({"metadata": {"exact_evaluation": record}}) == value

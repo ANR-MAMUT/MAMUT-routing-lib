@@ -37,6 +37,7 @@ from mamut_routing_lib.cvrplib import (
     export_instance_file,
 )
 from mamut_routing_lib.enums import BenchmarkName, MetricVariant, ObjectiveFunction, ProblemType
+from mamut_routing_lib.exact_store import read_result_fraction
 from mamut_routing_lib.models import ArcCostsDistancesRef
 from mamut_routing_lib.sidecars import require_collection_root
 from mamut_routing_lib.remote import (
@@ -790,12 +791,7 @@ def _artifact_workdirs(records: list[LocalInstanceRecord], root: Path | None, le
 
 
 def _rational_cost(evaluation: dict) -> Fraction:
-    pair = evaluation["authoritative_cost"]
-    n, d = pair["numerator"], pair["denominator"]
-    if not all(isinstance(value, str) and value.isascii() and value.isdecimal() for value in (n, d)):
-        raise ValueError("Invalid authoritative_cost")
-    # Decimal accepts the long integer strings that a TD certificate can contain.
-    return Fraction(int(Decimal(n)), int(Decimal(d)))
+    return read_result_fraction(evaluation["authoritative_cost"])
 
 
 def _stored_bks(
