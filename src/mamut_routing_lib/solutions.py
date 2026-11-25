@@ -39,6 +39,8 @@ from pathlib import Path
 from typing import Any, Literal, Mapping
 from weakref import WeakValueDictionary
 
+from pydantic import TypeAdapter
+
 from mamut_routing_lib.enums import ObjectiveFunction, ProblemType
 from mamut_routing_lib.json_utils import strict_json_loads
 from mamut_routing_lib.models import BenchmarkBKS
@@ -523,6 +525,7 @@ def is_time_dependent(instance: Any) -> bool:
 # A verified preload remains reusable while the caller holds it. Keep only its
 # fingerprints here, so the index never owns a large matrix.
 _verified_preloads: WeakValueDictionary = WeakValueDictionary()
+_matrix_row = TypeAdapter(list)
 
 
 def _distance_source_revision(instance, instance_path):
@@ -539,8 +542,12 @@ def _distance_source_revision(instance, instance_path):
 
 
 def _preload_key(revision, checkable):
-    # The public models and their nested matrices are mutable.
-    return revision, sha256(checkable.model_dump_json().encode()).digest()
+    # The public model and every matrix row are mutable. One row at a time
+    # bounds the temporary storage and preserves the original numeric values.
+    digest = sha256(checkable.model_dump_json(exclude={"arc_costs"}).encode())
+    for row in checkable.arc_costs:
+        digest.update(_matrix_row.dump_json(row))
+    return id(checkable), revision, digest.digest()
 
 
 def load_checkable(instance: Any, instance_path: str | Path | None) -> Any:
@@ -551,11 +558,11 @@ def load_checkable(instance: Any, instance_path: str | Path | None) -> Any:
     ``LoadedTDInstance`` of a time-dependent one. Raises what those loaders raise.
     """
     if is_time_dependent(instance):
-        from mamut_routing_lib.td import load_td_instance
+        from mamut_routing_lib.td._preload import load_verified_td
 
         if instance_path is None:
             raise ValueError("Time-dependent instances are loaded from their file; pass instance_path.")
-        return load_td_instance(Path(instance_path))
+        return load_verified_td(instance, Path(instance_path))
     from mamut_routing_lib.artifacts import hydrate_collection_instance
 
     revision = _distance_source_revision(instance, instance_path)
@@ -707,7 +714,12 @@ def submit_bks(
     if instance is not None:
         _require_descriptor_at_path(instance, path)
     loaded = instance if instance is not None else load_benchmark_instance(path)
-    if checkable is not None and (is_time_dependent(loaded) or not manifest_path_for(path).exists()):
+    if checkable is not None and is_time_dependent(loaded):
+        from mamut_routing_lib.td.artifacts import LoadedTDInstance
+        if not isinstance(checkable, LoadedTDInstance) or Path(checkable.instance_path).resolve() != path.resolve():
+            raise ValueError(f"The supplied TD checkable does not identify {path}")
+        # The TD store binds the operands once it has both candidate and incumbent routes.
+    elif checkable is not None and not manifest_path_for(path).exists():
         _require_same_instance(loaded, checkable, path)
     objective = require_supported_objective(loaded, objective_function or base_objective(loaded))
     solution = BenchmarkSolution(
@@ -753,10 +765,8 @@ def _require_same_instance(loaded: Any, checkable: Any, path: Path) -> None:
     if held != expected or held_model.benchmark_name != loaded.benchmark_name:
         raise ValueError(f"checkable holds instance {held!r} of {held_model.benchmark_name}, expected {expected!r} of {loaded.benchmark_name}")
     if isinstance(checkable, LoadedTDInstance):
-        if Path(checkable.instance_path).resolve() != path.resolve():
-            raise ValueError(f"checkable was loaded from {checkable.instance_path}, not from {path}")
-        if held_model != loaded:
-            raise ValueError("The supplied TD descriptor differs from the preloaded instance.")
+        from mamut_routing_lib.td._preload import require_td_preload
+        require_td_preload(checkable, loaded, path)
     else:
         if not isinstance(checkable, LoadedStaticInstance):
             raise ValueError("Expected a materialized static instance as the checkable.")

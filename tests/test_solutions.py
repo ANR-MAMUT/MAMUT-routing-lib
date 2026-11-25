@@ -320,6 +320,12 @@ def test_check_preview_and_submit_share_one_loaded_instance(tmp_path: Path, monk
     update = submit_bks(path, routes, authors="Ada", instance=instance, checkable=checkable)
     assert update.action == "created" and len(reads) == 1  # nothing read the sidecar again
 
+    second = load_checkable(instance, path)
+    assert len(reads) == 2
+    for held in (checkable, second):
+        assert check_routes(instance, path, routes, checkable=held).is_valid()
+    assert len(reads) == 2
+
     # Without it, each call loads once -- preview no longer three times for one question.
     reads.clear()
     assert preview_bks_update(path, routes, instance=instance)["action"] == "would_keep"

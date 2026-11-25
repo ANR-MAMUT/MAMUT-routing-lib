@@ -65,12 +65,17 @@ def _candidate(loaded, checker, solution, authors, metadata, manifest=None):
     return bks, evaluation
 
 
-def _published_inputs(loaded, objective, routes):
+def _published_inputs(loaded, objective, routes, *, allow_in_memory=False):
     from mamut_routing_lib.manifests import adjacent_manifest
     path = loaded.instance_path if isinstance(loaded, LoadedTDInstance) else loaded
     manifest = adjacent_manifest(path, objective, routes=routes,
                                  supplied_checkable=loaded if isinstance(loaded, LoadedTDInstance) else None)
-    return (manifest.checkable if manifest else _as_loaded(loaded)), manifest
+    if manifest is not None:
+        return manifest.checkable, manifest
+    if isinstance(loaded, LoadedTDInstance) and not allow_in_memory:
+        from mamut_routing_lib.td._preload import require_td_preload
+        require_td_preload(loaded, load_td_benchmark_instance(path), Path(path))
+    return _as_loaded(loaded), None
 
 
 def create_td_bks_from_solution(
@@ -84,7 +89,7 @@ def create_td_bks_from_solution(
 ) -> BenchmarkBKS:
     """Price a candidate, check any declared cost and bind exact witnesses to canonical routes."""
     objective_function = _td_objective(loaded, objective_function)
-    loaded, manifest = _published_inputs(loaded, objective_function, solution.routes)
+    loaded, manifest = _published_inputs(loaded, objective_function, solution.routes, allow_in_memory=True)
     checker = _checker(loaded, objective_function, backend)
     return _candidate(loaded, checker, solution, authors, metadata, manifest)[0]
 
