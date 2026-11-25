@@ -26,7 +26,7 @@ from mamut_routing_lib.td.reprice import route_arcs
 from mamut_routing_lib.td.models import AnyTDBenchmarkInstance, TDIGPProfileRef, TDRoadGraphRef
 
 
-SPECIFICATION = "mamut-routing/0.1-review"
+SPECIFICATION = "mamut-routing/0.1"
 
 
 def manifest_path_for(instance_path: str | Path) -> Path:
