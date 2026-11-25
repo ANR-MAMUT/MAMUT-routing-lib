@@ -68,7 +68,7 @@ def require_td_preload(supplied: LoadedTDInstance, descriptor, path: Path):
     if _verified.get(key) is supplied:
         return
 
-    from mamut_routing_lib.td.reprice import load_td_instance_for_routes
+    from mamut_routing_lib.td.selected_arcs import load_td_instance_for_routes
 
     # Verify every supplied arc, including those absent from the submission.
     # A sparse IGP or road-graph preload only needs its supplied arcs rebuilt.
