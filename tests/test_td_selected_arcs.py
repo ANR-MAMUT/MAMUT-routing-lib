@@ -1,13 +1,10 @@
-"""Re-pricing stored TD BKS (``mamut_routing_lib.td.reprice``) and the relaxation-twin helpers."""
+"""Route-arc loading (``mamut_routing_lib.td.selected_arcs``) and the relaxation-twin helpers."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-from typer.testing import CliRunner
-
-from mamut_routing_lib.cli import app
 from mamut_routing_lib.json_utils import save_json_to_file
 from mamut_routing_lib.relaxation import check_relaxation_pair, relaxation_twin, structural_relaxation_issues
 from mamut_routing_lib.td import (
@@ -15,13 +12,7 @@ from mamut_routing_lib.td import (
     materialize_instance_atfs,
 )
 from mamut_routing_lib.td.igp import load_instance_categories, materialize_selected_atfs_igp
-from mamut_routing_lib.td.fold2 import TD_CHECKER_CONTRACT
-from mamut_routing_lib.td.reprice import (
-    iter_td_bks_files,
-    load_td_instance_for_routes,
-    reprice_td_bks,
-    route_arcs,
-)
+from mamut_routing_lib.td.selected_arcs import load_td_instance_for_routes, route_arcs
 from td_utils import write_toy_instance_files
 from test_td_igp import write_igp_instance_files
 
@@ -29,86 +20,19 @@ from test_td_igp import write_igp_instance_files
 ROUTES = [[1, 2]]
 
 
-def _write_bks(directory: Path, *, cost, durations, departures, optimality=None, objective="Duration") -> Path:
+def _write_bks(directory: Path, *, cost, durations, departures, objective="Duration") -> Path:
     metadata = {
         "authors": "Someone",
         "validated_cost": cost,
         "route_durations": durations,
         "route_departure_times": departures,
     }
-    if optimality is not None:
-        metadata["optimality"] = optimality
     path = directory / f"TOY1.bks.{objective}.json"
     save_json_to_file(
         {"instance_name": "TOY1", "routes": ROUTES, "cost": cost, "metadata": metadata, "objective_function": objective},
         path,
     )
     return path
-
-
-def test_unchanged_bks_is_left_alone(tmp_path: Path) -> None:
-    write_toy_instance_files(tmp_path)
-    path = _write_bks(tmp_path, cost=30.0, durations=[30.0], departures=[40.0])
-    before = path.read_bytes()
-    result = reprice_td_bks(path)
-    assert result.action == "unchanged"
-    assert result.changed_fields == []
-    assert path.read_bytes() == before
-
-
-def test_moved_cost_is_rewritten_and_recorded(tmp_path: Path) -> None:
-    write_toy_instance_files(tmp_path)
-    path = _write_bks(tmp_path, cost=30.000000000000004, durations=[30.000000000000004], departures=[40.0])
-    dry = reprice_td_bks(path, dry_run=True, note_date="2026-09-24")
-    assert dry.action == "would-reprice"
-    assert json.loads(path.read_text())["cost"] == 30.000000000000004
-
-    result = reprice_td_bks(path, note_date="2026-09-24")
-    assert result.action == "repriced"
-    assert result.cost_ulps == 1
-    assert set(result.changed_fields) == {"cost", "metadata.validated_cost", "metadata.route_durations"}
-    stored = json.loads(path.read_text())
-    assert stored["cost"] == 30.0
-    assert stored["metadata"]["validated_cost"] == 30.0
-    assert stored["metadata"]["route_durations"] == [30.0]
-    assert stored["metadata"]["repriced"] == {
-        "previous_cost": 30.000000000000004,
-        "checker": stored["metadata"]["repriced"]["checker"],
-        "contract": TD_CHECKER_CONTRACT,
-        "date": "2026-09-24",
-    }
-    assert reprice_td_bks(path).action == "unchanged"
-
-
-def test_derived_fields_alone_are_refreshed_without_a_repriced_marker(tmp_path: Path) -> None:
-    write_toy_instance_files(tmp_path)
-    path = _write_bks(tmp_path, cost=30.0, durations=[30.0], departures=[39.999999999999996])
-    result = reprice_td_bks(path)
-    assert result.action == "repriced"
-    assert result.changed_fields == ["metadata.route_departure_times"]
-    stored = json.loads(path.read_text())
-    assert stored["metadata"]["route_departure_times"] == [40.0]
-    assert "repriced" not in stored["metadata"]
-
-
-def test_a_claimed_record_is_refused_before_loading_artifacts(tmp_path: Path) -> None:
-    write_toy_instance_files(tmp_path)
-    claim = {"status": "solver-reported-optimal", "target_profile": "td-binary64-exact-v1", "solver": "a test solver"}
-    path = _write_bks(tmp_path, cost=30.000000000000004, durations=[30.000000000000004], departures=[40.0],
-                      optimality=claim)
-    (tmp_path / "TOY1.atf.json").unlink()
-    before = path.read_bytes()
-    for dry_run in (True, False):
-        result = reprice_td_bks(path, dry_run=dry_run)
-        assert result.action == "error" and "optimality claim" in result.detail
-        assert path.read_bytes() == before
-
-
-def test_missing_sidecar_is_reported(tmp_path: Path) -> None:
-    write_toy_instance_files(tmp_path)
-    (tmp_path / "TOY1.atf.json").unlink()
-    path = _write_bks(tmp_path, cost=30.0, durations=[30.0], departures=[40.0])
-    assert reprice_td_bks(path).action == "skipped-missing-sidecar"
 
 
 def test_selected_arcs_match_the_full_igp_materialization(tmp_path: Path) -> None:
@@ -123,21 +47,6 @@ def test_selected_arcs_match_the_full_igp_materialization(tmp_path: Path) -> Non
     assert materialize_selected_atfs_igp(full.instance, categories, {(0, 1)})[(0, 1)] == materialize_instance_atfs(
         full.instance, categories
     ).arcs[(0, 1)]
-
-
-def test_cli_reports_and_exit_status(tmp_path: Path) -> None:
-    write_toy_instance_files(tmp_path)
-    path = _write_bks(tmp_path, cost=30.000000000000004, durations=[30.0], departures=[40.0])
-    report = tmp_path / "report.json"
-    runner = CliRunner()
-    result = runner.invoke(app, ["bks", "reprice-td", str(tmp_path), "--dry-run", "--report", str(report)])
-    assert result.exit_code == 0, result.output
-    assert "would-reprice 1" in result.output
-    assert json.loads(report.read_text())[0]["bks_path"] == str(path)
-    (tmp_path / "TOY1.atf.json").unlink()
-    assert runner.invoke(app, ["bks", "reprice-td", str(tmp_path)]).exit_code == 1
-    assert runner.invoke(app, ["bks", "reprice-td", str(tmp_path), "--allow-missing-sidecars"]).exit_code == 0
-    assert iter_td_bks_files([tmp_path]) == [path]
 
 
 def _write_td_twins(root: Path, strict_cost: float, relaxed_cost: float) -> Path:
