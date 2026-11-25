@@ -331,12 +331,19 @@ def test_the_starter_config_parses_and_each_table_is_valid(tmp_path: Path) -> No
     assert loaded.descriptors["lkh3-long"].extra_args == ("RUNS = 10",)
 
 
-def test_ails2_hints_name_no_patch_outside_the_package() -> None:
-    from mamut_routing_lib.solvers.external.catalog import BUILTIN_DESCRIPTORS
+def test_starter_commands_and_catalog_reference_the_installed_solver_patches() -> None:
+    from shlex import quote
+    from mamut_routing_lib.solvers.external.catalog import BUILTIN_DESCRIPTORS, patch_path
     from mamut_routing_lib.solvers.external.config import starter_config_text
 
-    note = BUILTIN_DESCRIPTORS["ails2"].requires_note
     text = starter_config_text(detect=False)
-    for hint in (note, text):
-        assert ".py" not in hint  # no script outside the package
-    assert "-seed" in note and "does not ship that patch yet" in note
+    for solver, checkout, filename in (("ails2", "2023.0106", "ails2-seed-out.patch"),
+                                       ("hgs-cvrp", "HGS-CVRP", "hgs-cvrp-explicit-matrix.patch")):
+        path = patch_path(filename)
+        assert Path(path).is_file()
+        assert path in BUILTIN_DESCRIPTORS[solver].requires_note
+        assert f"git -C {checkout} apply {quote(path)}" in text
+    patch = Path(patch_path("ails2-seed-out.patch")).read_bytes()
+    assert patch.count(b"\ndiff --git ") == 6
+    assert b"+++ b/src/Auxiliary/SharedRandom.java\n" in patch
+    assert b"\n+package Auxiliary;\n" in patch

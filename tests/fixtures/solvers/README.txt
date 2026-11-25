@@ -8,7 +8,7 @@ solver's output code (read on 2026-11-02; the binaries were not run here):
 - hgs-cvrp.sol   HGS-CVRP (github.com/vidalt/HGS-CVRP 1a92795,
                  Population::exportCVRPLibFormat): "Route #k: ..." and the penalized cost
                  printed with the default 6 significant digits ("Cost 1.23457e+06").
-- ails2.sol      AILS-II (INFORMSJoC/2023.0106 4ff3611 + paper7 campaign3/patch_ails2.py,
+- ails2.sol      AILS-II (INFORMSJoC/2023.0106 4ff3611 + patches/ails2-seed-out.patch,
                  Solution.toString): trailing spaces after each route, Java
                  Double.toString cost ("Cost 1.2345678E7").
 - filo2.sol      FILO2 (github.com/acco93/filo2 17b8f84, Solution::store_to_file):
