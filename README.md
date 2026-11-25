@@ -73,7 +73,7 @@ Use `mamut-routing verify-manifest INSTANCE.vrp.json --sha256 DIGEST` to verify 
 
 An in-memory `check_solution` or `td.check_td_solution` evaluates the supplied materialized instance. A static caller checking a certified BKS passes `instance_path=` to identify its edition. The TD loader already carries that path. Checking a certified record verifies the edition and checks the supplied operands against it. Repeated route evaluations on one fixed instance can reuse `prepare_exact`.
 
-A Kayros optimality claim names the contract under which the solver made it. Repricing the same routes under the v0.13 TD profile preserves the historical target, usually `td-fold/1`. If a better submission displaces an annotated incumbent, the store keeps the original BKS bytes under `.bks-history/<sha256>.json`. The new submission can carry its own solver claim.
+A solver claim of optimality is stored under `metadata.optimality`. Its `status` is `solver-reported-optimal`, its `target_profile` must equal the profile of the evaluated family and `solver` names the solver. Optional `campaign`, `reported_primal`, `reported_dual` and `evidence` fields describe the run, the solver's own bounds and a hash-pinned evidence file. No other field is accepted. The checker verifies the routes but not the claim. If a better submission displaces an annotated incumbent, the store keeps the original BKS bytes under `.bks-history/<sha256>.json`. The new submission can carry its own solver claim.
 
 ## Migrating Python code to v0.13
 
@@ -90,6 +90,12 @@ The v0.13 library requires Pydantic 2.10 or newer for TD route results with rati
 | `save_bks(record, path)` | `write_bks_file(record, path)` | Serialize the model to the given path, overwriting an existing file. Use `submit_bks` for checked submission. |
 | `exact_cost_value(number)` | `shortest_decimal_cost_value(number)` | Recover the rational value of the shortest decimal spelling of the parsed number. |
 | `compute_exact_solution_cost(instance, routes)` | `compute_shortest_decimal_solution_cost(instance, routes)` | Sum the static arc costs using that historical decimal interpretation. For the v0.13 binary64 profile use `evaluate_exact(instance, routes).cost`. |
+| `OptimalityMetadata` (a `proven: true` stamp) under `metadata.optimality` | `SolverReportedOptimality` | Old files with a legacy stamp still load. `write_bks_file`, the BKS store and `td.annotate_td_bks_optimality` refuse to write one. A TD claim annotates only an incumbent that carries an exact evaluation. The legacy TD repricer leaves a claimed record untouched and reports `stamp-conflict`. |
+| `BKSUpdateResult.action` and the `action` of `preview_bks_update` as plain strings | `BKSUpdateAction` and `BKSPreviewAction` | Closed `Literal` vocabularies with the same values. An unknown value raises `ValueError`. |
+| A `depot` other than 0 or a nonzero depot service time, refused when the evaluator is prepared | Refused when the instance is validated | Loading such a descriptor raises a validation error. |
+| `save_bks_if_improved` trusting the supplied instance when no manifest exists | Same name, checked against the descriptor | The supplied instance must equal the descriptor and hydrated matrix at `instance_path`. A missing descriptor raises `FileNotFoundError`. |
+| `canonical_route_order(routes)` without input checks | Same name, validated input | Routes must be nonempty, with positive integer customer ids and no repeated customer. |
+| `SolutionCheckResult` with any field combination | Same model, validated | A `valid` result carries a nonnegative `num_routes` and a `routing_cost` that is `None` exactly on display overflow. |
 
 During v0.13, importing `BenchmarkInstance` from the package or its `models` module returns the same class with a `DeprecationWarning`. The other renamed APIs use the new spellings. Type annotations can distinguish `LoadedStaticInstance` (CVRP or VRPTW with a matrix), `AnyStaticBenchmarkInstance` (also includes static collection descriptors), and `AnyBenchmarkInstance` (also includes TDVRP and TDVRPTW). All 3 unions are available at the package root.
 
