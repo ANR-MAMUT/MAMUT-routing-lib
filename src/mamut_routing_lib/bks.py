@@ -149,11 +149,17 @@ def save_bks_if_improved(
     Without a manifest, the supplied instance must equal the descriptor (and its
     hydrated matrix) stored at ``instance_path``. Otherwise this raises ``ValueError``.
     """
+    return _save_bks_if_improved(instance, candidate_bks, instance_path, backend=backend, check_descriptor=True)
+
+
+def _save_bks_if_improved(instance, candidate_bks, instance_path, *, backend, check_descriptor):
+    # check_descriptor=False is for submit_bks, which has already identified the
+    # instance and keeps a caller's preloaded matrix without a second sidecar read.
     from mamut_routing_lib.manifests import adjacent_manifest
     manifest = adjacent_manifest(instance_path, candidate_bks.objective_function, supplied_checkable=instance)
     if manifest is not None:
         instance = manifest.checkable
-    elif instance != hydrate_collection_instance(load_benchmark_instance(instance_path), instance_path):
+    elif check_descriptor and instance != hydrate_collection_instance(load_benchmark_instance(instance_path), instance_path):
         raise ValueError(f"Supplied materialized input differs from the descriptor or matrix at {instance_path}")
     prepared = prepare_static(instance, backend=backend, objective_function=candidate_bks.objective_function)
     candidate_bks, candidate_evaluation = _candidate(

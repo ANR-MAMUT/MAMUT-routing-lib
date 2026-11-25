@@ -696,7 +696,7 @@ def submit_bks(
             objective_function=objective,
             backend=backend,
         )
-    from mamut_routing_lib.bks import create_bks_from_solution, save_bks_if_improved, save_solution_as_bks_if_improved
+    from mamut_routing_lib.bks import _save_bks_if_improved, create_bks_from_solution, save_solution_as_bks_if_improved
 
     from mamut_routing_lib.manifests import manifest_path_for
     if checkable is None or manifest_path_for(path).exists():
@@ -704,7 +704,7 @@ def submit_bks(
                                                backend=backend, supplied_checkable=checkable)
     # The same two steps as save_solution_as_bks_if_improved, on the instance already in hand.
     bks = create_bks_from_solution(checkable, solution, objective, authors=authors, metadata=dict(metadata or {}), backend=backend)
-    return save_bks_if_improved(checkable, bks, path, backend=backend)
+    return _save_bks_if_improved(checkable, bks, path, backend=backend, check_descriptor=False)
 
 
 def _require_same_instance(loaded: Any, checkable: Any, path: Path) -> None:
