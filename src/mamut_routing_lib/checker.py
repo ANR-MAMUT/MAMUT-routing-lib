@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from fractions import Fraction
 from numbers import Integral
 from pathlib import Path
+from sys import float_info
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
@@ -40,6 +42,10 @@ class SolutionCheckResult(BaseModel):
         overflow = isinstance(self.exact_evaluation, dict) and self.exact_evaluation.get("display_overflow") is True
         if (self.routing_cost is None) != overflow:
             raise ValueError("a valid result carries a display cost exactly when its exact cost does not overflow binary64")
+        if self.routing_cost is not None and not 0 <= self.routing_cost <= float_info.max:
+            raise ValueError("a valid routing cost must be a finite nonnegative binary64 display")
+        if isinstance(self.routing_cost, float) and self.routing_cost == 0:
+            self.routing_cost = 0.0
         return self
 
     def is_valid(self) -> bool:
@@ -87,7 +93,7 @@ def compute_solution_cost(
     return prepare_static(instance, backend=backend).routing_cost(_iter_routes(solution_or_routes))
 
 
-def canonical_route_order(routes: list[list[int]]) -> list[list[int]]:
+def canonical_route_order(routes: Iterable[list[int]]) -> list[list[int]]:
     """Routes sorted by their first customer: the canonical storage and summation order of every BKS.
 
     Each route must be a nonempty list of positive integer customer ids, and no
@@ -95,8 +101,9 @@ def canonical_route_order(routes: list[list[int]]) -> list[list[int]]:
     is returned as is. Invalid input raises ``ValueError``. This checks only the
     shape of the routes, not their feasibility on an instance.
     """
+    ordered = list(routes)
     seen: set[int] = set()
-    for route in routes:
+    for route in ordered:
         if not isinstance(route, (list, tuple)) or not route:
             raise ValueError("canonical_route_order requires nonempty routes")
         for customer in route:
@@ -105,7 +112,8 @@ def canonical_route_order(routes: list[list[int]]) -> list[list[int]]:
             if customer in seen:
                 raise ValueError(f"canonical_route_order requires distinct customers, {customer} appears twice")
             seen.add(customer)
-    return sorted(routes, key=lambda route: route[0])
+    ordered.sort(key=lambda route: route[0])
+    return ordered
 
 
 def shortest_decimal_cost_value(value: int | float) -> Fraction:

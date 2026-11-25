@@ -208,10 +208,30 @@ def test_checker_raises_on_a_solution_for_another_instance() -> None:
         check_cvrp_solution(instance, other)
 
 
+def test_valid_display_is_nonnegative_finite_and_normalizes_signed_zero() -> None:
+    import json
+    from math import copysign
+    import pytest
+
+    from mamut_routing_lib.checker import SolutionCheckResult
+
+    for cost in (-1, float("nan"), float("inf"), -float("inf"), 10**400):
+        record = {"status": "valid", "num_routes": 1, "routing_cost": cost}
+        with pytest.raises(ValueError, match="finite nonnegative"):
+            SolutionCheckResult.model_validate(record)
+        with pytest.raises(ValueError, match="finite nonnegative"):
+            SolutionCheckResult.model_validate_json(json.dumps(record))
+    record = {"status": "valid", "num_routes": 1, "routing_cost": -0.0}
+    assert copysign(1.0, SolutionCheckResult.model_validate(record).routing_cost) == 1.0
+    assert copysign(1.0, SolutionCheckResult.model_validate_json(json.dumps(record)).routing_cost) == 1.0
+
+
 def test_canonical_route_order_validates_its_routes() -> None:
     import pytest
 
     from mamut_routing_lib.checker import canonical_route_order
+
+    assert canonical_route_order(iter([[2], [1]])) == [[1], [2]]
 
     assert canonical_route_order([[3, 4], [1, 2]]) == [[1, 2], [3, 4]]
     assert canonical_route_order([]) == []
