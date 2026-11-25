@@ -34,8 +34,10 @@ import sys
 from collections import Counter
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal, Mapping
+from weakref import WeakValueDictionary
 
 from mamut_routing_lib.enums import ObjectiveFunction, ProblemType
 from mamut_routing_lib.json_utils import strict_json_loads
@@ -518,6 +520,29 @@ def is_time_dependent(instance: Any) -> bool:
     return instance_problem_type(instance) in (ProblemType.TDVRP, ProblemType.TDVRPTW)
 
 
+# A verified preload remains reusable while the caller holds it. Keep only its
+# fingerprints here, so the index never owns a large matrix.
+_verified_preloads: WeakValueDictionary = WeakValueDictionary()
+
+
+def _distance_source_revision(instance, instance_path):
+    from mamut_routing_lib.models import ArcCostsDistancesRef
+    from mamut_routing_lib.sidecars import require_collection_root
+
+    source = getattr(instance, "arc_costs_source", None)
+    if not isinstance(source, ArcCostsDistancesRef) or instance_path is None:
+        return None
+    path = require_collection_root(instance_path) / source.distances.path
+    stat = path.stat()
+    descriptor_digest = sha256(instance.model_dump_json().encode()).digest()
+    return (path.resolve(), stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, descriptor_digest)
+
+
+def _preload_key(revision, checkable):
+    # The public models and their nested matrices are mutable.
+    return revision, sha256(checkable.model_dump_json().encode()).digest()
+
+
 def load_checkable(instance: Any, instance_path: str | Path | None) -> Any:
     """The instance in the form the reference checker reads.
 
@@ -533,7 +558,11 @@ def load_checkable(instance: Any, instance_path: str | Path | None) -> Any:
         return load_td_instance(Path(instance_path))
     from mamut_routing_lib.artifacts import hydrate_collection_instance
 
-    return hydrate_collection_instance(instance, instance_path)
+    revision = _distance_source_revision(instance, instance_path)
+    checked = hydrate_collection_instance(instance, instance_path)
+    if revision is not None and revision == _distance_source_revision(instance, instance_path):
+        _verified_preloads[_preload_key(revision, checked)] = checked
+    return checked
 
 
 def _require_descriptor_at_path(instance, path):
@@ -665,6 +694,7 @@ def submit_bks(
     its own load of the matrix or the travel-time functions.
     """
     from mamut_routing_lib.artifacts import get_instance_identifier, load_benchmark_instance
+    from mamut_routing_lib.manifests import manifest_path_for
     from mamut_routing_lib.models import BenchmarkSolution
     from mamut_routing_lib.objectives import base_objective, require_supported_objective
 
@@ -677,7 +707,7 @@ def submit_bks(
     if instance is not None:
         _require_descriptor_at_path(instance, path)
     loaded = instance if instance is not None else load_benchmark_instance(path)
-    if checkable is not None:
+    if checkable is not None and (is_time_dependent(loaded) or not manifest_path_for(path).exists()):
         _require_same_instance(loaded, checkable, path)
     objective = require_supported_objective(loaded, objective_function or base_objective(loaded))
     solution = BenchmarkSolution(
@@ -702,7 +732,6 @@ def submit_bks(
         )
     from mamut_routing_lib.bks import _save_bks_if_improved, create_bks_from_solution, save_solution_as_bks_if_improved
 
-    from mamut_routing_lib.manifests import manifest_path_for
     if checkable is None or manifest_path_for(path).exists():
         return save_solution_as_bks_if_improved(path, objective, solution, authors=authors, metadata=dict(metadata or {}),
                                                backend=backend, supplied_checkable=checkable)
@@ -713,7 +742,7 @@ def submit_bks(
 
 def _require_same_instance(loaded: Any, checkable: Any, path: Path) -> None:
     """Refuse a ``checkable`` that was built from another instance than the one being stored."""
-    from mamut_routing_lib.artifacts import get_instance_identifier
+    from mamut_routing_lib.artifacts import get_instance_identifier, hydrate_collection_instance
 
     from mamut_routing_lib.models import LoadedStaticInstance
     from mamut_routing_lib.td.artifacts import LoadedTDInstance
@@ -728,8 +757,14 @@ def _require_same_instance(loaded: Any, checkable: Any, path: Path) -> None:
             raise ValueError(f"checkable was loaded from {checkable.instance_path}, not from {path}")
         if held_model != loaded:
             raise ValueError("The supplied TD descriptor differs from the preloaded instance.")
-    elif isinstance(loaded, LoadedStaticInstance) and held_model != loaded:
-        raise ValueError("The supplied static model differs from the preloaded instance.")
+    else:
+        if not isinstance(checkable, LoadedStaticInstance):
+            raise ValueError("Expected a materialized static instance as the checkable.")
+        revision = _distance_source_revision(loaded, path)
+        if revision is not None and _verified_preloads.get(_preload_key(revision, checkable)) is checkable:
+            return
+        if checkable != hydrate_collection_instance(loaded, path):
+            raise ValueError(f"Supplied materialized input differs from the descriptor or matrix at {path}")
 
 
 
