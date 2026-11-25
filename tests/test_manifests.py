@@ -4,7 +4,7 @@ from copy import deepcopy
 import pytest
 from typer.testing import CliRunner
 
-from mamut_routing_lib import load_benchmark_instance, load_bks, manifest_path_for, verify_manifest, write_bks_file
+from mamut_routing_lib import load_benchmark_instance, load_bks, manifest_path_for, save_json_to_file, verify_manifest
 from mamut_routing_lib.cli import app
 from mamut_routing_lib.manifests import SPECIFICATION, atf_stream_sha256, file_sha256, manifest_bytes, matrix_sha256
 from mamut_routing_lib.objectives import base_objective
@@ -103,7 +103,8 @@ def test_certified_improvement_keeps_edition_and_archives_targeted_claim(tmp_pat
     incumbent.metadata["optimality"] = {
         "status": "solver-reported-optimal", "solver": "Historical solver", "target_profile": "legacy-reading",
     }
-    write_bks_file(incumbent, submitted.path)
+    # Establish the historical input bytes directly. The current writer requires a matching target.
+    save_json_to_file(incumbent.model_dump(mode="json"), submitted.path)
     original = submitted.path.read_bytes()
     original_sha = file_sha256(submitted.path)
     improved = submit_bks(path, [[1, 2]], authors="New team", backend="python")

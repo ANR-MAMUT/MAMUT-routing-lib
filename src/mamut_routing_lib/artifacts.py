@@ -655,11 +655,19 @@ def write_bks_file(bks: BenchmarkBKS, bks_path: str | Path) -> None:
     Use submit_bks or save_bks_if_improved to evaluate routes and compare an incumbent.
     Refuses a legacy optimality stamp: a new claim must be a ``SolverReportedOptimality``.
     """
-    from mamut_routing_lib.models import is_legacy_optimality_claim
+    if "optimality" in bks.metadata:
+        from mamut_routing_lib.exact_types import STATIC_PROFILE, TD_PROFILE
+        from mamut_routing_lib.models import SolverReportedOptimality, is_legacy_optimality_claim
+        from mamut_routing_lib.td.checker import TD_OBJECTIVES
 
-    if "optimality" in bks.metadata and is_legacy_optimality_claim(bks.metadata["optimality"]):
-        raise ValueError("Refusing to write a legacy optimality claim. Record a solver claim with "
-                         "status 'solver-reported-optimal', its target_profile and its solver instead.")
+        claim = bks.metadata["optimality"]
+        if is_legacy_optimality_claim(claim):
+            raise ValueError("Refusing to write a legacy optimality claim. Record a solver claim with "
+                             "status 'solver-reported-optimal', its target_profile and its solver instead.")
+        report = SolverReportedOptimality.model_validate(claim)
+        profile = TD_PROFILE if bks.objective_function in TD_OBJECTIVES else STATIC_PROFILE
+        if report.target_profile != profile:
+            raise ValueError(f"Claim target_profile must be {profile} for {bks.objective_function.value}")
     save_json_to_file(bks.model_dump(mode="json"), bks_path)
 
 

@@ -208,6 +208,39 @@ def test_annotate_refuses_an_incumbent_without_exact_evaluation(toy_loaded):
         annotate_td_bks_optimality(toy_loaded, _claim(), backend='python')
 
 
+def test_historical_td_claim_reads_with_its_provenance_but_cannot_be_written(toy_loaded, tmp_path):
+    from mamut_routing_lib.artifacts import save_json_to_file
+
+    claim = _claim(target_profile="td-fold/1", arithmetic="historical arithmetic", certificate="record",
+                   date="2026-08-06", wall_time_s=5, time_limit_s=60)
+    bks = create_td_bks_from_solution(toy_loaded, _solution(toy_loaded, [[1, 2]]), authors=AUTHORS, backend="python")
+    raw = bks.model_dump(mode="json")
+    raw["metadata"]["optimality"] = claim
+    path = tmp_path / "historical.bks.Duration.json"
+    save_json_to_file(raw, path)
+    loaded = load_bks(path)
+    assert loaded.metadata["optimality"] == claim
+    original = path.read_bytes()
+    with pytest.raises(ValueError):
+        write_bks_file(loaded, path)
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("claim", [{"status": "solver-reported-optimal"}, _claim(target_profile="td-fold/1"),
+                                    _claim(proven=True), _claim(reported_dual=float("inf"))])
+def test_writer_checks_mutated_claim_before_replacing_valid_file(toy_loaded, tmp_path, claim):
+    path = tmp_path / "test.bks.Duration.json"
+    bks = create_td_bks_from_solution(toy_loaded, _solution(toy_loaded, [[1, 2]]), authors=AUTHORS, backend="python")
+    bks.metadata["optimality"] = _claim()
+    write_bks_file(bks, path)
+    assert load_bks(path).metadata["optimality"] == _claim()
+    original = path.read_bytes()
+    bks.metadata["optimality"] = claim
+    with pytest.raises(ValueError):
+        write_bks_file(bks, path)
+    assert path.read_bytes() == original
+
+
 def test_write_bks_file_refuses_a_legacy_claim_but_old_files_still_load(toy_loaded, tmp_path):
     from mamut_routing_lib.artifacts import save_json_to_file
 

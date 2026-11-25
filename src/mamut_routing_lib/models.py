@@ -429,6 +429,17 @@ class SolverReportedOptimality(BaseModel):
         return value
 
 
+class _HistoricalTDClaim(SolverReportedOptimality):
+    """Additional provenance carried by the archived r1 reports, accepted only on read."""
+
+    target_profile: Literal["td-fold/1"]
+    arithmetic: str | None = None
+    certificate: str | None = None
+    date: str | None = None
+    wall_time_s: NumericOperand | None = None
+    time_limit_s: NumericOperand | None = None
+
+
 def is_legacy_optimality_claim(claim: Any) -> bool:
     """True for a ``metadata["optimality"]`` value without the ``solver-reported-optimal`` status."""
     return not (isinstance(claim, dict) and claim.get("status") == "solver-reported-optimal")
@@ -458,7 +469,9 @@ class _SolutionValidationMixin(BaseModel):
             value = checked_solver_metadata(value)
         if "optimality" in value:
             claim = value["optimality"]
-            model = SolverReportedOptimality if isinstance(claim, dict) and "status" in claim else OptimalityMetadata
+            model = OptimalityMetadata
+            if isinstance(claim, dict) and "status" in claim:
+                model = _HistoricalTDClaim if claim.get("target_profile") == "td-fold/1" else SolverReportedOptimality
             optimality = model.model_validate(claim)
             value = dict(value)
             value["optimality"] = optimality.model_dump(mode="json", exclude_none=True)
