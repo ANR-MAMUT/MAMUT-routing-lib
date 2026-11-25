@@ -239,6 +239,17 @@ def test_a_pre_013_claim_is_refused_with_one_clear_error(tmp_path: Path) -> None
         _bks_with_metadata({"optimality": _optimality_payload()})
 
 
+def test_a_marked_solution_file_with_a_pre_013_claim_gets_the_same_error() -> None:
+    import json
+
+    from mamut_routing_lib.solutions import parse_solution_text
+
+    text = json.dumps({"instance_name": "C101", "objective_function": "Duration", "routes": [[1, 2]], "cost": 12,
+                       "metadata": {"exact_evaluation": {}, "optimality": _optimality_payload()}})
+    with pytest.raises(LegacyOptimalityClaimError, match=r"^metadata\.optimality .* 0\.12\.0\.$"):
+        parse_solution_text(text, filename="C101.bks.Duration.json")
+
+
 def test_solution_metadata_without_optimality_is_untouched() -> None:
     metadata = {"authors": "someone", "source": "somewhere", "seed": 3}
     bks = _bks_with_metadata(metadata)
