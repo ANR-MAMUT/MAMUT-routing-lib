@@ -329,3 +329,53 @@ def test_legacy_reprice_refuses_exact_record_before_loading_artifacts(toy_loaded
         report = reprice_td_bks(path, dry_run=dry_run)
         assert report.action == 'error' and 'exact-profile' in report.detail
         assert path.read_bytes() == original
+
+
+def test_manifestless_td_writers_bind_supplied_arcs_and_preserve_incumbent(tmp_path):
+    from dataclasses import replace
+    from mamut_routing_lib.solutions import check_routes, load_checkable, preview_bks_update, submit_bks
+    from mamut_routing_lib.td import NDCPWLF, load_td_benchmark_instance
+
+    path = write_toy_instance_files(tmp_path)
+    descriptor = load_td_benchmark_instance(path)
+    full = load_checkable(descriptor, path)
+    routes = [[1], [2]]
+    solution = _solution(full, routes)
+    target = submit_bks(path, routes, authors=AUTHORS, checkable=full).path
+    original = target.read_bytes()
+    sparse_arcs = {edge: arc for edge, arc in full.atfs.arcs.items() if 0 in edge}
+    sparse = replace(full, atfs=replace(full.atfs, arcs=sparse_arcs))
+    assert check_routes(descriptor, path, routes, checkable=sparse).routing_cost == 45
+    assert save_td_solution_as_bks_if_improved(sparse, solution, authors=AUTHORS).tie
+    del sparse.atfs.arcs[0, 1]
+    with pytest.raises(ValueError, match="not materialized"):
+        submit_bks(path, routes, authors=AUTHORS, checkable=sparse)
+    assert target.read_bytes() == original
+
+    for edge in ((0, 1), (1, 2)):
+        previous = full.atfs.arcs[edge]
+        full.atfs.arcs[edge] = NDCPWLF([0, 100], [1, 101])
+        if edge == (0, 1):
+            # This constructs an unbound record in memory and does not touch the store.
+            unbound = create_td_bks_from_solution(full, solution, authors=AUTHORS)
+            assert unbound.cost == 36 and "exact_evaluation" in unbound.metadata
+        with pytest.raises(ValueError, match="arrival functions differ"):
+            check_routes(descriptor, path, routes, checkable=full)
+        with pytest.raises(ValueError, match="arrival functions differ"):
+            preview_bks_update(path, routes, checkable=full)
+        with pytest.raises(ValueError, match="arrival functions differ"):
+            submit_bks(path, routes, authors=AUTHORS, checkable=full)
+        with pytest.raises(ValueError, match="arrival functions differ"):
+            save_td_solution_as_bks_if_improved(full, solution, authors=AUTHORS)
+        assert target.read_bytes() == original
+        full.atfs.arcs[edge] = previous
+
+    assert submit_bks(path, [[1, 2]], authors=AUTHORS, checkable=full).action == "replaced"
+    original = target.read_bytes()
+    from mamut_routing_lib.td.artifacts import load_instance_atfs, save_instance_atfs
+    changed = load_instance_atfs(full.atf_path)
+    changed.arcs[1, 2] = NDCPWLF([0, 100], [1, 101])
+    save_instance_atfs(changed, full.atf_path)
+    with pytest.raises(ValueError, match="sha256 mismatch"):
+        save_td_solution_as_bks_if_improved(full, solution, authors=AUTHORS)
+    assert target.read_bytes() == original
