@@ -13,7 +13,7 @@ from mamut_routing_lib.models import (
     BenchmarkInstanceVRPTW,
     BenchmarkInstanceCVRP,
     InstanceMetadata,
-    OptimalityMetadata,
+    LegacyOptimalityClaimError,
 )
 
 
@@ -221,34 +221,33 @@ def _bks_with_metadata(metadata: dict) -> BenchmarkBKS:
     )
 
 
-def test_optimality_metadata_requires_core_fields() -> None:
-    OptimalityMetadata(**_optimality_payload())
-    for missing in ("proven", "prover", "certificate", "date"):
-        payload = _optimality_payload()
-        del payload[missing]
-        with pytest.raises(ValidationError):
-            OptimalityMetadata(**payload)
+def test_a_pre_013_claim_is_refused_with_one_clear_error(tmp_path: Path) -> None:
+    from mamut_routing_lib.artifacts import load_bks
+    from mamut_routing_lib.json_utils import save_json_to_file
+
+    path = tmp_path / "C101.bks.Duration.json"
+    save_json_to_file({"instance_name": "C101", "objective_function": "Duration", "routes": [[1, 2]], "cost": 12,
+                       "metadata": {"optimality": _optimality_payload(proven_optimum=12.0)}}, path)
+    with pytest.raises(LegacyOptimalityClaimError) as caught:
+        load_bks(path)
+    assert str(caught.value) == (
+        f"{path}: metadata.optimality holds a claim in the format of mamut-routing-lib versions before 0.13 "
+        "(a 'proven: true' stamp). This library does not read that format. "
+        "Read such historical files with mamut-routing-lib 0.12.0."
+    )
+    with pytest.raises(ValidationError, match="mamut-routing-lib 0.12.0"):
+        _bks_with_metadata({"optimality": _optimality_payload()})
 
 
-def test_optimality_metadata_proven_must_be_true() -> None:
-    with pytest.raises(ValidationError):
-        OptimalityMetadata(**_optimality_payload(proven=False))
+def test_a_marked_solution_file_with_a_pre_013_claim_gets_the_same_error() -> None:
+    import json
 
+    from mamut_routing_lib.solutions import parse_solution_text
 
-def test_optimality_metadata_forbids_extra_keys() -> None:
-    with pytest.raises(ValidationError):
-        OptimalityMetadata(**_optimality_payload(surprise="key"))
-
-
-def test_solution_metadata_validates_optimality_key() -> None:
-    bks = _bks_with_metadata({"optimality": _optimality_payload(proven_optimum=12.0)})
-    assert bks.metadata["optimality"]["proven"] is True
-    assert bks.metadata["optimality"]["proven_optimum"] == 12.0
-    # None-valued optionals are normalized away.
-    assert "note" not in bks.metadata["optimality"]
-
-    with pytest.raises(ValidationError):
-        _bks_with_metadata({"optimality": {"proven": True}})
+    text = json.dumps({"instance_name": "C101", "objective_function": "Duration", "routes": [[1, 2]], "cost": 12,
+                       "metadata": {"exact_evaluation": {}, "optimality": _optimality_payload()}})
+    with pytest.raises(LegacyOptimalityClaimError, match=r"^metadata\.optimality .* 0\.12\.0\.$"):
+        parse_solution_text(text, filename="C101.bks.Duration.json")
 
 
 def test_solution_metadata_without_optimality_is_untouched() -> None:

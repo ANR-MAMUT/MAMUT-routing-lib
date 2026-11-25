@@ -9,8 +9,7 @@ the historical free-form ``metadata`` dict path for historical instances.
 
 We avoid checking in the upstream 1k+-line TXT fixtures here. Instead, we build
 a small synthetic VRPTW instance + BKS that mimics the Ortec2022 dict-metadata
-shape and validates strict-``==`` against the checker (mirroring
-``project_bks_cost_exactness``).
+shape and validates strict-``==`` against the checker.
 """
 
 from __future__ import annotations
