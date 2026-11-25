@@ -43,7 +43,7 @@ from pydantic import TypeAdapter
 
 from mamut_routing_lib.enums import ObjectiveFunction, ProblemType
 from mamut_routing_lib.json_utils import strict_json_loads
-from mamut_routing_lib.models import BenchmarkBKS
+from mamut_routing_lib.models import BenchmarkBKS, reject_pre_013_optimality_claim
 from mamut_routing_lib.exact_types import ExactBackend, ExactRouteError
 
 __all__ = [
@@ -259,6 +259,7 @@ def _parse_json_solution(
             return routes, cost, metadata, marked
         if "cost" not in payload:
             raise SolutionFormatError("An exact BKS must explicitly store its cost projection (number or null).")
+        reject_pre_013_optimality_claim(payload)
         try:
             marked = BenchmarkBKS.model_validate(payload)
         except ValueError as error:
