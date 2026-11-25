@@ -144,11 +144,17 @@ def save_bks_if_improved(
     *,
     backend: ExactBackend = "native",
 ) -> BKSUpdateResult:
-    """Recheck the candidate and incumbent and replace only on a strict improvement."""
+    """Recheck the candidate and incumbent and replace only on a strict improvement.
+
+    Without a manifest, the supplied instance must equal the descriptor (and its
+    hydrated matrix) stored at ``instance_path``. Otherwise this raises ``ValueError``.
+    """
     from mamut_routing_lib.manifests import adjacent_manifest
     manifest = adjacent_manifest(instance_path, candidate_bks.objective_function, supplied_checkable=instance)
     if manifest is not None:
         instance = manifest.checkable
+    elif instance != hydrate_collection_instance(load_benchmark_instance(instance_path), instance_path):
+        raise ValueError(f"Supplied materialized input differs from the descriptor or matrix at {instance_path}")
     prepared = prepare_static(instance, backend=backend, objective_function=candidate_bks.objective_function)
     candidate_bks, candidate_evaluation = _candidate(
         prepared, get_instance_identifier(instance), candidate_bks, candidate_bks.metadata.get("authors"),
