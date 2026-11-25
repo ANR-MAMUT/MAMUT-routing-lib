@@ -207,3 +207,14 @@ def test_checker_raises_on_a_solution_for_another_instance() -> None:
     with pytest.raises(ValueError, match="another-instance"):
         check_cvrp_solution(instance, other)
 
+
+def test_canonical_route_order_validates_its_routes() -> None:
+    import pytest
+
+    from mamut_routing_lib.checker import canonical_route_order
+
+    assert canonical_route_order([[3, 4], [1, 2]]) == [[1, 2], [3, 4]]
+    assert canonical_route_order([]) == []
+    for routes in ([[]], [[0, 1]], [[-1]], [[1.0]], [[True]], [["1"]], [[1, 2], [2, 3]], [[1, 1]], [None]):
+        with pytest.raises(ValueError, match="canonical_route_order"):
+            canonical_route_order(routes)

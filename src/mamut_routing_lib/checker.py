@@ -88,7 +88,23 @@ def compute_solution_cost(
 
 
 def canonical_route_order(routes: list[list[int]]) -> list[list[int]]:
-    """Routes sorted by their first customer: the canonical storage and summation order of every BKS."""
+    """Routes sorted by their first customer: the canonical storage and summation order of every BKS.
+
+    Each route must be a nonempty list of positive integer customer ids, and no
+    customer may appear twice, so that the order is unique. An empty route list
+    is returned as is. Invalid input raises ``ValueError``. This checks only the
+    shape of the routes, not their feasibility on an instance.
+    """
+    seen: set[int] = set()
+    for route in routes:
+        if not isinstance(route, (list, tuple)) or not route:
+            raise ValueError("canonical_route_order requires nonempty routes")
+        for customer in route:
+            if isinstance(customer, bool) or not isinstance(customer, Integral) or customer <= 0:
+                raise ValueError(f"canonical_route_order requires positive integer customer ids, got {customer!r}")
+            if customer in seen:
+                raise ValueError(f"canonical_route_order requires distinct customers, {customer} appears twice")
+            seen.add(customer)
     return sorted(routes, key=lambda route: route[0])
 
 
