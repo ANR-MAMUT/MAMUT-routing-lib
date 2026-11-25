@@ -331,12 +331,12 @@ def test_the_starter_config_parses_and_each_table_is_valid(tmp_path: Path) -> No
     assert loaded.descriptors["lkh3-long"].extra_args == ("RUNS = 10",)
 
 
-def test_ails2_hints_name_no_private_patch_location() -> None:
+def test_ails2_hints_name_no_patch_outside_the_package() -> None:
     from mamut_routing_lib.solvers.external.catalog import BUILTIN_DESCRIPTORS
     from mamut_routing_lib.solvers.external.config import starter_config_text
 
     note = BUILTIN_DESCRIPTORS["ails2"].requires_note
     text = starter_config_text(detect=False)
     for hint in (note, text):
-        assert "patch_ails2" not in hint and "campaign3" not in hint
+        assert ".py" not in hint  # no script outside the package
     assert "-seed" in note and "does not ship that patch yet" in note
