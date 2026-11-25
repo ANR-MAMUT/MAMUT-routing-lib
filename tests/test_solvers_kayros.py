@@ -95,6 +95,18 @@ def fake_kayros(tmp_path: Path, monkeypatch):
     package.mkdir(parents=True)
     (package / "__init__.py").write_text(_FAKE_KAYROS, encoding="utf-8")
     site = str(package.parent)
+    # The production worker prioritizes the installed library's directory, which can
+    # also contain the real optional Kayros wheel. Override only the test solver.
+    from mamut_routing_lib.solvers import kayros as adapter
+    worker_environment = adapter._worker_environment
+
+    def environment_with_stand_in():
+        env = worker_environment()
+        paths = env["PYTHONPATH"].split(os.pathsep)
+        env["PYTHONPATH"] = os.pathsep.join([site, *(path for path in paths if path != site)])
+        return env
+
+    monkeypatch.setattr(adapter, "_worker_environment", environment_with_stand_in)
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join(filter(None, [site, os.environ.get("PYTHONPATH", "")])))
     monkeypatch.syspath_prepend(site)
     monkeypatch.delitem(sys.modules, "kayros", raising=False)
