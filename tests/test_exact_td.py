@@ -206,3 +206,23 @@ def test_direct_sidecar_loader_rejects_invalid_numeric_fields(tmp_path, location
     sidecar.write_text(json.dumps(payload))
     with pytest.raises(ATFFormatError):
         load_instance_atfs(sidecar)
+
+
+def test_native_arcs_are_prepared_once_on_first_visit(monkeypatch):
+    extension = pytest.importorskip('mamut_routing_lib._td_exact')
+    prepare = extension.PreparedArc
+    calls = []
+
+    def count(arc):
+        calls.append(arc)
+        return prepare(arc)
+
+    monkeypatch.setattr(extension, 'PreparedArc', count)
+    instance, atfs = example()
+    checker = prepare_td(instance, atfs)
+    assert calls == []
+    checker.route_timing([1])
+    checker.route_curve([1])
+    assert len(calls) == 2
+    checker.evaluate([[1], [2]])
+    assert len(calls) == 4

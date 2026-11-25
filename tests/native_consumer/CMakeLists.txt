@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.15)
+project(td_exact_consumer LANGUAGES CXX)
+find_package(MAMUTRouting CONFIG REQUIRED)
+add_executable(td_exact_consumer main.cpp)
+target_link_libraries(td_exact_consumer PRIVATE MAMUTRouting::td_exact)
+enable_testing()
+add_test(NAME exact_route COMMAND td_exact_consumer)

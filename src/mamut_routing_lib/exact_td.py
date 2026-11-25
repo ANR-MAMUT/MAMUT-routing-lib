@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from fractions import Fraction
+from functools import cache
 from types import MappingProxyType
 from collections.abc import Callable, Mapping, Sequence
 
@@ -47,17 +48,21 @@ def _snapshot_arcs(atfs: InstanceATFs, count: int, horizon: Window) -> Mapping[t
     return MappingProxyType(arcs)
 
 
-def _solver(backend: str) -> tuple[str, Callable, Callable]:
+def _solver(backend: str, arcs: Mapping[tuple[int, int], Arc]) -> tuple[str, Callable, Callable, Callable]:
     if backend == "python":
         from mamut_routing_lib.td._fraction_partition import curve, solve
-        return "python-fraction-partition", solve, curve
+        return "python-fraction-partition", arcs.__getitem__, solve, curve
     if backend != "native":
         raise ValueError(f"unknown TD exact backend {backend!r}")
     try:
-        from mamut_routing_lib._td_exact import PreparedRoute
+        from mamut_routing_lib._td_exact import PreparedArc, PreparedRoute
     except ImportError as exc:
         raise ImportError("The native TD backend needs the compiled _td_exact extension and GMP. "
                           "Install the native wheel or select backend='python'.") from exc
+
+    @cache
+    def prepared_arc(edge):
+        return PreparedArc(arcs[edge])
 
     def solve(*args):
         result = PreparedRoute(*args).solve()
@@ -72,7 +77,7 @@ def _solver(backend: str) -> tuple[str, Callable, Callable]:
             return None
         return tuple(ExactRouteKnot(Fraction(*x), Fraction(*at), Fraction(*right)) for x, at, right in knots)
 
-    return "cpp-gmp-compose", solve, curve
+    return "cpp-gmp-compose", prepared_arc, solve, curve
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +95,7 @@ class PreparedTD:
     objective: ObjectiveFunction
     backend: str
     fixed_charge: Fraction
+    _arc: Callable = field(repr=False, compare=False)
     _solve: Callable = field(repr=False, compare=False)
     _curve: Callable = field(repr=False, compare=False)
 
@@ -114,7 +120,7 @@ class PreparedTD:
             raise ExactRouteError(SolutionCheckStatus.INVALID_CUSTOMER_INDEX, "Cannot time an empty route.")
         vertices = (0, *route, 0)
         try:
-            arcs = [self.arcs[tail, head] for tail, head in zip(vertices, vertices[1:])]
+            arcs = [self._arc(edge) for edge in zip(vertices, vertices[1:])]
         except KeyError as exc:
             raise ValueError(f"TD arc {exc.args[0]} was not materialized for this route") from exc
         low, high = self.horizon
@@ -176,6 +182,7 @@ def prepare_td(instance: AnyTDBenchmarkInstance, atfs: InstanceATFs, *, backend:
     if fixed is None and objective == ObjectiveFunction.FLEET_COST_DURATION:
         raise ValueError("FleetCostDuration requires fleet_fixed_cost")
     charge = Fraction(fixed) if objective == ObjectiveFunction.FLEET_COST_DURATION else Fraction(0)
-    name, solve, curve = _solver(backend)
+    arcs = _snapshot_arcs(atfs, count, horizon)
+    name, leg, solve, curve = _solver(backend, arcs)
     return PreparedTD(count, demands, capacity, instance.num_vehicles, horizon, windows, services,
-                      _snapshot_arcs(atfs, count, horizon), objective, name, charge, solve, curve)
+                      arcs, objective, name, charge, leg, solve, curve)

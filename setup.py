@@ -21,6 +21,8 @@ if reference_only == "0":
         Pybind11Extension(
             "mamut_routing_lib._td_exact",
             ["native/td/route.cpp"],
+            include_dirs=["src/mamut_routing_lib/include"],
+            depends=["src/mamut_routing_lib/include/mamut_routing_lib/td_exact.hpp"],
             libraries=["gmpxx", "gmp"],
             cxx_std=17,
         ),

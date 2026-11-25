@@ -74,6 +74,7 @@ where = ["src"]
 namespaces = false
 
 [tool.setuptools.package-data]
+"mamut_routing_lib" = ["include/mamut_routing_lib/*.hpp", "cmake/*.cmake"]
 "mamut_routing_lib.solvers.external" = ["patches/*.patch"]
 
 [dependency-groups]

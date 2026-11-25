@@ -25,6 +25,10 @@ def _implementation_digest(backend: str) -> str:
         module = import_module("mamut_routing_lib." + name)
         digest.update(name.encode("ascii") + b"\0")
         digest.update(sha256(Path(module.__file__).read_bytes()).digest())
+    if backend == "cpp-gmp-compose":
+        header = "include/mamut_routing_lib/td_exact.hpp"
+        digest.update(header.encode("ascii") + b"\0")
+        digest.update(sha256((Path(__file__).parent / header).read_bytes()).digest())
     return digest.hexdigest()
 
 
