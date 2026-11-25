@@ -53,6 +53,7 @@ jobs:
           # Boost 1.66 headers in this image still require std::allocator::rebind.
           CIBW_BEFORE_ALL_LINUX: dnf -y install boost1.78-devel gmp-devel procps-ng
           CIBW_ENVIRONMENT: CPLUS_INCLUDE_PATH=/usr/include/boost1.78
+          CIBW_BEFORE_BUILD_LINUX: python {project}/.github/wheel-notices.py {package}
           CIBW_BEFORE_TEST: python -m pip install --group {package}/pyproject.toml:dev
           CIBW_TEST_REQUIRES: cmake>=3.15
           CIBW_TEST_COMMAND: bash {project}/.github/test-install.sh {package}
