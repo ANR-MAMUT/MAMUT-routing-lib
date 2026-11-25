@@ -1909,16 +1909,16 @@ def reprice_td(
     ] = False,
     note_date: Annotated[
         Optional[str],
-        typer.Option("--note-date", help="Date written in metadata.repriced and stamp notes (default: today, UTC)."),
+        typer.Option("--note-date", help="Date written in metadata.repriced (default: today, UTC)."),
     ] = None,
 ) -> None:
     """Re-price stored TD BKS under the current checker contract (routes untouched).
 
     Rewrites a BKS only when a checker output changed (cost, validated_cost,
     route_durations, route_departure_times); a moved cost is recorded in
-    metadata.repriced and an optimality stamp gets its proven_optimum updated
-    with a note. Exit status 1 when a file is infeasible, errors, would break a
-    stamp, or (without --allow-missing-sidecars) misses a sidecar.
+    metadata.repriced. A record with an optimality claim is never rewritten.
+    Exit status 1 when a file is infeasible, errors, carries a claim that would
+    need rewriting, or (without --allow-missing-sidecars) misses a sidecar.
     """
     from mamut_routing_lib.td.reprice import iter_td_bks_files
 

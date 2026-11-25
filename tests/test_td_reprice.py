@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from typer.testing import CliRunner
 
 from mamut_routing_lib.cli import app
@@ -101,28 +103,15 @@ def test_derived_fields_alone_are_refreshed_without_a_repriced_marker(tmp_path: 
     assert "repriced" not in stored["metadata"]
 
 
-def test_stamp_follows_a_dust_move_with_a_note(tmp_path: Path) -> None:
+@pytest.mark.parametrize("cost", [30.000000000000004, 31.0])
+def test_a_claimed_record_is_never_rewritten(tmp_path: Path, cost: float) -> None:
     write_toy_instance_files(tmp_path)
-    path = _write_bks(
-        tmp_path,
-        cost=30.000000000000004,
-        durations=[30.000000000000004],
-        departures=[40.0],
-        optimality=_stamp(30.000000000000004),
-    )
-    assert reprice_td_bks(path, note_date="2026-09-24").action == "repriced"
-    optimality = json.loads(path.read_text())["metadata"]["optimality"]
-    assert optimality["proven_optimum"] == 30.0
-    assert "Re-certification under td-fold/2 is pending" in optimality["note"]
-
-
-def test_stamp_conflict_is_refused(tmp_path: Path) -> None:
-    write_toy_instance_files(tmp_path)
-    path = _write_bks(tmp_path, cost=31.0, durations=[31.0], departures=[40.0], optimality=_stamp(31.0))
+    path = _write_bks(tmp_path, cost=cost, durations=[cost], departures=[40.0], optimality=_stamp(cost))
     before = path.read_bytes()
-    result = reprice_td_bks(path)
-    assert result.action == "stamp-conflict"
-    assert path.read_bytes() == before
+    for dry_run in (True, False):
+        result = reprice_td_bks(path, dry_run=dry_run)
+        assert result.action == "stamp-conflict" and result.stamped
+        assert path.read_bytes() == before
 
 
 def test_missing_sidecar_is_reported(tmp_path: Path) -> None:

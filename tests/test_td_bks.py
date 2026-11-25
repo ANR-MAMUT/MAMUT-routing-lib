@@ -6,7 +6,7 @@ import pytest
 
 from mamut_routing_lib.artifacts import get_bks_path_for_instance, load_bks, write_bks_file
 from mamut_routing_lib.enums import ObjectiveFunction
-from mamut_routing_lib.models import BenchmarkBKS, BenchmarkSolution, OptimalityMetadata
+from mamut_routing_lib.models import BenchmarkBKS, BenchmarkSolution, SolverReportedOptimality
 from mamut_routing_lib.td import (
     annotate_td_bks_optimality,
     check_td_solution,
@@ -127,6 +127,7 @@ def test_save_carries_extra_metadata(toy_loaded):
 
 
 def _optimality(**overrides):
+    """The legacy stamp shape, which the library still reads but no longer writes."""
     payload = {
         "proven": True,
         "prover": "test exact solver 1.0",
@@ -138,87 +139,97 @@ def _optimality(**overrides):
     return payload
 
 
+def _claim(**overrides):
+    payload = {"status": "solver-reported-optimal", "target_profile": "td-binary64-exact-v1",
+               "solver": "test exact solver 1.0"}
+    payload.update(overrides)
+    return payload
+
+
 def _store_legacy(loaded, solution):
-    """Historical layouts and rounding are still readable and annotatable under their target."""
+    """A historical record without an exact evaluation."""
     price = check_td_solution(loaded, solution).routing_cost
     bks = BenchmarkBKS(instance_name=solution.instance_name, objective_function=ObjectiveFunction.DURATION,
                        routes=solution.routes, cost=price, metadata={'authors': AUTHORS})
     write_bks_file(bks, get_bks_path_for_instance(loaded.instance_path, ObjectiveFunction.DURATION))
 
 
-def test_annotate_optimality_stamps_and_round_trips(toy_loaded):
+def _store_exact(loaded, solution):
+    return save_td_solution_as_bks_if_improved(loaded, solution, authors=AUTHORS, backend='python').path
+
+
+def test_annotate_records_a_solver_claim_with_bounds_and_evidence(toy_loaded):
     solution = _solution(toy_loaded, [[1, 2]])
-    cost = check_td_solution(toy_loaded, solution).routing_cost
-    _store_legacy(toy_loaded, solution)
-
-    stamp = _optimality(proven_optimum=cost, dual_bound=cost, wall_time_s=1.5, time_limit_s=600.0)
-    bks_path = annotate_td_bks_optimality(toy_loaded, stamp)
-
-    stored = load_bks(bks_path)
-    assert stored.cost == cost  # untouched
-    assert stored.routes == [[1, 2]]  # untouched
-    assert stored.metadata["authors"] == AUTHORS  # finder credit untouched
-    optimality = stored.metadata["optimality"]
-    assert optimality["target_profile"] == "td-fold/2"
-    assert optimality["proven"] is True
-    assert optimality["prover"] == "test exact solver 1.0"
-    assert optimality["proven_optimum"] == cost
-    assert "note" not in optimality  # None fields are dropped on write
+    path = _store_exact(toy_loaded, solution)
+    before = load_bks(path)
+    claim = _claim(reported_primal=before.cost, reported_dual=before.cost, campaign="test run",
+                   evidence={"path": "evidence/run.log", "sha256": "a" * 64, "scope": "file"})
+    assert annotate_td_bks_optimality(toy_loaded, claim, backend='python') == path
+    stored = load_bks(path)
+    assert stored.routes == before.routes and stored.cost == before.cost
+    assert stored.metadata["authors"] == AUTHORS
+    assert stored.metadata["optimality"] == claim
 
 
 def test_annotate_optimality_accepts_model_instance(toy_loaded):
-    solution = _solution(toy_loaded, [[1, 2]])
-    _store_legacy(toy_loaded, solution)
-    bks_path = annotate_td_bks_optimality(toy_loaded, OptimalityMetadata(**_optimality()))
-    assert load_bks(bks_path).metadata["optimality"]["proven"] is True
+    path = _store_exact(toy_loaded, _solution(toy_loaded, [[1, 2]]))
+    annotate_td_bks_optimality(toy_loaded, SolverReportedOptimality(**_claim()), backend='python')
+    assert load_bks(path).metadata["optimality"] == _claim()
 
 
 def test_annotate_optimality_requires_existing_bks(toy_loaded):
     with pytest.raises(FileNotFoundError, match="No stored Duration BKS"):
-        annotate_td_bks_optimality(toy_loaded, _optimality())
+        annotate_td_bks_optimality(toy_loaded, _claim())
 
 
-def test_annotate_optimality_rejects_cost_mismatch(toy_loaded):
-    solution = _solution(toy_loaded, [[1, 2]])
-    cost = check_td_solution(toy_loaded, solution).routing_cost
-    _store_legacy(toy_loaded, solution)
-    with pytest.raises(ValueError, match="does not match the stored"):
-        annotate_td_bks_optimality(toy_loaded, _optimality(proven_optimum=cost + 1.0))
-
-
-def test_annotate_optimality_dust_needs_note(toy_loaded):
-    solution = _solution(toy_loaded, [[1, 2]])
-    cost = check_td_solution(toy_loaded, solution).routing_cost
-    _store_legacy(toy_loaded, solution)
-
-    dust_optimum = cost - 1e-9
-    with pytest.raises(ValueError, match="note"):
-        annotate_td_bks_optimality(toy_loaded, _optimality(proven_optimum=dust_optimum))
-
-    bks_path = annotate_td_bks_optimality(
-        toy_loaded,
-        _optimality(proven_optimum=dust_optimum, note="stored cost differs by float summation dust"),
-    )
-    assert load_bks(bks_path).metadata["optimality"]["proven_optimum"] == dust_optimum
-
-
-def test_annotate_optimality_rejects_malformed_stamp(toy_loaded):
-    solution = _solution(toy_loaded, [[1, 2]])
-    _store_legacy(toy_loaded, solution)
+@pytest.mark.parametrize("claim", [
+    _optimality(),
+    _optimality(proven_optimum=1.0, dual_bound=1.0),
+    {**_claim(), "proven": True},
+    {**_claim(), "prover": "test exact solver 1.0"},
+    _claim(status="proven-optimal"),
+    _claim(target_profile="td-fold/2"),
+    _claim(solver=""),
+    _claim(reported_dual=float("inf")),
+    _claim(evidence={"path": "/abs/run.log", "sha256": "a" * 64}),
+    _claim(evidence={"path": "run.log", "sha256": "not-a-digest"}),
+])
+def test_annotate_refuses_legacy_hybrid_and_malformed_claims(toy_loaded, claim):
+    path = _store_exact(toy_loaded, _solution(toy_loaded, [[1, 2]]))
+    before = path.read_bytes()
     with pytest.raises(ValueError):
-        annotate_td_bks_optimality(toy_loaded, _optimality(proven=False))
-    with pytest.raises(ValueError):
-        annotate_td_bks_optimality(toy_loaded, _optimality(unexpected_key="x"))
+        annotate_td_bks_optimality(toy_loaded, claim, backend='python')
+    assert path.read_bytes() == before
+
+
+def test_annotate_refuses_an_incumbent_without_exact_evaluation(toy_loaded):
+    _store_legacy(toy_loaded, _solution(toy_loaded, [[1, 2]]))
+    with pytest.raises(ValueError, match="requires an incumbent evaluated"):
+        annotate_td_bks_optimality(toy_loaded, _claim(), backend='python')
+
+
+def test_write_bks_file_refuses_a_legacy_claim_but_old_files_still_load(toy_loaded, tmp_path):
+    from mamut_routing_lib.artifacts import save_json_to_file
+
+    solution = _solution(toy_loaded, [[1, 2]])
+    legacy = BenchmarkBKS(instance_name=solution.instance_name, objective_function=ObjectiveFunction.DURATION,
+                          routes=solution.routes, metadata={'authors': AUTHORS, 'optimality': _optimality()})
+    target = tmp_path / "legacy.bks.Duration.json"
+    with pytest.raises(ValueError, match="legacy optimality claim"):
+        write_bks_file(legacy, target)
+    assert not target.exists()
+    save_json_to_file(legacy.model_dump(mode="json"), target)
+    assert load_bks(target).metadata["optimality"]["proven"] is True
 
 
 def test_stamped_metadata_survives_save_if_improved(toy_loaded):
-    # A later (non-improving) save attempt must not clobber the stamp.
+    # A later (non-improving) save attempt must not clobber the claim.
     solution = _solution(toy_loaded, [[1, 2]])
-    _store_legacy(toy_loaded, solution)
-    annotate_td_bks_optimality(toy_loaded, _optimality())
-    kept = save_td_solution_as_bks_if_improved(toy_loaded, solution, authors=AUTHORS)
+    _store_exact(toy_loaded, solution)
+    annotate_td_bks_optimality(toy_loaded, _claim(), backend='python')
+    kept = save_td_solution_as_bks_if_improved(toy_loaded, solution, authors=AUTHORS, backend='python')
     assert kept.action == "kept_existing"
-    assert load_bks(kept.path).metadata["optimality"]["proven"] is True
+    assert load_bks(kept.path).metadata["optimality"] == _claim()
 
 
 def test_exact_candidate_and_legacy_proof_display_collision(tmp_path):
@@ -236,7 +247,9 @@ def test_exact_candidate_and_legacy_proof_display_collision(tmp_path):
     store = get_bks_path_for_instance(path, ObjectiveFunction.DURATION)
     incumbent = BenchmarkBKS(instance_name=loaded.instance.instance_name, routes=[[1, 2]], cost=huge,
                              objective_function=ObjectiveFunction.DURATION, metadata={'authors': AUTHORS, 'optimality': _optimality()})
-    write_bks_file(incumbent, store)
+    # Old files with a legacy stamp still load, so craft one without the store writer.
+    from mamut_routing_lib.artifacts import save_json_to_file
+    save_json_to_file(incumbent.model_dump(mode='json'), store)
     original = store.read_bytes()
     def submit(routes):
         return save_td_solution_as_bks_if_improved(loaded, _solution(loaded, routes), authors=AUTHORS, backend='python')

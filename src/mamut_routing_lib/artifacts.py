@@ -653,7 +653,13 @@ def write_bks_file(bks: BenchmarkBKS, bks_path: str | Path) -> None:
     """Serialize a BKS model to JSON, replacing the file and creating parent directories.
 
     Use submit_bks or save_bks_if_improved to evaluate routes and compare an incumbent.
+    Refuses a legacy optimality stamp: a new claim must be a ``SolverReportedOptimality``.
     """
+    from mamut_routing_lib.models import is_legacy_optimality_claim
+
+    if "optimality" in bks.metadata and is_legacy_optimality_claim(bks.metadata["optimality"]):
+        raise ValueError("Refusing to write a legacy optimality claim. Record a solver claim with "
+                         "status 'solver-reported-optimal', its target_profile and its solver instead.")
     save_json_to_file(bks.model_dump(mode="json"), bks_path)
 
 

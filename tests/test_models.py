@@ -359,3 +359,13 @@ def test_load_rejects_a_descriptor_with_a_moved_depot(tmp_path):
     path.write_text(json.dumps({**make_valid_historical_instance_kwargs(), "depot": 2}))
     with pytest.raises(ValidationError, match="depot must be vertex 0"):
         load_benchmark_instance(path)
+
+
+def test_solver_claim_has_a_closed_shape() -> None:
+    claim = {"status": "solver-reported-optimal", "target_profile": "binary64-exact-v1", "solver": "solver X 1.0",
+             "reported_primal": 12, "reported_dual": 11.5,
+             "evidence": {"path": "evidence/run.log", "sha256": "0" * 64, "scope": "file"}}
+    assert _bks_with_metadata({"optimality": claim}).metadata["optimality"] == claim
+    for extra in ({"proven": True}, {"prover": "solver X"}, {"proven_optimum": 12}, {"certificate": "c"}):
+        with pytest.raises(ValidationError):
+            _bks_with_metadata({"optimality": {**claim, **extra}})

@@ -7,8 +7,8 @@ instance (``BenchmarkInstanceCVRPCollection`` / ``BenchmarkInstanceVRPTWCollecti
 whose matrix comes from an ``arc_costs_source``: a sha-pinned distances
 sidecar or the euclidean rule), a solution (``BenchmarkSolution``), a
 best-known solution (``BenchmarkBKS``, a solution plus its objective) and
-an optimality claim (``OptimalityMetadata``, validated inside
-``metadata["optimality"]``). Node index 0 is the depot, and validation rejects
+a solver claim of optimality (``SolverReportedOptimality``, validated inside
+``metadata["optimality"]``, where the legacy ``OptimalityMetadata`` is read only). Node index 0 is the depot, and validation rejects
 any other ``depot`` value and a nonzero depot service time. Customers are
 ``1..num_customers``. Time-dependent instances live
 in ``mamut_routing_lib.td.models``.
@@ -363,13 +363,11 @@ AnyStaticBenchmarkInstance: TypeAlias = LoadedStaticInstance | AnyCollectionStat
 
 
 class OptimalityMetadata(BaseModel):
-    """Structured record of an optimality proof, stored under ``metadata["optimality"]``.
+    """Legacy optimality stamp (``proven: true``), accepted on read only.
 
-    The stamp asserts that the stored solution's cost is a proven optimum. The
-    required fields identify the claim (who proved it, under which caveats,
-    when); the optional fields carry the proof numerics and provenance. All
-    free-text fields must be self-contained — meaningful to an external reader
-    of the benchmark repository without access to any private context.
+    Earlier releases wrote this shape under ``metadata["optimality"]``. A record
+    that still carries it loads, so old files stay readable, but the store and
+    ``write_bks_file`` refuse to write it. New claims use ``SolverReportedOptimality``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -389,14 +387,51 @@ class OptimalityMetadata(BaseModel):
     note: str | None = None
 
 
-class SolverReportedOptimality(BaseModel):
-    """An attributable solver self-report under its own evaluation contract."""
+class ClaimEvidence(BaseModel):
+    """A file preserved as evidence of a solver claim, pinned by the sha256 of its bytes."""
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    scope: Literal["file"] = "file"
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, value: str) -> str:
+        return _validate_relative_path(value)
+
+
+class SolverReportedOptimality(BaseModel):
+    """An attributable solver self-report of optimality, stored under ``metadata["optimality"]``.
+
+    ``target_profile`` names the evaluation profile under which the solver claims
+    optimality. The store requires it to equal the profile of the evaluated family.
+    ``reported_primal`` and ``reported_dual`` are the solver's own bounds, in its
+    own arithmetic, and ``evidence`` pins a preserved file of the run. The checker
+    verifies the routes but not the claim.
+    """
+
+    model_config = ConfigDict(extra="forbid")
     status: Literal["solver-reported-optimal"]
     target_profile: str = Field(min_length=1)
     solver: str = Field(min_length=1)
     campaign: str | None = None
+    reported_primal: NumericOperand | None = None
+    reported_dual: NumericOperand | None = None
+    evidence: ClaimEvidence | None = None
+
+    @field_validator("reported_primal", "reported_dual")
+    @classmethod
+    def validate_bound(cls, value):
+        if isinstance(value, float) and not isfinite(value):
+            raise ValueError("a reported bound must be finite")
+        return value
+
+
+def is_legacy_optimality_claim(claim: Any) -> bool:
+    """True for a ``metadata["optimality"]`` value without the ``solver-reported-optimal`` status."""
+    return not (isinstance(claim, dict) and claim.get("status") == "solver-reported-optimal")
 
 
 class _SolutionValidationMixin(BaseModel):
