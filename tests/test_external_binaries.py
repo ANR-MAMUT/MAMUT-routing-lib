@@ -92,6 +92,24 @@ def test_real_solver_returns_checker_valid_routes(tmp_path: Path, name: str, met
         assert result.provenance["problem_type_line"] == "ACVRP"
 
 
+def test_ails2_seed_reproduces_checked_routes_at_a_fixed_iteration_limit(tmp_path: Path) -> None:
+    from mamut_routing_lib.solvers.external.adapter import ExternalSolver
+
+    descriptor = _require("ails2").descriptor
+    fixed = {"Time": "Iteration", "{time_limit_s}": "50"}
+    argv = tuple(fixed.get(token, token) for token in descriptor.argv)
+    solver = ExternalSolver(descriptor.with_overrides(argv=argv))
+    path = _instance(tmp_path, metric="euclidean")
+    outputs = []
+    for run in ("first", "second"):
+        directory = tmp_path / run
+        solved = run_solver(solver, path, time_limit_s=30, seed=42, workdir=directory, keep_artifacts=True)
+        assert solved.valid, solved.result.error
+        assert solved.result.solver_cost == pytest.approx(solved.cost, rel=1e-5)
+        outputs.append((solved.result.routes, solved.cost, (directory / descriptor.solution_file).read_bytes()))
+    assert outputs[0] == outputs[1]
+
+
 @pytest.mark.parametrize("name", ["hgs-cvrp", "lkh3", "filo2", "ails2"])
 def test_cancelling_a_real_solver_kills_it(tmp_path: Path, name: str) -> None:
     solver = _require(name)

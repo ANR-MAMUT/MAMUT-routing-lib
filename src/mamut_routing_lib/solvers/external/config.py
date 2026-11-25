@@ -621,7 +621,7 @@ _STARTER_SOLVERS = (
         (
             "HGS-CVRP (CVRP) -- {homepage}\n"
             "Needs the full-matrix reader patch (upstream HGS-CVRP rejects EDGE_WEIGHT_SECTION), then a rebuild:\n"
-            "  git -C HGS-CVRP checkout 1a92795 && git -C HGS-CVRP apply {patch}"
+            "  git -C HGS-CVRP checkout 1a92795 && git -C HGS-CVRP apply {hgs_patch}"
         ),
         ('executable = "/path/to/HGS-CVRP/build/hgs"', 'version = "1a92795"'),
     ),
@@ -629,8 +629,8 @@ _STARTER_SOLVERS = (
         "ails2",
         (
             "AILS-II (CVRP, Java 21) -- {homepage}\n"
-            "Needs a build that adds -seed and -out options (upstream writes no routes and is not seedable).\n"
-            "This package does not ship that patch yet, so an unpatched upstream jar cannot be used."
+            "Apply the packaged -seed/-out patch in the 2023.0106 checkout and rebuild the jar with JDK 21.\n"
+            "  git -C 2023.0106 checkout 4ff3611 && git -C 2023.0106 apply {ails_patch}"
         ),
         ('jar = "/path/to/AILSII.jar"', 'java = "java"                       # or the path of a JDK/JRE 21 java', 'version = "4ff3611"'),
     ),
@@ -675,13 +675,15 @@ def starter_config_text(*, detect: bool = True) -> str:
     With ``detect``, a solver already found on PATH is marked as such (it needs no table).
     The text parses as a valid config that defines no solver.
     """
+    from shlex import quote
     from mamut_routing_lib.solvers.external.adapter import find_on_path
     from mamut_routing_lib.solvers.external.catalog import BUILTIN_DESCRIPTORS, patch_path
 
     parts = [_STARTER_HEADER]
     for name, about, lines in _STARTER_SOLVERS:
         descriptor = BUILTIN_DESCRIPTORS[name]
-        text = about.format(homepage=descriptor.homepage or "", patch=patch_path("hgs-cvrp-explicit-matrix.patch"))
+        text = about.format(homepage=descriptor.homepage or "", hgs_patch=quote(patch_path("hgs-cvrp-explicit-matrix.patch")),
+                            ails_patch=quote(patch_path("ails2-seed-out.patch")))
         block = [_comment(text)]
         if detect and descriptor.runtime == "native":
             found = next((hit for candidate in descriptor.executable_names if (hit := find_on_path(candidate)[0])), None)

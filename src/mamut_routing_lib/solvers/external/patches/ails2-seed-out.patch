@@ -1,0 +1,171 @@
+MAMUT-routing AILS-II patch for a shared random seed and CVRPLIB solution output.
+
+The Mamut2026 BKS campaign used vinymax10/AILS-CVRP at e631331c76f001e652af9895e27f0fd8da8698c0. An archived version is available in the authors' INFORMS Journal on Computing snapshot at INFORMSJoC/2023.0106 revision 4ff361153681635149e30305057251e9035ec6b7. Apply this patch at the root of either checkout.
+
+Campaign patch: https://github.com/ANR-MAMUT/MAMUT-routing-Mamut2026/blob/e57c1af3d8f21587fac38678fbdf8cff02b8c1e9/campaigns/2026-09-bks-campaign-3/ails2.patch
+Campaign patch SHA-256: 34b155e2efc58aade793c48de46a3fd7f763bbb2f884f043d476ad8106075031
+The first five diffs are unchanged. The sixth installs the original SharedRandom.java text as a new file.
+
+Upstream AILS-II license:
+
+Copyright 2022, Vinícius R. Máximo
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+diff --git a/src/DiversityControl/OmegaAdjustment.java b/src/DiversityControl/OmegaAdjustment.java
+index 813162c..91b7c27 100644
+--- a/src/DiversityControl/OmegaAdjustment.java
++++ b/src/DiversityControl/OmegaAdjustment.java
+@@ -18,7 +18,7 @@ public class OmegaAdjustment
+ 	Mean averageOmega;
+ 	
+ 	double actualOmega;
+-	Random rand=new Random();
++	Random rand=Auxiliary.SharedRandom.get();
+ 	PerturbationType perturbationType;
+ 	int numIterUpdate;
+ 	IdealDist idealDist;
+diff --git a/src/Perturbation/Perturbation.java b/src/Perturbation/Perturbation.java
+index a4e4fed..e007d68 100644
+--- a/src/Perturbation/Perturbation.java
++++ b/src/Perturbation/Perturbation.java
+@@ -17,7 +17,7 @@ public abstract class Perturbation
+ 	protected int numRoutes;
+ 	protected Node solution[];
+ 	protected double f=0;
+-	protected Random rand=new Random();
++	protected Random rand=Auxiliary.SharedRandom.get();
+ 	public double omega;
+ 	OmegaAdjustment chosenOmega;
+ 	Config config;
+diff --git a/src/SearchMethod/AILSII.java b/src/SearchMethod/AILSII.java
+index f16b911..6c63578 100644
+--- a/src/SearchMethod/AILSII.java
++++ b/src/SearchMethod/AILSII.java
+@@ -37,7 +37,7 @@ public class AILSII
+ 	long first,ini;
+ 	double timeAF,totalTime,time;
+ 	
+-	Random rand=new Random();
++	Random rand=Auxiliary.SharedRandom.get();
+ 	
+ 	HashMap<String,OmegaAdjustment>omegaSetup=new HashMap<String,OmegaAdjustment>();
+ 
+@@ -202,6 +202,18 @@ public class AILSII
+ 		AILSII ailsII=new AILSII(instance,reader);
+ 		
+ 		ailsII.search();
++		if(!reader.getOut().isEmpty())
++		{
++			try
++			{
++				java.nio.file.Files.writeString(java.nio.file.Path.of(reader.getOut()), ailsII.getBestSolution().toString());
++			}
++			catch(java.io.IOException e)
++			{
++				e.printStackTrace();
++				System.exit(2);
++			}
++		}
+ 	}
+ 	
+ 	public Solution getBestSolution() {
+diff --git a/src/SearchMethod/ConstructSolution.java b/src/SearchMethod/ConstructSolution.java
+index 6ce7849..df3b7c4 100644
+--- a/src/SearchMethod/ConstructSolution.java
++++ b/src/SearchMethod/ConstructSolution.java
+@@ -14,7 +14,7 @@ public class ConstructSolution
+ 	private double f=0;
+ 	private int numRoutes;
+ 	private Node []solution;
+-	protected Random rand=new Random();
++	protected Random rand=Auxiliary.SharedRandom.get();
+ 	protected int size;
+ 	Instance instance;
+ 	Node notInserted[];
+diff --git a/src/SearchMethod/InputParameters.java b/src/SearchMethod/InputParameters.java
+index d5d8246..c23b41f 100644
+--- a/src/SearchMethod/InputParameters.java
++++ b/src/SearchMethod/InputParameters.java
+@@ -10,6 +10,8 @@ public class InputParameters
+ 	private boolean rounded=true;
+ 	private double limit=Double.MAX_VALUE;
+ 	private double best=0;
++	private long seed=-1;
++	private String out="";
+ 	private Config config =new Config();
+ 	
+ 	public void readingInput(String[] args)
+@@ -24,6 +26,8 @@ public class InputParameters
+ 					case "-rounded": rounded=getRound(args[i+1]);break;
+ 					case "-limit": limit=getLimit(args[i+1]);break;
+ 					case "-best": best=getBest(args[i+1]);break;
++					case "-seed": seed=Long.parseLong(args[i+1].trim());break;
++					case "-out": out=args[i+1];break;
+ 					case "-stoppingCriterion": config.setStoppingCriterionType(getStoppingCriterion(args[i+1]));break;
+ 					case "-dMax": config.setDMax(getDMax(args[i+1]));break;
+ 					case "-dMin": config.setDMin(getDMin(args[i+1]));break;
+@@ -41,11 +45,25 @@ public class InputParameters
+ 		System.out.println("Rounded: "+rounded);
+ 		System.out.println("limit: "+limit);
+ 		System.out.println("Best: "+best);
++		System.out.println("Seed: "+seed);
++		System.out.println("Out: "+out);
++		if(seed>=0)
++			Auxiliary.SharedRandom.seed(seed);
+ 		System.out.println("LimitTime: "+limit);
+ 		System.out.println(config);
+ 	}
+ 	
+ 	
++	public long getSeed()
++	{
++		return seed;
++	}
++
++	public String getOut()
++	{
++		return out;
++	}
++
+ 	public String getAddress(String text)
+ 	{
+ 		try 
+diff --git a/src/Auxiliary/SharedRandom.java b/src/Auxiliary/SharedRandom.java
+new file mode 100644
+index 0000000..ac108df
+--- /dev/null
++++ b/src/Auxiliary/SharedRandom.java
+@@ -0,0 +1,16 @@
++package Auxiliary;
++
++import java.util.Random;
++
++/** Campaign patch: one process-wide RNG so every stochastic component shares the `-seed`. */
++public final class SharedRandom {
++    private static Random instance = new Random();
++
++    public static void seed(long seed) {
++        instance = new Random(seed);
++    }
++
++    public static Random get() {
++        return instance;
++    }
++}
