@@ -121,7 +121,7 @@ from mamut_routing_lib.models import (
     BenchmarkSolution,
     InstanceMetadata,
     ClaimEvidence,
-    OptimalityMetadata,
+    LegacyOptimalityClaimError,
     SolverReportedOptimality,
 )
 from mamut_routing_lib.remote import (
@@ -232,7 +232,7 @@ __all__ = [
     "MetricVariant",
     "ObjectiveFunction",
     "ClaimEvidence",
-    "OptimalityMetadata",
+    "LegacyOptimalityClaimError",
     "SolverReportedOptimality",
     "ProblemType",
     "ProgressCallback",

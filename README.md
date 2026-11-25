@@ -90,7 +90,7 @@ The v0.13 library requires Pydantic 2.10 or newer for TD route results with rati
 | `save_bks(record, path)` | `write_bks_file(record, path)` | Serialize the model to the given path, overwriting an existing file. Use `submit_bks` for checked submission. |
 | `exact_cost_value(number)` | `shortest_decimal_cost_value(number)` | Recover the rational value of the shortest decimal spelling of the parsed number. |
 | `compute_exact_solution_cost(instance, routes)` | `compute_shortest_decimal_solution_cost(instance, routes)` | Sum the static arc costs using that historical decimal interpretation. For the v0.13 binary64 profile use `evaluate_exact(instance, routes).cost`. |
-| `OptimalityMetadata` (a `proven: true` stamp) under `metadata.optimality` | `SolverReportedOptimality` | Old files with a legacy stamp still load. `write_bks_file`, the BKS store and `td.annotate_td_bks_optimality` refuse to write one. A TD claim annotates only an incumbent that carries an exact evaluation. The legacy TD repricer leaves a claimed record untouched and reports `stamp-conflict`. |
+| `OptimalityMetadata` (a `proven: true` stamp) under `metadata.optimality` | `SolverReportedOptimality` | Removed. A file that carries a legacy stamp is not read: `load_bks` raises `LegacyOptimalityClaimError`. Read such historical files with mamut-routing-lib 0.12.0. |
 | `BKSUpdateResult.action` and the `action` of `preview_bks_update` as plain strings | `BKSUpdateAction` and `BKSPreviewAction` | Closed `Literal` vocabularies with the same values. An unknown value raises `ValueError`. |
 | A `depot` other than 0 or a nonzero depot service time, refused when the evaluator is prepared | Refused when the instance is validated | Loading such a descriptor raises a validation error. |
 | `save_bks_if_improved` trusting the supplied instance when no manifest exists | Same name, checked against the descriptor | The supplied instance must equal the descriptor and hydrated matrix at `instance_path`. A missing descriptor raises `FileNotFoundError`. |
@@ -429,7 +429,7 @@ Caveats:
 
 For static v0.12 replay, import `check_solution`, `compute_route_cost` or `compute_solution_cost` from `mamut_routing_lib.static_v012`. The separately named `compute_shortest_decimal_solution_cost` diagnostic sums the shortest decimal spellings of the parsed operands.
 
-For `td-fold/2` replay, import `check_td_solution` and the route helpers from `mamut_routing_lib.td.fold2`. The v0.12 repricer uses that module. To preview its effects on a historical checkout, run `mamut-routing bks reprice-td benchmarks --dry-run --jobs 8 --report reprice.json`. The historical repricer refuses records that carry exact evaluation or certification metadata.
+For `td-fold/2` replay, import `check_td_solution` and the route helpers from `mamut_routing_lib.td.fold2`. The v0.12 repricer uses that module. To preview its effects on a historical checkout, run `mamut-routing bks reprice-td benchmarks --dry-run --jobs 8 --report reprice.json`. The historical repricer refuses records that carry exact evaluation metadata or an optimality claim.
 
 ## Development
 

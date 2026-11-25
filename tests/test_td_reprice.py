@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from typer.testing import CliRunner
 
 from mamut_routing_lib.cli import app
@@ -46,16 +44,6 @@ def _write_bks(directory: Path, *, cost, durations, departures, optimality=None,
         path,
     )
     return path
-
-
-def _stamp(proven_optimum):
-    return {
-        "proven": True,
-        "prover": "a test prover",
-        "certificate": "Optimal in a test.",
-        "date": "2026-01-01",
-        "proven_optimum": proven_optimum,
-    }
 
 
 def test_unchanged_bks_is_left_alone(tmp_path: Path) -> None:
@@ -103,14 +91,16 @@ def test_derived_fields_alone_are_refreshed_without_a_repriced_marker(tmp_path: 
     assert "repriced" not in stored["metadata"]
 
 
-@pytest.mark.parametrize("cost", [30.000000000000004, 31.0])
-def test_a_claimed_record_is_never_rewritten(tmp_path: Path, cost: float) -> None:
+def test_a_claimed_record_is_refused_before_loading_artifacts(tmp_path: Path) -> None:
     write_toy_instance_files(tmp_path)
-    path = _write_bks(tmp_path, cost=cost, durations=[cost], departures=[40.0], optimality=_stamp(cost))
+    claim = {"status": "solver-reported-optimal", "target_profile": "td-binary64-exact-v1", "solver": "a test solver"}
+    path = _write_bks(tmp_path, cost=30.000000000000004, durations=[30.000000000000004], departures=[40.0],
+                      optimality=claim)
+    (tmp_path / "TOY1.atf.json").unlink()
     before = path.read_bytes()
     for dry_run in (True, False):
         result = reprice_td_bks(path, dry_run=dry_run)
-        assert result.action == "stamp-conflict" and result.stamped
+        assert result.action == "error" and "optimality claim" in result.detail
         assert path.read_bytes() == before
 
 
