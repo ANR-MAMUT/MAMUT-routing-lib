@@ -32,7 +32,7 @@ from typing import Any
 CHECKPOINT_INTERVAL_S = 0.1
 
 
-def _finite_duration(value: float | None) -> float | None:
+def _finite_value(value: float | None) -> float | None:
     return float(value) if value is not None and math.isfinite(value) else None
 
 
@@ -47,6 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="mamut_routing_lib.solvers._kayros_worker")
     parser.add_argument("instance")
     parser.add_argument("--time-limit", type=float, required=True)
+    parser.add_argument("--objective", choices=("Duration", "FleetCostDuration"), default="Duration")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--result", required=True)
@@ -60,7 +61,7 @@ def main(argv: list[str] | None = None) -> int:
 
     def on_incumbent(incumbent: Any, routes: list[list[int]]) -> None:
         with lock:
-            latest["value"] = _finite_duration(getattr(incumbent, "value", None))
+            latest["value"] = _finite_value(getattr(incumbent, "value", None))
             latest["iteration"] = int(getattr(incumbent, "iteration", 0) or 0)
             latest["routes"] = [list(route) for route in routes]
         dirty.set()
@@ -89,7 +90,13 @@ def main(argv: list[str] | None = None) -> int:
 
         loaded = load_td_instance(args.instance)
         print("solving", flush=True)
-        solution = kayros.solve(loaded, time_limit=args.time_limit, seed=args.seed, on_incumbent=on_incumbent)
+        solution = kayros.solve(
+            loaded,
+            kayros.Params(objective=args.objective),
+            time_limit=args.time_limit,
+            seed=args.seed,
+            on_incumbent=on_incumbent,
+        )
     except Exception as error:  # noqa: BLE001 - reported to the parent, which makes it a failed result
         print(f"error: {type(error).__name__}: {error}", flush=True)
         write_json_atomic(result_path, {"ok": False, "error": f"{type(error).__name__}: {error}", **_library_identity()})
@@ -102,10 +109,11 @@ def main(argv: list[str] | None = None) -> int:
         {
             "ok": True,
             "routes": [list(route) for route in solution.routes],
-            "duration": _finite_duration(getattr(solution, "duration", None)),
+            # Released Kayros 1.7 used duration for the full objective, including any fleet charge.
+            "cost": _finite_value(getattr(solution, "cost", getattr(solution, "duration", None))),
             "status": getattr(solution, "status", None),
             "iterations": getattr(solution, "iterations", None),
-            "route_durations": [_finite_duration(value) for value in (getattr(solution, "route_durations", None) or [])],
+            "route_durations": [_finite_value(value) for value in (getattr(solution, "route_durations", None) or [])],
             **_library_identity(),
         },
     )

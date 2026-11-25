@@ -1045,7 +1045,7 @@ def list_instances(
 
 
 SOLVER_HELP = (
-    "Solver to run: pyvrp (default; CVRP/VRPTW), kayros (TDVRP/TDVRPTW Duration), or an external "
+    "Choose pyvrp (default, CVRP/VRPTW), kayros (TDVRP/TDVRPTW, Duration or FleetCostDuration), or an external "
     "executable -- filo2, ails2 (CVRP, euclidean variants), hgs-cvrp (CVRP, any metric; patched reader), "
     "lkh3 (CVRP/VRPTW) -- configured in the solvers config. `mamut-routing solvers list` shows what is "
     "available here."

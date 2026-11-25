@@ -1,4 +1,4 @@
-"""KAYROS as a registry solver (``kayros``): time-dependent TDVRP / TDVRPTW, Duration.
+"""KAYROS as a registry solver (``kayros``): time-dependent TDVRP / TDVRPTW with Duration or FleetCostDuration.
 
 KAYROS is a separate package (``pip install kayros``, or the tools'
 ``[kayros]`` extra) that implements the lib's TD checker contract. Its search is
@@ -62,9 +62,9 @@ PROGRESS_PATTERN = r"^incumbent cost=(?P<cost>\S+) iterations=(?P<iterations>\d+
 #: travel-time functions before the search, and the final check after it.
 HARD_TIMEOUT_GRACE_S = 600.0
 
-_DURATION = frozenset({ObjectiveFunction.DURATION})
+_TD_OBJECTIVES = frozenset({ObjectiveFunction.DURATION, ObjectiveFunction.FLEET_COST_DURATION})
 _CAPABILITIES = SolverCapabilities(
-    objectives={ProblemType.TDVRP: _DURATION, ProblemType.TDVRPTW: _DURATION},
+    objectives={ProblemType.TDVRP: _TD_OBJECTIVES, ProblemType.TDVRPTW: _TD_OBJECTIVES},
     input="model",
     symmetric_only=False,
     fleet_limit=True,
@@ -87,10 +87,11 @@ def _routes(payload: dict[str, Any] | None) -> list[list[int]]:
     return [[int(stop) for stop in route] for route in (payload or {}).get("routes") or []]
 
 
-def _duration_report(value: float | None) -> dict[str, Any] | None:
+def _objective_report(objective: str, value: float | None) -> dict[str, Any] | None:
     if value is None or not math.isfinite(value):
         return None
-    return make_solver_report("total-route-duration", float(value), encoding="binary64", unit=Fraction(1))
+    name = "total-route-duration" if objective == ObjectiveFunction.DURATION.value else "fleet-cost-duration"
+    return make_solver_report(name, float(value), encoding="binary64", unit=Fraction(1))
 
 
 def _how_it_ended(returncode: int | None) -> str:
@@ -106,7 +107,7 @@ def _how_it_ended(returncode: int | None) -> str:
 
 
 class KayrosSolver:
-    """KAYROS (ACO + ILS) for time-dependent instances, Duration objective."""
+    """KAYROS for the Duration and FleetCostDuration objectives on time-dependent instances."""
 
     name = "kayros"
     label = "KAYROS"
@@ -126,7 +127,10 @@ class KayrosSolver:
         return Availability(True, version=package_version("kayros"), note=_requirement_note())
 
     def supports(self, profile: InstanceProfile, objective: ObjectiveFunction) -> Support:
-        return capability_support(self.capabilities, profile, objective, solver_label=self.label)
+        support = capability_support(self.capabilities, profile, objective, solver_label=self.label)
+        if support.supported and objective is ObjectiveFunction.FLEET_COST_DURATION and not profile.has_fleet_fixed_cost:
+            return Support.refuse("FleetCostDuration requires the instance to specify fleet_fixed_cost")
+        return support
 
     def solve(self, request: SolveRequest, monitor: SolveMonitor | None = None) -> SolveResult:
         from mamut_routing_lib.solvers.external.process import run_process
@@ -173,6 +177,8 @@ class KayrosSolver:
                     str(Path(request.instance_path).resolve()),
                     "--time-limit",
                     repr(float(request.time_limit_s)),
+                    "--objective",
+                    request.objective.value,
                     "--seed",
                     str(int(request.seed)),
                     "--checkpoint",
@@ -224,7 +230,7 @@ class KayrosSolver:
                 wall_time=wall_time,
                 status="cancelled" if stopped else ("feasible" if routes else "infeasible"),
                 routes=routes,
-                solver_report=_duration_report(result.get("duration")) if routes else None,
+                solver_report=_objective_report(base["objective_function"], result.get("cost")) if routes else None,
                 stopped_early=stopped,
                 metadata={
                     "status": result.get("status"),
@@ -238,7 +244,7 @@ class KayrosSolver:
             **base,
             wall_time=wall_time,
             routes=routes,
-            solver_report=_duration_report(incumbent.get("value")) if routes else None,
+            solver_report=_objective_report(base["objective_function"], incumbent.get("value")) if routes else None,
             metadata={"iterations": (incumbent or {}).get("iteration")},
         )
         if outcome.termination == "exited":

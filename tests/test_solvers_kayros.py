@@ -30,6 +30,11 @@ from pathlib import Path
 
 
 @dataclass
+class Params:
+    objective: str
+
+
+@dataclass
 class _Incumbent:
     value: float
     seconds: float
@@ -40,7 +45,7 @@ class _Incumbent:
 @dataclass
 class _Solution:
     routes: list
-    duration: float
+    cost: float
     route_durations: list
     status: str
     iterations: int
@@ -56,7 +61,12 @@ def solve(instance, params=None, *, time_limit=None, seed=0, on_incumbent=None):
     if mode == "killed-early":
         os.kill(os.getpid(), signal.SIGKILL)  # before any incumbent: nothing to recover
     routes = [[1], [2]]
-    on_incumbent(_Incumbent(99.0, 0.01, 1, "ils"), routes)
+    cost = 99.0
+    if params.objective == "FleetCostDuration":
+        cost += len(routes) * instance.instance.fleet_fixed_cost
+    else:
+        assert params.objective == "Duration"
+    on_incumbent(_Incumbent(cost, 0.01, 1, "ils"), routes)
     if mode in ("killed", "explode-late"):
         # The worker saves an incumbent a moment after the hook returns: wait for the file.
         checkpoint = Path(sys.argv[sys.argv.index("--checkpoint") + 1])
@@ -69,8 +79,12 @@ def solve(instance, params=None, *, time_limit=None, seed=0, on_incumbent=None):
     if mode == "stall":
         # The real search once it stops improving: no incumbent, so no way back into Python.
         time.sleep(20)
-    duration = {"missing-duration": None, "infinite-duration": float("inf")}.get(mode, 99.0)
-    return _Solution(routes=routes, duration=duration, route_durations=[50.0, 49.0], status="time_limit", iterations=1)
+    value = {"missing-duration": None, "infinite-duration": float("inf")}.get(mode, cost)
+    solution = _Solution(routes=routes, cost=value, route_durations=[50.0, 49.0], status="time_limit", iterations=1)
+    if mode == "legacy":
+        solution.duration = solution.cost
+        del solution.cost
+    return solution
 '''
 
 
@@ -267,7 +281,23 @@ def test_kayros_failure_is_a_result(fake_kayros, td_instance: Path) -> None:
     assert solved.result.status == "failed" and "disagreement" in solved.result.error
 
 
-def test_kayros_refuses_static_instances_and_fleet_cost(fake_kayros, td_instance: Path, toy_cvrp_instance, tmp_path: Path) -> None:
+@pytest.mark.parametrize("mode", ["ok", "legacy", "killed"])
+def test_fleet_charge_is_in_the_checked_and_reported_objectives(fake_kayros, tmp_path: Path, mode: str) -> None:
+    from td_utils import write_toy_instance_files
+
+    instance = write_toy_instance_files(tmp_path, fleet_fixed_cost=100.0)
+    fake_kayros(mode)
+    solved = run_solver("kayros", instance, time_limit_s=1, objective_function=ObjectiveFunction.FLEET_COST_DURATION)
+    assert solved.valid
+    assert solved.result.routes == [[1], [2]]
+    assert solved.cost == sum(route.duration for route in solved.check.route_evaluations) + 200
+    report = solved.bks_metadata()["solver_report"]
+    assert (report["objective"], report["value"]) == ("fleet-cost-duration", 299.0)
+    assert "solver_cost" not in solved.bks_metadata()  # no separate routing component in the report
+    assert bool(solved.result.provenance.get("recovered_from_checkpoint")) == (mode == "killed")
+
+
+def test_kayros_refuses_static_instances_and_a_missing_fleet_charge(fake_kayros, td_instance: Path, toy_cvrp_instance, tmp_path: Path) -> None:
     import json
 
     static = tmp_path / "static.vrp.json"

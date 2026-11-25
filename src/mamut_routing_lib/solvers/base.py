@@ -352,6 +352,7 @@ class InstanceProfile:
     has_coordinates: bool
     coordinates_define_costs: bool
     symmetric: bool | None
+    has_fleet_fixed_cost: bool = False
 
 
 def profile_instance(
@@ -413,6 +414,7 @@ def profile_instance(
         has_coordinates=bool(coordinates),
         coordinates_define_costs=coords_define,
         symmetric=symmetric,
+        has_fleet_fixed_cost=getattr(instance, "fleet_fixed_cost", None) is not None,
     )
 
 
