@@ -559,7 +559,11 @@ def _require_marked_target(marked: BenchmarkBKS, instance: Any, routes, objectiv
 
 
 def _check_solution_model(instance, instance_path, checkable, solution, objective_function, backend):
-    """Apply the path-aware checker to an already loaded solution model."""
+    """Apply the path-aware checker to an already loaded solution model.
+
+    A mismatched instance name or declared objective raises ``ValueError``. No
+    ``SolutionCheckStatus`` describes it, because the routes were never checked.
+    """
     from mamut_routing_lib.objectives import base_objective
 
     objective = objective_function or base_objective(instance)

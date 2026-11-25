@@ -6,7 +6,7 @@ from fractions import Fraction
 from numbers import Integral
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from mamut_routing_lib.enums import ObjectiveFunction, SolutionCheckStatus
 from mamut_routing_lib.exact_types import ExactBackend
@@ -14,7 +14,15 @@ from mamut_routing_lib.models import BenchmarkBKS, BenchmarkInstanceVRPTW, Bench
 
 
 class SolutionCheckResult(BaseModel):
-    """Checked route count, display cost and lossless exact evaluation for a valid solution."""
+    """Checked route count, display cost and lossless exact evaluation for a valid solution.
+
+    A ``valid`` result carries a nonnegative ``num_routes``. Its ``routing_cost``
+    is present, except when ``exact_evaluation`` reports ``display_overflow``:
+    the exact cost then has no finite binary64 display and ``routing_cost`` is
+    None. A solution that names another instance or declares another objective
+    is not checked at all. The checker raises ``ValueError`` for it instead of
+    returning a status.
+    """
     model_config = ConfigDict(extra="forbid")
 
     status: SolutionCheckStatus
@@ -22,6 +30,17 @@ class SolutionCheckResult(BaseModel):
     num_routes: int | None
     error_message: str = ""
     exact_evaluation: dict | None = None
+
+    @model_validator(mode="after")
+    def _valid_result_carries_count_and_cost(self) -> "SolutionCheckResult":
+        if self.status != SolutionCheckStatus.VALID:
+            return self
+        if self.num_routes is None or self.num_routes < 0:
+            raise ValueError("a valid result requires a nonnegative num_routes")
+        overflow = isinstance(self.exact_evaluation, dict) and self.exact_evaluation.get("display_overflow") is True
+        if (self.routing_cost is None) != overflow:
+            raise ValueError("a valid result carries a display cost exactly when its exact cost does not overflow binary64")
+        return self
 
     def is_valid(self) -> bool:
         """True when the status is ``valid``."""
@@ -115,7 +134,11 @@ def check_solution(
     objective_function: ObjectiveFunction | None = None,
     instance_path: str | Path | None = None,
 ) -> SolutionCheckResult:
-    """Check an embedded static instance under binary64-exact-v1. Supply its path to verify a certified BKS."""
+    """Check an embedded static instance under binary64-exact-v1. Supply its path to verify a certified BKS.
+
+    Raises ``ValueError`` when the solution names another instance or declares
+    another objective, since no check status describes a mismatched submission.
+    """
     from mamut_routing_lib.solutions import _check_solution_model
 
     _require_static_matrix(instance)

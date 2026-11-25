@@ -176,3 +176,34 @@ def test_create_bks_from_solution_requires_authors_metadata() -> None:
         pass
     else:
         raise AssertionError("create_bks_from_solution should require authors")
+
+
+def test_valid_check_result_carries_a_route_count_and_a_cost_unless_it_overflows() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    from mamut_routing_lib.checker import SolutionCheckResult
+    from mamut_routing_lib.enums import SolutionCheckStatus
+
+    assert SolutionCheckResult.make_valid(routing_cost=14, num_routes=0).num_routes == 0
+    overflow = {"cost": None, "display_overflow": True}
+    held = SolutionCheckResult(status=SolutionCheckStatus.VALID, routing_cost=None, num_routes=1, exact_evaluation=overflow)
+    assert held.routing_cost is None
+    for fields in (dict(routing_cost=14, num_routes=None), dict(routing_cost=14, num_routes=-1),
+                   dict(routing_cost=None, num_routes=1),
+                   dict(routing_cost=None, num_routes=1, exact_evaluation={"display_overflow": False}),
+                   dict(routing_cost=14, num_routes=1, exact_evaluation=overflow)):
+        with pytest.raises(ValidationError, match="valid result"):
+            SolutionCheckResult(status=SolutionCheckStatus.VALID, **fields)
+    rejected = SolutionCheckResult.make_invalid(SolutionCheckStatus.NOT_ALL_CUSTOMERS_SERVED, "missing")
+    assert rejected.routing_cost is None and rejected.num_routes is None
+
+
+def test_checker_raises_on_a_solution_for_another_instance() -> None:
+    import pytest
+
+    instance = make_cvrp_instance()
+    other = BenchmarkSolution(instance_name="another-instance", routes=[[1, 2]])
+    with pytest.raises(ValueError, match="another-instance"):
+        check_cvrp_solution(instance, other)
+
