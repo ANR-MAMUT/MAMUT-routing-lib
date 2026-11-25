@@ -8,8 +8,9 @@ whose matrix comes from an ``arc_costs_source``: a sha-pinned distances
 sidecar or the euclidean rule), a solution (``BenchmarkSolution``), a
 best-known solution (``BenchmarkBKS``, a solution plus its objective) and
 an optimality claim (``OptimalityMetadata``, validated inside
-``metadata["optimality"]``). Node index 0 is the depot unless ``depot`` says
-otherwise; customers are ``1..num_customers``. Time-dependent instances live
+``metadata["optimality"]``). Node index 0 is the depot, and validation rejects
+any other ``depot`` value and a nonzero depot service time. Customers are
+``1..num_customers``. Time-dependent instances live
 in ``mamut_routing_lib.td.models``.
 """
 
@@ -34,6 +35,20 @@ NumericOperand: TypeAlias = StrictInt | StrictFloat
 Coordinate: TypeAlias = tuple[NumericOperand, NumericOperand]
 ArcCost: TypeAlias = NumericOperand
 NonnegativeInteger: TypeAlias = Annotated[StrictInt, Field(ge=0)]
+
+
+def require_depot_zero(value: int) -> int:
+    """Validate the depot index on load. The exact profiles place the depot at vertex 0."""
+    if value != 0:
+        raise ValueError(f"depot must be vertex 0, got {value!r}")
+    return value
+
+
+def require_zero_depot_service(value: list[Any]) -> list[Any]:
+    """Validate a service-time vector on load. The depot has no service duration."""
+    if value and value[0] != 0:
+        raise ValueError(f"depot service time must be zero, got {value[0]!r}")
+    return value
 
 
 def _validate_relative_path(path_value: str) -> str:
@@ -123,6 +138,11 @@ class _InstanceValidationMixin(BaseModel):
     arc_costs: list[list[ArcCost]]
     reference_lla: ReferenceLLA | None = None
 
+    @field_validator("depot")
+    @classmethod
+    def validate_depot(cls, value: int) -> int:
+        return require_depot_zero(value)
+
     @field_validator("coordinates", "demands")
     @classmethod
     def validate_node_vector_lengths(cls, value: list[Any], info: Any) -> list[Any]:
@@ -173,6 +193,11 @@ class BenchmarkInstanceVRPTW(_InstanceValidationMixin):
         default_factory=dict,
         union_mode="left_to_right",
     )
+
+    @field_validator("service_times")
+    @classmethod
+    def validate_depot_service(cls, value: list[Any]) -> list[Any]:
+        return require_zero_depot_service(value)
 
     @field_validator("service_times", "time_windows")
     @classmethod
@@ -276,6 +301,11 @@ class _SlimInstanceValidationMixin(BaseModel):
     arc_costs_source: AnyArcCostsSource
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    @field_validator("depot")
+    @classmethod
+    def validate_depot(cls, value: int) -> int:
+        return require_depot_zero(value)
+
     @field_validator("coordinates", "demands")
     @classmethod
     def validate_node_vector_lengths(cls, value: list[Any], info: Any) -> list[Any]:
@@ -299,6 +329,11 @@ class BenchmarkInstanceVRPTWCollection(_SlimInstanceValidationMixin):
     """Slim VRPTW instance of a family-first collection (service times and windows may be fractional)."""
     service_times: list[NumericOperand]
     time_windows: list[tuple[NumericOperand, NumericOperand]]
+
+    @field_validator("service_times")
+    @classmethod
+    def validate_depot_service(cls, value: list[Any]) -> list[Any]:
+        return require_zero_depot_service(value)
 
     @field_validator("service_times", "time_windows")
     @classmethod

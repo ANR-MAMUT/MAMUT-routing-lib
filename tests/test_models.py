@@ -292,3 +292,70 @@ def test_general_instance_type_includes_time_dependent_instances():
     td = BenchmarkInstanceTDVRPTW.model_validate(toy_instance_payload())
     assert isinstance(td, AnyBenchmarkInstance)
     assert not isinstance(td, AnyStaticBenchmarkInstance)
+
+
+def _collection_vrptw_kwargs() -> dict:
+    kwargs = make_valid_historical_instance_kwargs()
+    kwargs.pop("arc_costs")
+    kwargs.update(benchmark_name="Poryos2026", instance_origin="OsmCvrpGen", metric_variant="euclidean",
+                  arc_costs_source={"model": "euclidean"})
+    return kwargs
+
+
+@pytest.mark.parametrize("model,kwargs", [
+    (BenchmarkInstanceVRPTW, make_valid_historical_instance_kwargs),
+    (BenchmarkInstanceCVRP, make_valid_cvrp_instance_kwargs),
+    ("BenchmarkInstanceVRPTWCollection", _collection_vrptw_kwargs),
+    ("BenchmarkInstanceTDVRPTW", None),
+])
+def test_validation_rejects_a_depot_other_than_vertex_zero(model, kwargs):
+    if isinstance(model, str):
+        import mamut_routing_lib.models as static_models
+        import mamut_routing_lib.td.models as td_models
+
+        model = getattr(static_models, model, None) or getattr(td_models, model)
+    if kwargs is None:
+        from td_utils import toy_instance_payload
+
+        payload = toy_instance_payload()
+    else:
+        payload = kwargs()
+    model(**payload)
+    with pytest.raises(ValidationError, match="depot must be vertex 0"):
+        model(**{**payload, "depot": 1})
+
+
+@pytest.mark.parametrize("model,kwargs", [
+    (BenchmarkInstanceVRPTW, make_valid_historical_instance_kwargs),
+    ("BenchmarkInstanceVRPTWCollection", _collection_vrptw_kwargs),
+    ("BenchmarkInstanceTDVRPTW", None),
+    ("BenchmarkInstanceTDVRP", None),
+])
+def test_validation_rejects_a_nonzero_depot_service_time(model, kwargs):
+    import mamut_routing_lib.models as static_models
+    import mamut_routing_lib.td.models as td_models
+
+    if isinstance(model, str):
+        model = getattr(static_models, model, None) or getattr(td_models, model)
+    if kwargs is None:
+        from td_utils import toy_instance_payload
+
+        payload = toy_instance_payload(with_time_windows=model is td_models.BenchmarkInstanceTDVRPTW)
+    else:
+        payload = kwargs()
+    model(**payload)
+    services = list(payload["service_times"])
+    services[0] = 0.5
+    with pytest.raises(ValidationError, match="depot service time must be zero"):
+        model(**{**payload, "service_times": services})
+
+
+def test_load_rejects_a_descriptor_with_a_moved_depot(tmp_path):
+    import json
+
+    from mamut_routing_lib.artifacts import load_benchmark_instance
+
+    path = tmp_path / "C101.vrp.json"
+    path.write_text(json.dumps({**make_valid_historical_instance_kwargs(), "depot": 2}))
+    with pytest.raises(ValidationError, match="depot must be vertex 0"):
+        load_benchmark_instance(path)
