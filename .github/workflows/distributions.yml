@@ -1,0 +1,65 @@
+name: Build and test distributions
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Build the source distribution
+        run: |
+          python -m pip install build
+          python -m build --sdist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  wheel:
+    needs: sdist
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cp: [cp311, cp312, cp313, cp314]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v8
+        with:
+          name: sdist
+          path: dist
+      - name: Unpack the source distribution
+        run: |
+          mkdir sdist
+          tar -xzf dist/*.tar.gz --strip-components=1 -C sdist
+      - name: Build, repair and test the installed manylinux wheel
+        uses: pypa/cibuildwheel@v4.1.0
+        with:
+          package-dir: sdist
+        env:
+          CIBW_BUILD: "${{ matrix.cp }}-*"
+          CIBW_SKIP: "*-musllinux*"
+          CIBW_ARCHS_LINUX: x86_64
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
+          # Boost 1.66 headers in this image still require std::allocator::rebind.
+          CIBW_BEFORE_ALL_LINUX: dnf -y install boost1.78-devel gmp-devel procps-ng
+          CIBW_ENVIRONMENT: CPLUS_INCLUDE_PATH=/usr/include/boost1.78
+          CIBW_BEFORE_BUILD_LINUX: python {project}/.github/wheel-notices.py {package}
+          CIBW_BEFORE_TEST: python -m pip install --group {package}/pyproject.toml:dev
+          CIBW_TEST_REQUIRES: cmake>=3.15
+          CIBW_TEST_COMMAND: bash {project}/.github/test-install.sh {package}
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: auditwheel repair -w {dest_dir} {wheel} && auditwheel show {dest_dir}/*.whl
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheel-${{ matrix.cp }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
