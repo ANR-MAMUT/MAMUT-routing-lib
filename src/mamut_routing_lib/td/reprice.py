@@ -13,10 +13,10 @@ after such a change. This module does it file by file, routes untouched:
 - a file is rewritten only when a stored checker output changed: ``cost``,
   ``metadata.validated_cost`` (when present), ``metadata.route_durations`` and
   ``metadata.route_departure_times`` (stored route order);
-- a moved ``cost`` is recorded in ``metadata.repriced``. A record that
-  carries an optimality claim is never rewritten (action ``stamp-conflict``),
-  because the library no longer writes legacy claims and a moved cost would
-  no longer match the claim.
+- a moved ``cost`` is recorded in ``metadata.repriced``.
+
+A record that carries exact evaluation metadata or an optimality claim is
+refused before any artifact is loaded (action ``error``).
 """
 
 from __future__ import annotations
@@ -52,8 +52,7 @@ class RepriceResult:
     """Outcome for one BKS file.
 
     ``action`` is ``unchanged``, ``repriced`` (written), ``would-reprice``
-    (dry run), ``skipped-missing-sidecar``, ``infeasible``, ``stamp-conflict``
-    or ``error``.
+    (dry run), ``skipped-missing-sidecar``, ``infeasible`` or ``error``.
     """
 
     bks_path: str
@@ -62,7 +61,6 @@ class RepriceResult:
     new_cost: float | None = None
     cost_ulps: int | None = None
     changed_fields: list[str] = field(default_factory=list)
-    stamped: bool = False
     detail: str = ""
 
     def as_dict(self) -> dict[str, Any]:
@@ -205,6 +203,9 @@ def reprice_td_bks(
         if "standard" in bks.metadata or "exact_evaluation" in bks.metadata:
             return RepriceResult(str(path), "error", previous_cost=bks.cost,
                                  detail="Legacy td-fold/2 repricing cannot rewrite an exact-profile record.")
+        if "optimality" in bks.metadata:
+            return RepriceResult(str(path), "error", previous_cost=bks.cost,
+                                 detail="Legacy td-fold/2 repricing cannot rewrite a record with an optimality claim.")
         loaded = load_td_instance_for_routes(
             instance_path_for_bks(path),
             bks.routes,
@@ -217,14 +218,13 @@ def reprice_td_bks(
     except Exception as exc:  # noqa: BLE001 - report every other load failure per file
         return RepriceResult(str(path), "error", detail=f"{type(exc).__name__}: {exc}")
 
-    stamped = "optimality" in bks.metadata
     try:
         check = check_td_solution(loaded, bks.model_copy(update={"cost": None}), bks.objective_function)
     except Exception as exc:  # noqa: BLE001
-        return RepriceResult(str(path), "error", previous_cost=bks.cost, stamped=stamped, detail=f"{type(exc).__name__}: {exc}")
+        return RepriceResult(str(path), "error", previous_cost=bks.cost, detail=f"{type(exc).__name__}: {exc}")
     if not check.is_valid():
         return RepriceResult(
-            str(path), "infeasible", previous_cost=bks.cost, stamped=stamped, detail=check.error_message
+            str(path), "infeasible", previous_cost=bks.cost, detail=check.error_message
         )
 
     new_cost = check.routing_cost
@@ -251,15 +251,10 @@ def reprice_td_bks(
         new_cost=new_cost,
         cost_ulps=_ulps(bks.cost, new_cost) if bks.cost is not None else None,
         changed_fields=changed,
-        stamped=stamped,
     )
     if not changed:
         return result
 
-    if stamped:
-        result.action = "stamp-conflict"
-        result.detail = "a record with an optimality claim is not rewritten by legacy repricing"
-        return result
     if "cost" in changed:
         metadata["repriced"] = {
             "previous_cost": bks.cost,

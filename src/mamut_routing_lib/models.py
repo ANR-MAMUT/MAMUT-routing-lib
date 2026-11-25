@@ -8,7 +8,7 @@ whose matrix comes from an ``arc_costs_source``: a sha-pinned distances
 sidecar or the euclidean rule), a solution (``BenchmarkSolution``), a
 best-known solution (``BenchmarkBKS``, a solution plus its objective) and
 a solver claim of optimality (``SolverReportedOptimality``, validated inside
-``metadata["optimality"]``, where the legacy ``OptimalityMetadata`` is read only). Node index 0 is the depot, and validation rejects
+``metadata["optimality"]``). Node index 0 is the depot, and validation rejects
 any other ``depot`` value and a nonzero depot service time. Customers are
 ``1..num_customers``. Time-dependent instances live
 in ``mamut_routing_lib.td.models``.
@@ -362,31 +362,6 @@ AnyCollectionStaticInstance: TypeAlias = BenchmarkInstanceCVRPCollection | Bench
 AnyStaticBenchmarkInstance: TypeAlias = LoadedStaticInstance | AnyCollectionStaticInstance
 
 
-class OptimalityMetadata(BaseModel):
-    """Legacy optimality stamp (``proven: true``), accepted on read only.
-
-    Earlier releases wrote this shape under ``metadata["optimality"]``. A record
-    that still carries it loads, so old files stay readable, but the store and
-    ``write_bks_file`` refuse to write it. New claims use ``SolverReportedOptimality``.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    proven: Literal[True]
-    prover: str
-    certificate: str
-    date: str
-    target_profile: str | None = Field(default=None, min_length=1)
-    arithmetic: str | None = None
-    proven_optimum: int | float | None = None
-    dual_bound: int | float | None = None
-    wall_time_s: float | None = None
-    time_limit_s: float | None = None
-    checker: str | None = None
-    campaign: str | None = None
-    note: str | None = None
-
-
 class ClaimEvidence(BaseModel):
     """A file preserved as evidence of a solver claim, pinned by the sha256 of its bytes."""
 
@@ -429,9 +404,28 @@ class SolverReportedOptimality(BaseModel):
         return value
 
 
-def is_legacy_optimality_claim(claim: Any) -> bool:
-    """True for a ``metadata["optimality"]`` value without the ``solver-reported-optimal`` status."""
-    return not (isinstance(claim, dict) and claim.get("status") == "solver-reported-optimal")
+LEGACY_OPTIMALITY_CLAIM_MESSAGE = (
+    "metadata.optimality holds a claim in the format of mamut-routing-lib versions before 0.13 "
+    "(a 'proven: true' stamp). This library does not read that format. "
+    "Read such historical files with mamut-routing-lib 0.12.0."
+)
+
+
+class LegacyOptimalityClaimError(ValueError):
+    """A BKS or solution file carries an optimality claim in the format of library versions before 0.13."""
+
+
+def is_pre_013_optimality_claim(claim: Any) -> bool:
+    """True for the ``proven: true`` stamp that library versions before 0.13 wrote."""
+    return isinstance(claim, dict) and "proven" in claim and "status" not in claim
+
+
+def reject_pre_013_optimality_claim(payload: Any, source: Any = None) -> None:
+    """Raise ``LegacyOptimalityClaimError`` when ``payload["metadata"]["optimality"]`` has the pre-0.13 shape."""
+    metadata = payload.get("metadata") if isinstance(payload, dict) else None
+    if isinstance(metadata, dict) and is_pre_013_optimality_claim(metadata.get("optimality")):
+        prefix = f"{source}: " if source is not None else ""
+        raise LegacyOptimalityClaimError(prefix + LEGACY_OPTIMALITY_CLAIM_MESSAGE)
 
 
 class _SolutionValidationMixin(BaseModel):
@@ -458,8 +452,9 @@ class _SolutionValidationMixin(BaseModel):
             value = checked_solver_metadata(value)
         if "optimality" in value:
             claim = value["optimality"]
-            model = SolverReportedOptimality if isinstance(claim, dict) and "status" in claim else OptimalityMetadata
-            optimality = model.model_validate(claim)
+            if is_pre_013_optimality_claim(claim):
+                raise ValueError(LEGACY_OPTIMALITY_CLAIM_MESSAGE)
+            optimality = SolverReportedOptimality.model_validate(claim)
             value = dict(value)
             value["optimality"] = optimality.model_dump(mode="json", exclude_none=True)
         return value

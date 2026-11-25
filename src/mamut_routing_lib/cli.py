@@ -1916,9 +1916,9 @@ def reprice_td(
 
     Rewrites a BKS only when a checker output changed (cost, validated_cost,
     route_durations, route_departure_times); a moved cost is recorded in
-    metadata.repriced. A record with an optimality claim is never rewritten.
-    Exit status 1 when a file is infeasible, errors, carries a claim that would
-    need rewriting, or (without --allow-missing-sidecars) misses a sidecar.
+    metadata.repriced. A record with exact evaluation metadata or an optimality
+    claim is refused. Exit status 1 when a file is infeasible, errors, or
+    (without --allow-missing-sidecars) misses a sidecar.
     """
     from mamut_routing_lib.td.reprice import iter_td_bks_files
 
@@ -1952,11 +1952,11 @@ def reprice_td(
         counts[item["action"]] = counts.get(item["action"], 0) + 1
     cost_moves = [item for item in results if "cost" in item["changed_fields"]]
     typer.echo(f"{len(results)} TD BKS files: " + ", ".join(f"{action} {n}" for action, n in sorted(counts.items())))
-    typer.echo(f"cost moved: {len(cost_moves)} (stamped: {sum(1 for item in cost_moves if item['stamped'])})")
+    typer.echo(f"cost moved: {len(cost_moves)}")
     for item in cost_moves:
         if abs(item["new_cost"] - item["previous_cost"]) > 1e-6:
             typer.echo(f"  {item['bks_path']}: {item['previous_cost']!r} -> {item['new_cost']!r}")
-    failures = [item for item in results if item["action"] in {"infeasible", "error", "stamp-conflict"}]
+    failures = [item for item in results if item["action"] in {"infeasible", "error"}]
     missing = [item for item in results if item["action"] == "skipped-missing-sidecar"]
     for item in failures + missing:
         typer.echo(f"{item['action']}: {item['bks_path']}: {item['detail']}", err=True)

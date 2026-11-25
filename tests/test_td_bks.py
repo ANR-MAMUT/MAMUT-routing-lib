@@ -127,7 +127,7 @@ def test_save_carries_extra_metadata(toy_loaded):
 
 
 def _optimality(**overrides):
-    """The legacy stamp shape, which the library still reads but no longer writes."""
+    """The stamp shape of library versions before 0.13, which the library neither reads nor writes."""
     payload = {
         "proven": True,
         "prover": "test exact solver 1.0",
@@ -208,18 +208,21 @@ def test_annotate_refuses_an_incumbent_without_exact_evaluation(toy_loaded):
         annotate_td_bks_optimality(toy_loaded, _claim(), backend='python')
 
 
-def test_write_bks_file_refuses_a_legacy_claim_but_old_files_still_load(toy_loaded, tmp_path):
+def test_write_bks_file_refuses_a_legacy_claim_and_load_bks_refuses_old_files(toy_loaded, tmp_path):
     from mamut_routing_lib.artifacts import save_json_to_file
+    from mamut_routing_lib.models import LegacyOptimalityClaimError
 
     solution = _solution(toy_loaded, [[1, 2]])
     legacy = BenchmarkBKS(instance_name=solution.instance_name, objective_function=ObjectiveFunction.DURATION,
-                          routes=solution.routes, metadata={'authors': AUTHORS, 'optimality': _optimality()})
+                          routes=solution.routes, metadata={'authors': AUTHORS})
+    legacy.metadata['optimality'] = _optimality()
     target = tmp_path / "legacy.bks.Duration.json"
     with pytest.raises(ValueError, match="legacy optimality claim"):
         write_bks_file(legacy, target)
     assert not target.exists()
     save_json_to_file(legacy.model_dump(mode="json"), target)
-    assert load_bks(target).metadata["optimality"]["proven"] is True
+    with pytest.raises(LegacyOptimalityClaimError, match="with mamut-routing-lib 0.12.0"):
+        load_bks(target)
 
 
 def test_stamped_metadata_survives_save_if_improved(toy_loaded):
@@ -232,7 +235,7 @@ def test_stamped_metadata_survives_save_if_improved(toy_loaded):
     assert load_bks(kept.path).metadata["optimality"] == _claim()
 
 
-def test_exact_candidate_and_legacy_proof_display_collision(tmp_path):
+def test_exact_candidate_and_claimed_legacy_display_collision(tmp_path):
     from hashlib import sha256
     from mamut_routing_lib.td.pwlf import NDCPWLF
 
@@ -246,10 +249,8 @@ def test_exact_candidate_and_legacy_proof_display_collision(tmp_path):
     loaded.atfs.arcs[1, 0] = loaded.atfs.arcs[2, 0] = NDCPWLF([0, 2], [huge, huge])
     store = get_bks_path_for_instance(path, ObjectiveFunction.DURATION)
     incumbent = BenchmarkBKS(instance_name=loaded.instance.instance_name, routes=[[1, 2]], cost=huge,
-                             objective_function=ObjectiveFunction.DURATION, metadata={'authors': AUTHORS, 'optimality': _optimality()})
-    # Old files with a legacy stamp still load, so craft one without the store writer.
-    from mamut_routing_lib.artifacts import save_json_to_file
-    save_json_to_file(incumbent.model_dump(mode='json'), store)
+                             objective_function=ObjectiveFunction.DURATION, metadata={'authors': AUTHORS, 'optimality': _claim()})
+    write_bks_file(incumbent, store)
     original = store.read_bytes()
     def submit(routes):
         return save_td_solution_as_bks_if_improved(loaded, _solution(loaded, routes), authors=AUTHORS, backend='python')

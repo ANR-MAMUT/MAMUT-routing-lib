@@ -645,8 +645,16 @@ def get_bks_path_for_instance(
 
 
 def load_bks(bks_path: str | Path) -> BenchmarkBKS:
-    """Load and validate a BKS file."""
-    return BenchmarkBKS(**load_json_from_file(bks_path))
+    """Load and validate a BKS file.
+
+    Raises ``LegacyOptimalityClaimError`` for a file whose ``metadata.optimality``
+    has the format of library versions before 0.13, which this library does not read.
+    """
+    from mamut_routing_lib.models import reject_pre_013_optimality_claim
+
+    payload = load_json_from_file(bks_path)
+    reject_pre_013_optimality_claim(payload, bks_path)
+    return BenchmarkBKS(**payload)
 
 
 def write_bks_file(bks: BenchmarkBKS, bks_path: str | Path) -> None:
@@ -655,9 +663,8 @@ def write_bks_file(bks: BenchmarkBKS, bks_path: str | Path) -> None:
     Use submit_bks or save_bks_if_improved to evaluate routes and compare an incumbent.
     Refuses a legacy optimality stamp: a new claim must be a ``SolverReportedOptimality``.
     """
-    from mamut_routing_lib.models import is_legacy_optimality_claim
-
-    if "optimality" in bks.metadata and is_legacy_optimality_claim(bks.metadata["optimality"]):
+    claim = bks.metadata.get("optimality")
+    if "optimality" in bks.metadata and not (isinstance(claim, dict) and claim.get("status") == "solver-reported-optimal"):
         raise ValueError("Refusing to write a legacy optimality claim. Record a solver claim with "
                          "status 'solver-reported-optimal', its target_profile and its solver instead.")
     save_json_to_file(bks.model_dump(mode="json"), bks_path)
