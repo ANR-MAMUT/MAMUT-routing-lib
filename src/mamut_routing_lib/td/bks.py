@@ -7,10 +7,10 @@ from pathlib import Path
 from typing import Any
 
 from mamut_routing_lib.artifacts import get_bks_path_for_instance, load_bks, write_bks_file
-from mamut_routing_lib.bks import BKSUpdateResult
+from mamut_routing_lib.bks import BKSUpdateAction, BKSUpdateResult
 from mamut_routing_lib.enums import ObjectiveFunction
 from mamut_routing_lib.objectives import base_objective
-from mamut_routing_lib.models import BenchmarkBKS, BenchmarkSolution, OptimalityMetadata, SolverReportedOptimality
+from mamut_routing_lib.models import BenchmarkBKS, BenchmarkSolution, SolverReportedOptimality
 from mamut_routing_lib.td.artifacts import LoadedTDInstance, load_td_benchmark_instance, load_td_instance
 from mamut_routing_lib.td.checker import TD_OBJECTIVES
 
@@ -115,7 +115,7 @@ def save_td_solution_as_bks_if_improved(
     candidate_bks, candidate_evaluation = _candidate(loaded, checker, solution, authors, metadata, manifest)
     previous = None
     tie = False
-    action = 'created'
+    action: BKSUpdateAction = 'created'
     if incumbent_bks is not None:
         previous = path
         if incumbent_bks.instance_name != candidate_bks.instance_name or incumbent_bks.objective_function != checker.objective:
@@ -139,22 +139,18 @@ def save_td_solution_as_bks_if_improved(
                            candidate_cost=candidate_evaluation.display_cost, candidate_num_routes=len(candidate_evaluation.routes))
 
 
-# Historical annotations compare solver-reported numbers with a rounded legacy cost.
-OPTIMALITY_COST_TOLERANCE = 1e-6
-
-
 def annotate_td_bks_optimality(
     loaded: LoadedTDInstance | str | Path,
-    optimality: OptimalityMetadata | SolverReportedOptimality | dict[str, Any],
+    optimality: SolverReportedOptimality | dict[str, Any],
     objective_function: ObjectiveFunction | None = None,
     *,
     backend: str = 'native',
 ) -> Path:
-    """Attach a targeted solver claim to the existing incumbent under the declared objective.
+    """Attach a solver claim of optimality to the existing incumbent under the declared objective.
 
-    Legacy stamps require the original checker or arithmetic and an unmarked record. The
-    historical numeric consistency guard applies only to those rounded records. A new-profile
-    claim identifies the solver and its target. Its reported bounds do not certify the incumbent.
+    The claim must be a ``SolverReportedOptimality`` whose ``target_profile`` is the
+    TD profile, and the incumbent must carry an exact evaluation that still verifies.
+    The legacy ``proven: true`` stamp is refused. Reported bounds do not certify the incumbent.
     """
     from mamut_routing_lib.exact_store import preserve_claim_record, verify_stored
     from mamut_routing_lib.exact_types import TD_PROFILE
@@ -169,28 +165,13 @@ def annotate_td_bks_optimality(
     if bks.instance_name != loaded.instance.instance_name or bks.objective_function != objective_function:
         raise ValueError(f'Stored BKS identifies a different instance or objective at {path}')
     payload = optimality if isinstance(optimality, dict) else optimality.model_dump(mode='json', exclude_none=True)
-    if 'exact_evaluation' in bks.metadata or 'standard' in bks.metadata:
-        claim = SolverReportedOptimality.model_validate(payload)
-        if claim.target_profile != TD_PROFILE:
-            raise ValueError('solver claim must target the profile of the stored TD result')
-        checker = _checker(loaded, objective_function, backend)
-        verify_stored(bks, checker.evaluate(bks.routes), manifest)
-    else:
-        claim = OptimalityMetadata.model_validate(payload)
-        target = claim.target_profile
-        if target is None and claim.checker in ('td-fold/1', 'td-fold/2'):
-            target = claim.checker
-        if not target or target == TD_PROFILE:
-            raise ValueError('legacy annotation must identify its original historical target_profile')
-        claim = claim.model_copy(update={'target_profile': target})
-        if claim.proven_optimum is not None:
-            if bks.cost is None:
-                raise ValueError('cannot compare a reported historical optimum with a missing stored cost')
-            deviation = abs(claim.proven_optimum - bks.cost)
-            if deviation > OPTIMALITY_COST_TOLERANCE:
-                raise ValueError(f'proven_optimum {claim.proven_optimum!r} does not match the stored cost at {path}')
-            if deviation != 0 and not claim.note:
-                raise ValueError('a note is required to explain a historical solver/checker cost difference')
+    claim = SolverReportedOptimality.model_validate(payload)
+    if claim.target_profile != TD_PROFILE:
+        raise ValueError('solver claim must target the profile of the stored TD result')
+    if 'exact_evaluation' not in bks.metadata and 'standard' not in bks.metadata:
+        raise ValueError(f'A solver claim requires an incumbent evaluated under {TD_PROFILE} at {path}')
+    checker = _checker(loaded, objective_function, backend)
+    verify_stored(bks, checker.evaluate(bks.routes), manifest)
     record = claim.model_dump(mode='json', exclude_none=True)
     if record != bks.metadata.get('optimality'):
         stamped = BenchmarkBKS(**{**bks.model_dump(), 'metadata': {**bks.metadata, 'optimality': record}})

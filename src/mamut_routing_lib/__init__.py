@@ -61,6 +61,8 @@ from mamut_routing_lib.sidecars import (
     save_collection_marker,
 )
 from mamut_routing_lib.bks import (
+    BKSPreviewAction,
+    BKSUpdateAction,
     BKSUpdateResult,
     DEFAULT_BKS_AUTHORS,
     create_bks_from_solution,
@@ -118,7 +120,9 @@ from mamut_routing_lib.models import (
     BenchmarkInstanceVRPTWCollection,
     BenchmarkSolution,
     InstanceMetadata,
+    ClaimEvidence,
     OptimalityMetadata,
+    SolverReportedOptimality,
 )
 from mamut_routing_lib.remote import (
     DEFAULT_GITHUB_TOKEN_ENV,
@@ -185,6 +189,8 @@ __all__ = [
     "ArcCostsDistancesRef",
     "ArcCostsEuclidean",
     "ArtifactPaths",
+    "BKSPreviewAction",
+    "BKSUpdateAction",
     "BKSUpdateResult",
     "BenchmarkBKS",
     "BenchmarkInstanceVRPTW",
@@ -225,7 +231,9 @@ __all__ = [
     "MANIFEST_SCHEMA_VERSION",
     "MetricVariant",
     "ObjectiveFunction",
+    "ClaimEvidence",
     "OptimalityMetadata",
+    "SolverReportedOptimality",
     "ProblemType",
     "ProgressCallback",
     "ReleaseArchiveAsset",

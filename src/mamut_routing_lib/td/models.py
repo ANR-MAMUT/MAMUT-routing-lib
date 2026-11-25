@@ -14,7 +14,14 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from mamut_routing_lib.enums import BenchmarkName, InstanceOrigin
-from mamut_routing_lib.models import Coordinate, NonnegativeInteger, NumericOperand, ReferenceLLA
+from mamut_routing_lib.models import (
+    Coordinate,
+    NonnegativeInteger,
+    NumericOperand,
+    ReferenceLLA,
+    require_depot_zero,
+    require_zero_depot_service,
+)
 from mamut_routing_lib.sidecars import SidecarRef
 
 TD_ATF_MODEL = "atf-ndcpwlf"
@@ -190,6 +197,16 @@ class _TDInstanceValidationMixin(BaseModel):
     fleet_fixed_cost: NumericOperand | None = None
     td: AnyTDTravelModelRef
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("depot")
+    @classmethod
+    def validate_depot(cls, value: int) -> int:
+        return require_depot_zero(value)
+
+    @field_validator("service_times")
+    @classmethod
+    def validate_depot_service(cls, value: list[Any]) -> list[Any]:
+        return require_zero_depot_service(value)
 
     @field_validator("coordinates", "demands", "service_times")
     @classmethod

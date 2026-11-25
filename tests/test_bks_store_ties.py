@@ -181,6 +181,7 @@ def test_decimal_tie_is_a_strict_binary64_improvement(tmp_path):
 def test_historical_display_is_not_an_exact_claim(tmp_path):
     instance = _instance(MATRIX_ORDER)
     path = tmp_path / "toy.vrp.json"
+    save_json_to_file(instance.model_dump(mode="json"), path)
     incumbent = _candidate(instance, [[1, 2], [3, 4]])
     incumbent.cost = 123.0
     store = path.with_name("toy.bks.MonoCost.json")
@@ -230,7 +231,9 @@ def test_bks_exact_cost_can_overflow_its_binary64_display(tmp_path):
                                    authors=AUTHORS, backend="python")
     assert bks.cost is None
     assert bks.metadata["exact_evaluation"]["display_overflow"] is True
-    update = save_bks_if_improved(instance, bks, tmp_path / "toy.vrp.json", backend="python")
+    path = tmp_path / f"{instance.instance_name}.vrp.json"
+    save_json_to_file(instance.model_dump(mode="json"), path)
+    update = save_bks_if_improved(instance, bks, path, backend="python")
     assert update.action == "created" and update.candidate_cost is None
     assert load_bks(update.path).metadata["exact_evaluation"]["authoritative_cost"] == (
         bks.metadata["exact_evaluation"]["authoritative_cost"]
@@ -253,6 +256,7 @@ def test_solver_claim_requires_an_explicit_matching_target():
 def test_save_bks_if_improved_accepts_only_the_candidate_keyword(tmp_path):
     instance = _instance(MATRIX_ORDER)
     path = tmp_path / "toy.vrp.json"
+    save_json_to_file(instance.model_dump(mode="json"), path)
     incumbent = _candidate(instance, [[1, 2], [3, 4]])
     assert save_bks_if_improved(instance, candidate_bks=incumbent, instance_path=path, backend="python").action == "created"
     before = (tmp_path / "toy.bks.MonoCost.json").read_bytes()
@@ -261,3 +265,52 @@ def test_save_bks_if_improved_accepts_only_the_candidate_keyword(tmp_path):
     with pytest.raises(TypeError, match="unexpected keyword argument 'bks'"):
         save_bks_if_improved(instance, bks=reordered, instance_path=path, backend="python")
     assert (tmp_path / "toy.bks.MonoCost.json").read_bytes() == before
+
+
+def test_save_bks_if_improved_checks_the_descriptor_without_a_manifest(tmp_path):
+    instance = _instance(MATRIX_ORDER)
+    path = _store(tmp_path, instance, [[1, 2], [3, 4]])
+    store = path.with_name(f"{instance.instance_name}.bks.MonoCost.json")
+    before = store.read_bytes()
+    altered = instance.model_copy(deep=True)
+    altered.arc_costs[0][1] = altered.arc_costs[1][0] = 1.0
+    with pytest.raises(ValueError, match="differs from the descriptor"):
+        save_bks_if_improved(altered, _candidate(altered, [[1, 2], [3, 4]]), path)
+    assert store.read_bytes() == before
+    with pytest.raises(FileNotFoundError):
+        save_bks_if_improved(instance, _candidate(instance, [[1, 2], [3, 4]]), tmp_path / "missing.vrp.json")
+
+
+def test_bks_update_actions_are_a_closed_vocabulary(tmp_path):
+    from typing import get_args
+
+    from mamut_routing_lib.bks import BKSPreviewAction, BKSUpdateAction, BKSUpdateResult
+    from mamut_routing_lib.solutions import preview_bks_update
+
+    assert set(get_args(BKSUpdateAction)) == {"created", "replaced", "kept_existing"}
+    assert set(get_args(BKSPreviewAction)) == {"would_create", "would_replace", "would_keep", "invalid", "stored_invalid"}
+    with pytest.raises(ValueError, match="Unknown BKS update action"):
+        BKSUpdateResult("overwritten", tmp_path, None, None, 0)
+    instance = _instance(MATRIX_ORDER)
+    path = tmp_path / f"{instance.instance_name}.vrp.json"
+    save_json_to_file(instance.model_dump(mode="json"), path)
+    assert preview_bks_update(path, [[1, 2], [3, 4]], backend="python")["action"] == "would_create"
+    _store(tmp_path, instance, [[1, 2], [3, 4]])
+    kept = preview_bks_update(path, [[3, 4], [1, 2]], backend="python")
+    assert kept["action"] == "would_keep" and kept["tie"] is True
+    assert preview_bks_update(path, [[1, 1]], backend="python")["action"] == "invalid"
+
+
+def test_stored_cost_in_non_lowest_terms_is_rejected(tmp_path):
+    instance = _instance(MATRIX_ORDER)
+    routes = [[1, 2], [3, 4]]
+    path = _store(tmp_path, instance, routes)
+    store = path.with_name(f"{instance.instance_name}.bks.MonoCost.json")
+    record = load_bks(store)
+    pair = record.metadata["exact_evaluation"]["authoritative_cost"]
+    pair.update(numerator=str(2 * int(pair["numerator"])), denominator=str(2 * int(pair["denominator"])))
+    save_json_to_file(record.model_dump(mode="json"), store)
+    before = store.read_bytes()
+    with pytest.raises(ValueError, match="authoritative_cost"):
+        save_bks_if_improved(instance, _candidate(instance, [[1], [2], [3], [4]]), path)
+    assert store.read_bytes() == before

@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, get_args
 
 from mamut_routing_lib.artifacts import (
     get_bks_path_for_instance,
@@ -28,6 +28,12 @@ from mamut_routing_lib.models import BenchmarkBKS, BenchmarkSolution, LoadedStat
 
 DEFAULT_BKS_AUTHORS = "Florian Rascoussier (0nyr) and Adrien Pichon (Anzury)"
 
+BKSUpdateAction = Literal["created", "replaced", "kept_existing"]
+"""What a store write did: wrote a first record, replaced a worse one, or kept the incumbent."""
+
+BKSPreviewAction = Literal["would_create", "would_replace", "would_keep", "invalid", "stored_invalid"]
+"""What ``preview_bks_update`` reports a store write would do, without writing."""
+
 
 @dataclass(frozen=True)
 class BKSUpdateResult:
@@ -35,14 +41,21 @@ class BKSUpdateResult:
 
     A display overflow gives None. If an incumbent existed, previous_path is
     its store path, including when that path now holds the replacement.
+    ``previous_path`` therefore does not identify a backup of the replaced
+    record. Only an incumbent that carries an optimality claim is archived,
+    under ``.bks-history/`` next to it. Any other replaced record is gone.
     """
 
-    action: str
+    action: BKSUpdateAction
     path: Path
     previous_path: Path | None
     candidate_cost: int | float | None
     candidate_num_routes: int
     tie: bool = False
+
+    def __post_init__(self) -> None:
+        if self.action not in get_args(BKSUpdateAction):
+            raise ValueError(f"Unknown BKS update action {self.action!r}")
 
 
 def _candidate(
@@ -98,7 +111,7 @@ def _store(
     path: Path, prepared: PreparedStatic, candidate_bks: BenchmarkBKS, candidate_evaluation: ExactEvaluation, manifest=None,
 ) -> BKSUpdateResult:
     previous = None
-    action = "created"
+    action: BKSUpdateAction = "created"
     tie = False
     if path.exists():
         previous = path
@@ -131,11 +144,23 @@ def save_bks_if_improved(
     *,
     backend: ExactBackend = "native",
 ) -> BKSUpdateResult:
-    """Recheck the candidate and incumbent and replace only on a strict improvement."""
+    """Recheck the candidate and incumbent and replace only on a strict improvement.
+
+    Without a manifest, the supplied instance must equal the descriptor (and its
+    hydrated matrix) stored at ``instance_path``. Otherwise this raises ``ValueError``.
+    """
+    return _save_bks_if_improved(instance, candidate_bks, instance_path, backend=backend, check_descriptor=True)
+
+
+def _save_bks_if_improved(instance, candidate_bks, instance_path, *, backend, check_descriptor):
+    # check_descriptor=False is for submit_bks, which has already identified the
+    # instance and keeps a caller's preloaded matrix without a second sidecar read.
     from mamut_routing_lib.manifests import adjacent_manifest
     manifest = adjacent_manifest(instance_path, candidate_bks.objective_function, supplied_checkable=instance)
     if manifest is not None:
         instance = manifest.checkable
+    elif check_descriptor and instance != hydrate_collection_instance(load_benchmark_instance(instance_path), instance_path):
+        raise ValueError(f"Supplied materialized input differs from the descriptor or matrix at {instance_path}")
     prepared = prepare_static(instance, backend=backend, objective_function=candidate_bks.objective_function)
     candidate_bks, candidate_evaluation = _candidate(
         prepared, get_instance_identifier(instance), candidate_bks, candidate_bks.metadata.get("authors"),

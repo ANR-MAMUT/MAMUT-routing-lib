@@ -7,9 +7,10 @@ instance (``BenchmarkInstanceCVRPCollection`` / ``BenchmarkInstanceVRPTWCollecti
 whose matrix comes from an ``arc_costs_source``: a sha-pinned distances
 sidecar or the euclidean rule), a solution (``BenchmarkSolution``), a
 best-known solution (``BenchmarkBKS``, a solution plus its objective) and
-an optimality claim (``OptimalityMetadata``, validated inside
-``metadata["optimality"]``). Node index 0 is the depot unless ``depot`` says
-otherwise; customers are ``1..num_customers``. Time-dependent instances live
+a solver claim of optimality (``SolverReportedOptimality``, validated inside
+``metadata["optimality"]``, where the legacy ``OptimalityMetadata`` is read only). Node index 0 is the depot, and validation rejects
+any other ``depot`` value and a nonzero depot service time. Customers are
+``1..num_customers``. Time-dependent instances live
 in ``mamut_routing_lib.td.models``.
 """
 
@@ -34,6 +35,20 @@ NumericOperand: TypeAlias = StrictInt | StrictFloat
 Coordinate: TypeAlias = tuple[NumericOperand, NumericOperand]
 ArcCost: TypeAlias = NumericOperand
 NonnegativeInteger: TypeAlias = Annotated[StrictInt, Field(ge=0)]
+
+
+def require_depot_zero(value: int) -> int:
+    """Validate the depot index on load. The exact profiles place the depot at vertex 0."""
+    if value != 0:
+        raise ValueError(f"depot must be vertex 0, got {value!r}")
+    return value
+
+
+def require_zero_depot_service(value: list[Any]) -> list[Any]:
+    """Validate a service-time vector on load. The depot has no service duration."""
+    if value and value[0] != 0:
+        raise ValueError(f"depot service time must be zero, got {value[0]!r}")
+    return value
 
 
 def _validate_relative_path(path_value: str) -> str:
@@ -123,6 +138,11 @@ class _InstanceValidationMixin(BaseModel):
     arc_costs: list[list[ArcCost]]
     reference_lla: ReferenceLLA | None = None
 
+    @field_validator("depot")
+    @classmethod
+    def validate_depot(cls, value: int) -> int:
+        return require_depot_zero(value)
+
     @field_validator("coordinates", "demands")
     @classmethod
     def validate_node_vector_lengths(cls, value: list[Any], info: Any) -> list[Any]:
@@ -173,6 +193,11 @@ class BenchmarkInstanceVRPTW(_InstanceValidationMixin):
         default_factory=dict,
         union_mode="left_to_right",
     )
+
+    @field_validator("service_times")
+    @classmethod
+    def validate_depot_service(cls, value: list[Any]) -> list[Any]:
+        return require_zero_depot_service(value)
 
     @field_validator("service_times", "time_windows")
     @classmethod
@@ -276,6 +301,11 @@ class _SlimInstanceValidationMixin(BaseModel):
     arc_costs_source: AnyArcCostsSource
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    @field_validator("depot")
+    @classmethod
+    def validate_depot(cls, value: int) -> int:
+        return require_depot_zero(value)
+
     @field_validator("coordinates", "demands")
     @classmethod
     def validate_node_vector_lengths(cls, value: list[Any], info: Any) -> list[Any]:
@@ -299,6 +329,11 @@ class BenchmarkInstanceVRPTWCollection(_SlimInstanceValidationMixin):
     """Slim VRPTW instance of a family-first collection (service times and windows may be fractional)."""
     service_times: list[NumericOperand]
     time_windows: list[tuple[NumericOperand, NumericOperand]]
+
+    @field_validator("service_times")
+    @classmethod
+    def validate_depot_service(cls, value: list[Any]) -> list[Any]:
+        return require_zero_depot_service(value)
 
     @field_validator("service_times", "time_windows")
     @classmethod
@@ -328,13 +363,11 @@ AnyStaticBenchmarkInstance: TypeAlias = LoadedStaticInstance | AnyCollectionStat
 
 
 class OptimalityMetadata(BaseModel):
-    """Structured record of an optimality proof, stored under ``metadata["optimality"]``.
+    """Legacy optimality stamp (``proven: true``), accepted on read only.
 
-    The stamp asserts that the stored solution's cost is a proven optimum. The
-    required fields identify the claim (who proved it, under which caveats,
-    when); the optional fields carry the proof numerics and provenance. All
-    free-text fields must be self-contained — meaningful to an external reader
-    of the benchmark repository without access to any private context.
+    Earlier releases wrote this shape under ``metadata["optimality"]``. A record
+    that still carries it loads, so old files stay readable, but the store and
+    ``write_bks_file`` refuse to write it. New claims use ``SolverReportedOptimality``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -354,14 +387,62 @@ class OptimalityMetadata(BaseModel):
     note: str | None = None
 
 
-class SolverReportedOptimality(BaseModel):
-    """An attributable solver self-report under its own evaluation contract."""
+class ClaimEvidence(BaseModel):
+    """A file preserved as evidence of a solver claim, pinned by the sha256 of its bytes."""
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    scope: Literal["file"] = "file"
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, value: str) -> str:
+        return _validate_relative_path(value)
+
+
+class SolverReportedOptimality(BaseModel):
+    """An attributable solver self-report of optimality, stored under ``metadata["optimality"]``.
+
+    ``target_profile`` names the evaluation profile under which the solver claims
+    optimality. The store requires it to equal the profile of the evaluated family.
+    ``reported_primal`` and ``reported_dual`` are the solver's own bounds, in its
+    own arithmetic, and ``evidence`` pins a preserved file of the run. The checker
+    verifies the routes but not the claim.
+    """
+
+    model_config = ConfigDict(extra="forbid")
     status: Literal["solver-reported-optimal"]
     target_profile: str = Field(min_length=1)
     solver: str = Field(min_length=1)
     campaign: str | None = None
+    reported_primal: NumericOperand | None = None
+    reported_dual: NumericOperand | None = None
+    evidence: ClaimEvidence | None = None
+
+    @field_validator("reported_primal", "reported_dual")
+    @classmethod
+    def validate_bound(cls, value):
+        if isinstance(value, float) and not isfinite(value):
+            raise ValueError("a reported bound must be finite")
+        return value
+
+
+class _HistoricalTDClaim(SolverReportedOptimality):
+    """Additional provenance carried by the archived r1 reports, accepted only on read."""
+
+    target_profile: Literal["td-fold/1"]
+    arithmetic: str | None = None
+    certificate: str | None = None
+    date: str | None = None
+    wall_time_s: NumericOperand | None = None
+    time_limit_s: NumericOperand | None = None
+
+
+def is_legacy_optimality_claim(claim: Any) -> bool:
+    """True for a ``metadata["optimality"]`` value without the ``solver-reported-optimal`` status."""
+    return not (isinstance(claim, dict) and claim.get("status") == "solver-reported-optimal")
 
 
 class _SolutionValidationMixin(BaseModel):
@@ -388,7 +469,9 @@ class _SolutionValidationMixin(BaseModel):
             value = checked_solver_metadata(value)
         if "optimality" in value:
             claim = value["optimality"]
-            model = SolverReportedOptimality if isinstance(claim, dict) and "status" in claim else OptimalityMetadata
+            model = OptimalityMetadata
+            if isinstance(claim, dict) and "status" in claim:
+                model = _HistoricalTDClaim if claim.get("target_profile") == "td-fold/1" else SolverReportedOptimality
             optimality = model.model_validate(claim)
             value = dict(value)
             value["optimality"] = optimality.model_dump(mode="json", exclude_none=True)
