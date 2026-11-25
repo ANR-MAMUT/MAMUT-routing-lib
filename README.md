@@ -183,7 +183,7 @@ stored, whatever the solver claims.
 | `pyvrp` (default) | CVRP (MonoCost), VRPTW (MonoCost, HierarchicalVehicleCost) | the `[pyvrp]` extra |
 | `kayros` | TDVRP, TDVRPTW (Duration, or FleetCostDuration for an instance with a fixed vehicle charge) | `pip install kayros`, in a release whose `mamut-routing-lib` requirement admits this version (`mamut-routing solvers list` warns otherwise) |
 | `hgs-cvrp` | CVRP (MonoCost), any metric (the published matrix, asymmetric included) | a build with the lib's full-matrix reader patch (`mamut-routing solvers list` prints its path) |
-| `filo2`, `ails2` | CVRP (MonoCost), euclidean-metric variants (they compute distances from coordinates) | the executable (AILS-II: a jar with the `-seed`/`-out` patch) |
+| `filo2`, `ails2` | CVRP (MonoCost), euclidean-metric variants (they compute distances from coordinates) | the executable (AILS-II: a jar built with `-seed` and `-out` options, whose patch this package does not ship yet) |
 | `lkh3` | CVRP and VRPTW (MonoCost), any metric (explicit integer matrices, asymmetric included) | the `LKH` executable |
 
 ```bash

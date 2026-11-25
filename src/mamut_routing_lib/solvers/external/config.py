@@ -629,8 +629,8 @@ _STARTER_SOLVERS = (
         "ails2",
         (
             "AILS-II (CVRP, Java 21) -- {homepage}\n"
-            "Needs a build with the -seed/-out patch (upstream writes no routes and is not seedable):\n"
-            "MAMUT-routing paper7 campaign3/patch_ails2.py."
+            "Needs a build that adds -seed and -out options (upstream writes no routes and is not seedable).\n"
+            "This package does not ship that patch yet, so an unpatched upstream jar cannot be used."
         ),
         ('jar = "/path/to/AILSII.jar"', 'java = "java"                       # or the path of a JDK/JRE 21 java', 'version = "4ff3611"'),
     ),

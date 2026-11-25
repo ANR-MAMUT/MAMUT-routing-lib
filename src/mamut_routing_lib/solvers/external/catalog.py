@@ -21,11 +21,12 @@ campaign 3 (2026-09), which ran FILO2, AILS-II and HGS-CVRP by hand:
   below 0.1 and demands above 1e5, so the matrix is divided by 10 when needed
   (exactly, in decimal); ``-veh`` fixes the fleet. Prints its cost with six
   significant digits.
-- **AILS-II** (Maximo, Cordeau & Nascimento): a jar; ``-rounded false`` (the
-  rounded mode overflows a ``short`` above 32 767), totals below 2^31 (its
+- **AILS-II** (V. R. Máximo, J. F. Cordeau and M. C. V. Nascimento, MIT
+  License, https://github.com/INFORMSJoC/2023.0106): a jar; ``-rounded false``
+  (the rounded mode overflows a ``short`` above 32 767), totals below 2^31 (its
   acceptance threshold is an ``int``). Upstream writes no routes and draws its
-  randomness from the clock: it needs the ``-seed``/``-out`` patch
-  (MAMUT-routing paper7 ``campaign3/patch_ails2.py``).
+  randomness from the clock, so it needs a build that adds a ``-seed`` and an
+  ``-out`` option. This package does not ship that patch yet.
 - **LKH-3** (Helsgaun): explicit integer matrices, including asymmetric
   (``ACVRP``) and time windows (``CVRPTW``); driven by a parameter file;
   writes an ``MTSP_SOLUTION_FILE``. Distributed for academic, non-commercial
@@ -128,8 +129,8 @@ AILS2 = ExternalSolverDescriptor(
     coordinate_scales=(1.0,),
     limits=Limits(max_total_cost=2.1e9),
     requires_note=(
-        "needs a build with the -seed/-out patch (upstream AILS-II writes no routes and is not seedable): "
-        "MAMUT-routing paper7 campaign3/patch_ails2.py"
+        "needs a build that adds -seed and -out options (upstream AILS-II writes no routes and is not seedable). "
+        "This package does not ship that patch yet, so an unpatched upstream jar cannot be used"
     ),
     homepage="https://github.com/INFORMSJoC/2023.0106 (4ff3611) + patch",
 )
