@@ -3,9 +3,8 @@
 Three responsibilities:
 
 1. The exact IGP -> arrival-time NDCPWLF consolidation (``ichoua_travel_time``
-   + ``build_arc_atf``) -- the robust-marching construction previously
-   maintained in the tdvrptw-workspace migration scripts (``igp_atf.py``),
-   promoted here as the single source of truth. Breakpoints sit exactly where
+   + ``build_arc_atf``), a robust-marching construction and the single
+   source of truth for the ATFs of ``igp-profile`` instances. Breakpoints sit exactly where
    the departure or the arrival crosses a speed-zone boundary, each
    re-evaluated with the exact forward Ichoua loop so there is no drift; a
    degenerate-boundary skip and an ulp-scale monotone clamp harden the

@@ -13,10 +13,10 @@ after such a change. This module does it file by file, routes untouched:
 - a file is rewritten only when a stored checker output changed: ``cost``,
   ``metadata.validated_cost`` (when present), ``metadata.route_durations`` and
   ``metadata.route_departure_times`` (stored route order);
-- a moved ``cost`` is recorded in ``metadata.repriced``, and an optimality
-  stamp gets ``proven_optimum`` set to the new cost plus a note; a stamped BKS
-  that moves by more than ``OPTIMALITY_COST_TOLERANCE`` is refused, because the
-  proof would no longer describe the stored solution.
+- a moved ``cost`` is recorded in ``metadata.repriced``. A record that
+  carries an optimality claim is never rewritten (action ``stamp-conflict``),
+  because the library no longer writes legacy claims and a moved cost would
+  no longer match the claim.
 """
 
 from __future__ import annotations
@@ -37,7 +37,6 @@ from mamut_routing_lib.td.artifacts import (
     load_instance_atfs,
     load_td_benchmark_instance,
 )
-from mamut_routing_lib.td.bks import OPTIMALITY_COST_TOLERANCE
 from mamut_routing_lib.td.fold2 import TD_CHECKER_CONTRACT, check_td_solution
 from mamut_routing_lib.td.models import TDIGPProfileRef, TDRoadGraphRef
 
@@ -189,15 +188,6 @@ def _ulps(old: float, new: float) -> int:
     return max(1, round(abs(new - old) / math.ulp(max(abs(old), abs(new)))))
 
 
-def _stamp_note(previous: float, new: float, date: str) -> str:
-    return (
-        f"Re-priced on {date} from {previous!r} to {new!r} by {REPRICE_CHECKER_LABEL} "
-        "(exact vertex ready-time transforms and slope-one arc interpolation). Routes unchanged. "
-        "The proof was obtained under the pre-0.12 fold (td-fold/1); dual_bound is the prover's value "
-        "under that arithmetic. Re-certification under td-fold/2 is pending."
-    )
-
-
 def reprice_td_bks(
     bks_path: str | Path,
     *,
@@ -266,6 +256,10 @@ def reprice_td_bks(
     if not changed:
         return result
 
+    if stamped:
+        result.action = "stamp-conflict"
+        result.detail = "a record with an optimality claim is not rewritten by legacy repricing"
+        return result
     if "cost" in changed:
         metadata["repriced"] = {
             "previous_cost": bks.cost,
@@ -273,18 +267,6 @@ def reprice_td_bks(
             "contract": TD_CHECKER_CONTRACT,
             "date": date,
         }
-        if stamped:
-            optimality = dict(metadata["optimality"])
-            proven = optimality.get("proven_optimum")
-            if proven is not None and abs(proven - new_cost) > OPTIMALITY_COST_TOLERANCE:
-                result.action = "stamp-conflict"
-                result.detail = f"stamped proven_optimum {proven!r} vs re-priced cost {new_cost!r}"
-                return result
-            if proven is not None:
-                optimality["proven_optimum"] = new_cost
-            note = _stamp_note(bks.cost, new_cost, date)
-            optimality["note"] = f"{optimality['note']} {note}" if optimality.get("note") else note
-            metadata["optimality"] = optimality
 
     if dry_run:
         result.action = "would-reprice"
