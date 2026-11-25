@@ -96,6 +96,8 @@ The v0.13 library requires Pydantic 2.10 or newer for TD route results with rati
 | `save_bks_if_improved` trusting the supplied instance when no manifest exists | Same name, checked against the descriptor | The supplied instance must equal the descriptor and hydrated matrix at `instance_path`. A missing descriptor raises `FileNotFoundError`. |
 | `canonical_route_order(routes)` without input checks | Same name, validated input | Routes must be nonempty, with positive integer customer ids and no repeated customer. |
 | `SolutionCheckResult` with any field combination | Same model, validated | A `valid` result carries a nonnegative `num_routes` and a `routing_cost` that is `None` exactly on display overflow. |
+| `mamut-routing bks reprice-td` and `mamut_routing_lib.td.reprice.reprice_td_bks` | Removed | Every current TD record carries exact metadata, which the command refused. Re-price records of earlier library versions with mamut-routing-lib 0.12.0. |
+| `mamut_routing_lib.td.reprice.route_arcs` and `load_td_instance_for_routes` | `mamut_routing_lib.td.selected_arcs` | Same functions under a new module path. |
 
 During v0.13, importing `BenchmarkInstance` from the package or its `models` module returns the same class with a `DeprecationWarning`. The other renamed APIs use the new spellings. Type annotations can distinguish `LoadedStaticInstance` (CVRP or VRPTW with a matrix), `AnyStaticBenchmarkInstance` (also includes static collection descriptors), and `AnyBenchmarkInstance` (also includes TDVRP and TDVRPTW). All 3 unions are available at the package root.
 
@@ -429,7 +431,7 @@ Caveats:
 
 For static v0.12 replay, import `check_solution`, `compute_route_cost` or `compute_solution_cost` from `mamut_routing_lib.static_v012`. The separately named `compute_shortest_decimal_solution_cost` diagnostic sums the shortest decimal spellings of the parsed operands.
 
-For `td-fold/2` replay, import `check_td_solution` and the route helpers from `mamut_routing_lib.td.fold2`. The v0.12 repricer uses that module. To preview its effects on a historical checkout, run `mamut-routing bks reprice-td benchmarks --dry-run --jobs 8 --report reprice.json`. The historical repricer refuses records that carry exact evaluation metadata or an optimality claim.
+For `td-fold/2` replay, import `check_td_solution` and the route helpers from `mamut_routing_lib.td.fold2`. Records written by earlier library versions are re-priced with mamut-routing-lib 0.12.0, whose `mamut-routing bks reprice-td` command this version no longer ships.
 
 ## Development
 

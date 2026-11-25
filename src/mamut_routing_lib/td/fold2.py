@@ -1,6 +1,6 @@
 """Historical td-fold/2 checker and ready-time curves from mamut-routing-lib v0.12.
 
-The floating fold composes the materialized arc functions and applies customer windows and service at each step. It prices routes in canonical route order. The historical repricer uses this module to replay unmarked records.
+The floating fold composes the materialized arc functions and applies customer windows and service at each step. It prices routes in canonical route order. The `mamut-routing bks reprice-td` command of mamut-routing-lib 0.12.0 used this fold to re-price unmarked records.
 """
 
 from __future__ import annotations
@@ -21,11 +21,12 @@ TD_OBJECTIVES = (ObjectiveFunction.DURATION, ObjectiveFunction.FLEET_COST_DURATI
 #: Arithmetic identity for the v0.12 replay.
 TD_CHECKER_CONTRACT = "td-fold/2"
 
-#: Hint appended to cost mismatches: stored BKS priced under ``td-fold/1``
-#: need a re-pricing pass after the lib upgrade.
+#: Hint appended to cost mismatches. Stored BKS priced under ``td-fold/1``
+#: are re-priced with the ``mamut-routing bks reprice-td`` command of
+#: mamut-routing-lib 0.12.0.
 REPRICE_HINT = (
-    "the TD checker contract changed to td-fold/2 in mamut-routing-lib 0.12.0; "
-    "re-price stored BKS with `mamut-routing bks reprice-td`"
+    "the TD checker contract changed to td-fold/2 in mamut-routing-lib 0.12.0. "
+    "Re-price stored BKS with `mamut-routing bks reprice-td` from mamut-routing-lib 0.12.0"
 )
 
 __all__ = [
