@@ -197,7 +197,7 @@ def _price_on_relaxation(
     from mamut_routing_lib.exact import evaluate_exact
     from mamut_routing_lib.manifests import adjacent_manifest
     from mamut_routing_lib.solutions import is_time_dependent
-    from mamut_routing_lib.td.reprice import load_td_instance_for_routes
+    from mamut_routing_lib.td.selected_arcs import load_td_instance_for_routes
 
     manifest = adjacent_manifest(relaxed_instance, objective, routes=routes)
     if manifest is not None:

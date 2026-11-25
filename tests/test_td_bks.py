@@ -276,18 +276,3 @@ def test_marked_td_stamp_requires_explicit_solver_target(toy_loaded):
     stamp = {'status': 'solver-reported-optimal', 'target_profile': 'td-binary64-exact-v1', 'solver': 'test solver'}
     annotate_td_bks_optimality(toy_loaded, stamp, backend='python')
     assert load_bks(result.path).metadata['optimality'] == stamp
-
-
-@pytest.mark.parametrize('marker', ['standard', 'exact_evaluation'])
-def test_legacy_reprice_refuses_exact_record_before_loading_artifacts(toy_loaded, marker):
-    from mamut_routing_lib.td.reprice import reprice_td_bks
-
-    bks = create_td_bks_from_solution(toy_loaded, _solution(toy_loaded, [[1], [2]]), authors=AUTHORS, backend='python')
-    bks.metadata[marker] = bks.metadata.pop('exact_evaluation')
-    path = get_bks_path_for_instance(toy_loaded.instance_path, bks.objective_function)
-    write_bks_file(bks, path)
-    original = path.read_bytes()
-    for dry_run in (True, False):
-        report = reprice_td_bks(path, dry_run=dry_run)
-        assert report.action == 'error' and 'exact-profile' in report.detail
-        assert path.read_bytes() == original

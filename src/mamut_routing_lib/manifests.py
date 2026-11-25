@@ -22,7 +22,7 @@ from mamut_routing_lib.objectives import base_objective
 from mamut_routing_lib.sidecars import find_collection_root, load_collection_marker, validate_relative_sidecar_path
 from mamut_routing_lib.td.artifacts import LoadedTDInstance
 from mamut_routing_lib.td.manifest_stream import stream_td_materialization
-from mamut_routing_lib.td.reprice import route_arcs
+from mamut_routing_lib.td.selected_arcs import route_arcs
 from mamut_routing_lib.td.models import AnyTDBenchmarkInstance, TDIGPProfileRef, TDRoadGraphRef
 
 
