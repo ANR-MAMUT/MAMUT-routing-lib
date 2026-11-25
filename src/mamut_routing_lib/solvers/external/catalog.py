@@ -22,11 +22,12 @@ campaign 3 (2026-09), which ran FILO2, AILS-II and HGS-CVRP by hand:
   (exactly, in decimal); ``-veh`` fixes the fleet. Prints its cost with six
   significant digits.
 - **AILS-II** (V. R. Máximo, J. F. Cordeau and M. C. V. Nascimento, MIT
-  License, https://github.com/INFORMSJoC/2023.0106): a jar; ``-rounded false``
-  (the rounded mode overflows a ``short`` above 32 767), totals below 2^31 (its
-  acceptance threshold is an ``int``). Upstream writes no routes and draws its
-  randomness from the clock, so it needs a build that adds a ``-seed`` and an
-  ``-out`` option. This package does not ship that patch yet.
+  License, https://github.com/INFORMSJoC/2023.0106) is a jar run with
+  ``-rounded false``, because the rounded mode overflows a ``short`` above
+  32 767. Totals must stay below 2^31, since its acceptance threshold is an
+  ``int``. Upstream writes no routes and draws its randomness from the clock,
+  so it needs a build that adds a ``-seed`` and an ``-out`` option. This
+  package does not ship that patch yet.
 - **LKH-3** (Helsgaun): explicit integer matrices, including asymmetric
   (``ACVRP``) and time windows (``CVRPTW``); driven by a parameter file;
   writes an ``MTSP_SOLUTION_FILE``. Distributed for academic, non-commercial
