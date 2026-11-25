@@ -344,7 +344,7 @@ Use `--keep-artifacts DIR` to retain an external solver's input and output. For 
 
 When the required integers are too large, the adapter can export a decimal grid for search. Set `require_exact_scale = true` on an explicit integer solver to refuse that fallback. A rounded export that empties a time window is unsupported. HGS-CVRP reads a floating-point matrix and coordinate solvers compute distances internally. The run's `provenance.scale.search_model` identifies its input model. For integer matrices `provenance.scale.cost_unit` gives the exact numerator and denominator of one solver unit.
 
-Every accepted static candidate uses `binary64-exact-v1` for final pricing and BKS comparison. Time-dependent candidates use `td-binary64-exact-v1`. A solver's own optimality claim applies to the model it solved.
+Every accepted static candidate uses `binary64-exact-v1` for final pricing and BKS comparison. Time-dependent candidates use `td-binary64-exact-v1`. A solver claim of optimality must target the profile of the evaluated family. The checker verifies the routes, not the claim.
 
 When an integer solver returns routes and a cost for an explicit matrix, the adapter sums the actual exported weights, including the depot legs, and compares the report in solver units. A disagreement or fractional integer-solver report produces a warning. The benchmark checker still validates and prices the routes independently. A solver that only prints a rounded floating-point estimate can supply a route without this comparison.
 
