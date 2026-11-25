@@ -189,13 +189,28 @@ stored, whatever the solver claims.
 | `pyvrp` (default) | CVRP (MonoCost), VRPTW (MonoCost, HierarchicalVehicleCost) | the `[pyvrp]` extra |
 | `kayros` | TDVRP, TDVRPTW (Duration, or FleetCostDuration for an instance with a fixed vehicle charge) | `pip install kayros`, in a release whose `mamut-routing-lib` requirement admits this version (`mamut-routing solvers list` warns otherwise) |
 | `hgs-cvrp` | CVRP (MonoCost), any metric (the published matrix, asymmetric included) | a build with the lib's full-matrix reader patch (`mamut-routing solvers list` prints its path) |
-| `filo2`, `ails2` | CVRP (MonoCost), euclidean-metric variants (they compute distances from coordinates) | the executable (AILS-II: a jar built with `-seed` and `-out` options, whose patch this package does not ship yet) |
+| `filo2`, `ails2` | CVRP (MonoCost), euclidean-metric variants (they compute distances from coordinates) | the executable (AILS-II: a jar built with the packaged `ails2-seed-out.patch` for `-seed` and `-out`) |
 | `lkh3` | CVRP and VRPTW (MonoCost), any metric (explicit integer matrices, asymmetric included) | the `LKH` executable |
 
 ```bash
 pip install "mamut-routing-lib[cli,pyvrp]"
 mamut-routing solvers list          # what is available here, and how to enable the rest
 ```
+
+To build AILS-II with JDK 21, run the following from an environment with `mamut-routing-lib` installed. The patch adds a shared random seed and writes the best routes to the file requested by `-out`. It applies to the authors' INFORMS snapshot at `4ff3611` and the Mamut2026 campaign source at `e631331`. [AILS-II snapshot](https://github.com/INFORMSJoC/2023.0106/tree/4ff361153681635149e30305057251e9035ec6b7) · [Campaign source](https://github.com/vinymax10/AILS-CVRP/tree/e631331c76f001e652af9895e27f0fd8da8698c0)
+
+```bash
+git clone https://github.com/INFORMSJoC/2023.0106.git
+cd 2023.0106
+git checkout 4ff361153681635149e30305057251e9035ec6b7
+git apply "$(python -c 'from mamut_routing_lib.solvers.external.catalog import patch_path; print(patch_path("ails2-seed-out.patch"))')"
+mkdir -p build/classes
+find src -name '*.java' > build/sources.txt
+javac --release 21 -encoding UTF-8 -d build/classes @build/sources.txt
+jar --create --file build/AILSII.jar --main-class SearchMethod.AILSII -C build/classes .
+```
+
+Set `solvers.ails2.jar` to the absolute path of the resulting `build/AILSII.jar` in `solvers.toml`.
 
 Python:
 

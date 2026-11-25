@@ -448,7 +448,7 @@ def test_solvers_list_explains_how_to_enable_once(monkeypatch) -> None:
     table, _, enable = result.stdout.partition("To enable")
     assert "solvers.toml" not in table.split("\n", 1)[1]  # the path is printed once, not per row
     assert enable.count("\n  ails2 ") == 1 and enable.count("solvers.ails2.jar") == 1  # said once (it was twice)
-    assert "does not ship that patch yet" in enable and "hgs-cvrp-explicit-matrix.patch" in enable
+    assert "ails2-seed-out.patch" in enable and "hgs-cvrp-explicit-matrix.patch" in enable
 
 
 def test_workbench_cvrp_labelled_mamut2026_loads(tmp_path: Path, toy_cvrp_instance) -> None:
