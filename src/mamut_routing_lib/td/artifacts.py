@@ -80,7 +80,7 @@ def _validate_arc_function(i: int, j: int, atf: NDCPWLF, horizon: tuple[float, f
 
 def _atf_binary64(value: Any) -> float:
     """Read a JSON number without accepting string, Boolean or nonfinite operands."""
-    if type(value) not in (float, int):
+    if isinstance(value, bool) or not isinstance(value, (float, int)):
         raise ATFFormatError("ATF coordinates and horizon bounds must be JSON numbers")
     try:
         result = float(value)
@@ -151,11 +151,18 @@ def _atfs_from_payload(payload: dict[str, Any], *, validate_complete: bool = Tru
     )
 
 
+def _canonical_atf_arc(i: int, j: int, atf: NDCPWLF) -> list:
+    # Parsed and materialized arcs already hold binary64 values.
+    xs = [x if type(x) is float else _atf_binary64(x) for x in atf.xs]
+    ys = [y if type(y) is float else _atf_binary64(y) for y in atf.ys]
+    return [i, j, xs, ys]
+
+
 def atfs_to_canonical_json_bytes(atfs: InstanceATFs) -> bytes:
     """Serialize to the canonical JSON bytes (the input of ``atf_sha256``).
 
-    Fixed key order, one arc per line, floats via Python's shortest
-    round-trip repr.
+    Fixed key order, one arc per line. Horizon bounds and knot coordinates
+    use Python's shortest binary64 round-trip representation.
     """
     header_lines = [
         "{",
@@ -163,7 +170,7 @@ def atfs_to_canonical_json_bytes(atfs: InstanceATFs) -> bytes:
         f'    "format_version": {json.dumps(atfs.format_version)},',
         f'    "instance_name": {json.dumps(atfs.instance_name)},',
         f'    "benchmark_name": {json.dumps(atfs.benchmark_name)},',
-        f'    "horizon": {json.dumps(list(atfs.horizon))},',
+        f'    "horizon": {json.dumps(list(map(_atf_binary64, atfs.horizon)))},',
         f'    "num_customers": {json.dumps(atfs.num_customers)},',
         f'    "generator": {json.dumps(atfs.generator, sort_keys=True)},',
         '    "arcs": [',
@@ -171,7 +178,7 @@ def atfs_to_canonical_json_bytes(atfs: InstanceATFs) -> bytes:
     arc_lines = []
     for (i, j) in sorted(atfs.arcs):
         atf = atfs.arcs[(i, j)]
-        arc_lines.append("        " + json.dumps([i, j, list(atf.xs), list(atf.ys)]))
+        arc_lines.append("        " + json.dumps(_canonical_atf_arc(i, j, atf)))
     body = ",\n".join(arc_lines)
     text = "\n".join(header_lines) + "\n" + body + "\n    ]\n}\n"
     return text.encode("utf-8")
