@@ -729,6 +729,16 @@ def _require_same_instance(loaded: Any, checkable: Any, path: Path) -> None:
 
 
 
+def _preview(summary: dict[str, Any], action: str, **fields: Any) -> dict[str, Any]:
+    from typing import get_args
+
+    from mamut_routing_lib.bks import BKSPreviewAction
+
+    if action not in get_args(BKSPreviewAction):
+        raise ValueError(f"Unknown BKS preview action {action!r}")
+    return {**summary, "action": action, **fields}
+
+
 def preview_bks_update(
     instance_path: str | Path,
     routes: list[list[int]],
@@ -739,7 +749,7 @@ def preview_bks_update(
     checkable: Any = None,
     marked_input: BenchmarkBKS | None = None,
 ) -> dict[str, Any]:
-    """What ``submit_bks`` would do, without writing: ``action`` is ``would_create``,
+    """What ``submit_bks`` would do, without writing: ``action`` (a ``BKSPreviewAction``) is ``would_create``,
     ``would_replace``, ``would_keep`` (``tie`` when equal), ``invalid`` (the candidate) or
     ``stored_invalid`` (the stored BKS fails the checker; ``submit_bks`` would raise).
 
@@ -762,7 +772,7 @@ def preview_bks_update(
     try:
         existing = load_bks(bks_path) if bks_path.exists() else None
     except ValueError as error:
-        return {**summary, "action": "stored_invalid", "error": str(error)}
+        return _preview(summary, "stored_invalid", error=str(error))
     all_routes = [*routes, *existing.routes] if existing is not None else routes
     manifest = adjacent_manifest(path, objective, routes=all_routes, supplied_instance=loaded, supplied_checkable=checkable)
     if manifest is not None:
@@ -775,16 +785,16 @@ def preview_bks_update(
     try:
         candidate = prepared.evaluate(routes)
     except ExactRouteError as error:
-        return {**summary, "action": "invalid", "error": str(error)}
+        return _preview(summary, "invalid", error=str(error))
     if marked_input is not None:
         try:
             _require_marked_target(marked_input, loaded, routes, objective)
             verify_stored(marked_input, candidate, manifest)
         except ValueError as error:
-            return {**summary, "action": "invalid", "error": str(error)}
+            return _preview(summary, "invalid", error=str(error))
     summary.update(candidate_cost=candidate.display_cost, candidate_num_routes=len(candidate.routes))
     if existing is None:
-        return {**summary, "action": "would_create"}
+        return _preview(summary, "would_create")
     try:
         if existing.instance_name != get_instance_identifier(loaded):
             raise ValueError("Stored BKS belongs to a different instance.")
@@ -792,7 +802,7 @@ def preview_bks_update(
         verify_stored(existing, incumbent, manifest)
         summary.update(existing_cost=incumbent.display_cost, existing_num_routes=len(incumbent.routes))
     except ValueError as error:
-        return {**summary, "action": "stored_invalid", "error": str(error)}
+        return _preview(summary, "stored_invalid", error=str(error))
     if candidate.objective_key < incumbent.objective_key:
-        return {**summary, "action": "would_replace"}
-    return {**summary, "action": "would_keep", "tie": candidate.objective_key == incumbent.objective_key}
+        return _preview(summary, "would_replace")
+    return _preview(summary, "would_keep", tie=candidate.objective_key == incumbent.objective_key)

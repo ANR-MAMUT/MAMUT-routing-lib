@@ -61,6 +61,8 @@ from mamut_routing_lib.sidecars import (
     save_collection_marker,
 )
 from mamut_routing_lib.bks import (
+    BKSPreviewAction,
+    BKSUpdateAction,
     BKSUpdateResult,
     DEFAULT_BKS_AUTHORS,
     create_bks_from_solution,
@@ -185,6 +187,8 @@ __all__ = [
     "ArcCostsDistancesRef",
     "ArcCostsEuclidean",
     "ArtifactPaths",
+    "BKSPreviewAction",
+    "BKSUpdateAction",
     "BKSUpdateResult",
     "BenchmarkBKS",
     "BenchmarkInstanceVRPTW",

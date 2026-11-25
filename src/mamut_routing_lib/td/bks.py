@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from mamut_routing_lib.artifacts import get_bks_path_for_instance, load_bks, write_bks_file
-from mamut_routing_lib.bks import BKSUpdateResult
+from mamut_routing_lib.bks import BKSUpdateAction, BKSUpdateResult
 from mamut_routing_lib.enums import ObjectiveFunction
 from mamut_routing_lib.objectives import base_objective
 from mamut_routing_lib.models import BenchmarkBKS, BenchmarkSolution, OptimalityMetadata, SolverReportedOptimality
@@ -115,7 +115,7 @@ def save_td_solution_as_bks_if_improved(
     candidate_bks, candidate_evaluation = _candidate(loaded, checker, solution, authors, metadata, manifest)
     previous = None
     tie = False
-    action = 'created'
+    action: BKSUpdateAction = 'created'
     if incumbent_bks is not None:
         previous = path
         if incumbent_bks.instance_name != candidate_bks.instance_name or incumbent_bks.objective_function != checker.objective:
