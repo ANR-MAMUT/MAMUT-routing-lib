@@ -132,3 +132,34 @@ def test_result_fraction_readers_preserve_long_coprime_values_and_zero():
         record = {"authoritative_cost": {"numerator": n, "denominator": d}}
         assert _rational_cost(record) == value
         assert _stored_cost({"metadata": {"exact_evaluation": record}}) == value
+
+
+@pytest.mark.parametrize("pair", [
+    {"numerator": "2", "denominator": "4"},
+    {"numerator": "0", "denominator": "2"},
+    {"numerator": "1", "denominator": "0"},
+    {"numerator": "1", "denominator": "-3"},
+    {"numerator": "-1", "denominator": "3"},
+    {"numerator": "+1", "denominator": "3"},
+    {"numerator": "01", "denominator": "3"},
+    {"numerator": "1", "denominator": "03"},
+    {"numerator": "-0", "denominator": "1"},
+    {"numerator": 1, "denominator": "3"},
+    {"numerator": "1"},
+])
+def test_result_fraction_reader_rejects_noncanonical_pairs(pair):
+    from mamut_routing_lib.exact_store import read_result_fraction
+
+    with pytest.raises(ValueError, match="canonical result fraction"):
+        read_result_fraction(pair)
+
+
+def test_result_fraction_reader_accepts_reduced_pairs():
+    from mamut_routing_lib.exact_store import read_result_fraction
+
+    assert read_result_fraction({"numerator": "0", "denominator": "1"}) == 0
+    assert read_result_fraction({"numerator": "14", "denominator": "3"}) == Fraction(14, 3)
+    from decimal import Decimal
+
+    big = "9" * 5000  # above CPython's default digit limit for int(str)
+    assert read_result_fraction({"numerator": big, "denominator": "1"}).numerator == int(Decimal(big))

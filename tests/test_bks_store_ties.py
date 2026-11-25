@@ -299,3 +299,18 @@ def test_bks_update_actions_are_a_closed_vocabulary(tmp_path):
     kept = preview_bks_update(path, [[3, 4], [1, 2]], backend="python")
     assert kept["action"] == "would_keep" and kept["tie"] is True
     assert preview_bks_update(path, [[1, 1]], backend="python")["action"] == "invalid"
+
+
+def test_stored_cost_in_non_lowest_terms_is_rejected(tmp_path):
+    instance = _instance(MATRIX_ORDER)
+    routes = [[1, 2], [3, 4]]
+    path = _store(tmp_path, instance, routes)
+    store = path.with_name(f"{instance.instance_name}.bks.MonoCost.json")
+    record = load_bks(store)
+    pair = record.metadata["exact_evaluation"]["authoritative_cost"]
+    pair.update(numerator=str(2 * int(pair["numerator"])), denominator=str(2 * int(pair["denominator"])))
+    save_json_to_file(record.model_dump(mode="json"), store)
+    before = store.read_bytes()
+    with pytest.raises(ValueError, match="authoritative_cost"):
+        save_bks_if_improved(instance, _candidate(instance, [[1], [2], [3], [4]]), path)
+    assert store.read_bytes() == before
