@@ -15,7 +15,7 @@ from struct import pack
 from mamut_routing_lib.json_utils import strict_json_loads
 from mamut_routing_lib.sidecars import validate_relative_sidecar_path
 from mamut_routing_lib.td.artifacts import (
-    InstanceATFs, atfs_to_canonical_json_bytes, compute_atf_sha256, load_instance_atfs, load_td_benchmark_instance,
+    InstanceATFs, _canonical_atf_arc, atfs_to_canonical_json_bytes, compute_atf_sha256, load_instance_atfs, load_td_benchmark_instance,
 )
 from mamut_routing_lib.td.models import ATF_FORMAT, ATF_FORMAT_VERSION
 from mamut_routing_lib.td.igp import (
@@ -153,7 +153,7 @@ def _generated_records(operands, materialize, canonical, block_arcs):
         keys = {(i, j) for i in range(start, min(start + rows_per_block, n)) for j in range(n) if j != i}
         block = materialize(keys)
         for (i, j), arc in sorted(block.items()):
-            row = [i, j, list(arc.xs), list(arc.ys)]
+            row = _canonical_atf_arc(i, j, arc)
             canonical.update((b"" if first else b",\n") + b"        " + json.dumps(row).encode("ascii"))
             first = False
             yield row

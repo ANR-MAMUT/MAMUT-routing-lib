@@ -73,3 +73,21 @@ def test_empty_canonical_graph_has_a_digest(tmp_path):
     checked = stream_td_materialization(path, tmp_path)
     assert checked.num_arcs == checked.num_knots == 0
     assert checked.atf_stream_sha256 == atf_stream_sha256(1, atfs.horizon, [])
+
+
+def test_generated_integer_knots_hash_like_the_full_sidecar():
+    from dataclasses import replace
+
+    from mamut_routing_lib.td import NDCPWLF, compute_atf_sha256
+    from mamut_routing_lib.td.manifest_stream import _generated_records
+    from td_utils import make_toy_atfs
+
+    atfs = make_toy_atfs()
+    arc = atfs.arcs[1, 2]
+    atfs.arcs[1, 2] = NDCPWLF(list(map(int, arc.xs)), list(map(int, arc.ys)))
+    digest = hashlib.sha256()
+    blocks = _generated_records(
+        replace(atfs, arcs={}), lambda keys: {key: atfs.arcs[key] for key in keys}, digest, block_arcs=2,
+    )
+    assert sum(1 for _ in blocks) == len(atfs.arcs)
+    assert digest.hexdigest() == compute_atf_sha256(atfs)

@@ -12,6 +12,7 @@ from mamut_routing_lib.td import (
     ATFFormatError,
     BenchmarkInstanceTDVRP,
     BenchmarkInstanceTDVRPTW,
+    NDCPWLF,
     atfs_to_canonical_json_bytes,
     compute_atf_sha256,
     load_instance_atfs,
@@ -22,6 +23,27 @@ from td_utils import make_toy_atfs, toy_instance_payload, write_toy_instance_fil
 
 
 class TestSidecarRoundTrip:
+    @pytest.mark.parametrize("suffix", [".atf.json", ".atf.json.gz"])
+    def test_integer_horizon_and_knots_keep_the_same_pin_after_reload(self, tmp_path, suffix):
+        atfs = make_toy_atfs()
+        atfs.generator["version"] = 1
+        pin = compute_atf_sha256(atfs)
+        atfs.horizon = tuple(map(int, atfs.horizon))
+        arc = atfs.arcs[1, 2]
+        atfs.arcs[1, 2] = NDCPWLF(list(map(int, arc.xs)), list(map(int, arc.ys)))
+
+        path = tmp_path / ("TOY1" + suffix)
+        save_instance_atfs(atfs, path)
+        assert compute_atf_sha256(atfs) == pin
+        loaded = load_instance_atfs(path, expected_sha256=pin)
+        assert compute_atf_sha256(loaded) == pin
+        assert type(loaded.generator["version"]) is int
+        descriptor = toy_instance_payload()
+        descriptor["td"].update(atf_path=path.name, atf_sha256=pin)
+        instance_path = tmp_path / "TOY1.vrp.json"
+        instance_path.write_text(json.dumps(descriptor))
+        assert load_td_instance(instance_path, verify_sha256=True).atfs.arcs == atfs.arcs
+
     def test_plain_round_trip(self, tmp_path):
         atfs = make_toy_atfs()
         path = tmp_path / "TOY1.atf.json"
