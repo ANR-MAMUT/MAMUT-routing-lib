@@ -25,9 +25,11 @@ It provides:
 
 Kayros finds TD routes and reports results under its own checker contract. This library can independently evaluate those routes under the selected benchmark profile. [Kayros](https://github.com/0nyr/kayros)
 
-This repository does not own site generation, publication-history generation, migration pipelines, or solver integrations. It is a pure contract and runtime library for benchmark data management intended to be used by researchers and practitioners alike, both inside and outside the MAMUT project.
+The library includes the solver registry, adapters and route checkers. The collection repository builds the website and release archives.
 
 ## Installation
+
+For the development v0.13 family collections, install the library from the submodule pinned by your collection checkout. From the collection root, run `python -m pip install './MAMUT-routing-lib[cli]'` in a new virtual environment. The build prerequisites are listed below. For the released package on PyPI, use either command below.
 
 ```bash
 pip install mamut-routing-lib
@@ -134,8 +136,7 @@ pip install "mamut-routing-lib[cli]"
 uv add "mamut-routing-lib[cli]"
 ```
 
-It exposes local benchmark commands by default, plus a `remote` command group
-backed by the remote retrieval module:
+The development library reads family-first release archives. Until the first such snapshot is published, read the current edition from the collection's pinned family checkouts. For the September 2026 snapshot, use version 0.12.0 in a separate environment. The following commands apply to family-first releases.
 
 ```bash
 # List archives available in the latest release of the configured repo
@@ -147,13 +148,10 @@ mamut-routing remote list --problem-type CVRP
 
 # Download and extract archives into --benchmarks-dir
 mamut-routing --benchmarks-dir ./benchmarks remote \
-    fetch Poryos2026-snapshot-2026-09-23-70ca946.zip
-
-# Or fetch by filter:
-mamut-routing --benchmarks-dir ./benchmarks remote fetch --benchmark-name Sintef2008
+    fetch --benchmark-name Poryos2026
 
 # Verify local zips (or extracted trees) against the remote manifest
-mamut-routing --benchmarks-dir ./benchmarks remote verify
+mamut-routing --benchmarks-dir ./benchmarks remote verify --benchmark-name Poryos2026
 
 # Print the parsed manifest as JSON
 mamut-routing remote manifest | jq .snapshot_id
@@ -198,6 +196,19 @@ stored, whatever the solver claims.
 pip install "mamut-routing-lib[cli,pyvrp]"
 mamut-routing solvers list          # what is available here, and how to enable the rest
 ```
+
+To build HGS-CVRP with the installed full-matrix reader patch, run the following from an environment with `mamut-routing-lib` installed and CMake and a C++ compiler on the path.
+
+```bash
+git clone https://github.com/vidalt/HGS-CVRP.git
+git -C HGS-CVRP checkout 1a927955cd2861a29d978f0d359d6e647db9319c
+hgs_patch=$(python -c 'from mamut_routing_lib.solvers.external.catalog import patch_path; print(patch_path("hgs-cvrp-explicit-matrix.patch"))')
+git -C HGS-CVRP apply "$hgs_patch"
+cmake -S HGS-CVRP -B HGS-CVRP/build -DCMAKE_BUILD_TYPE=Release
+cmake --build HGS-CVRP/build
+```
+
+Set `solvers.hgs-cvrp.executable` to the absolute path of `HGS-CVRP/build/hgs` in `solvers.toml`.
 
 To build AILS-II with JDK 21, run the following from an environment with `mamut-routing-lib` installed. The patch adds a shared random seed and writes the best routes to the file requested by `-out`. It applies to the authors' INFORMS snapshot at `4ff3611` and the Mamut2026 campaign source at `e631331`. [AILS-II snapshot](https://github.com/INFORMSJoC/2023.0106/tree/4ff361153681635149e30305057251e9035ec6b7) · [Campaign source](https://github.com/vinymax10/AILS-CVRP/tree/e631331c76f001e652af9895e27f0fd8da8698c0)
 
