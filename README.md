@@ -2,6 +2,7 @@
 
 Modern Python library for CVRP, VRPTW and time-dependent (TDVRPTW/TDVRP) benchmark models, validation, BKS management, and snapshot retrieval.
 
+[![PyPI](https://img.shields.io/pypi/v/mamut-routing-lib)](https://pypi.org/project/mamut-routing-lib/)
 [![SWH](https://archive.softwareheritage.org/badge/origin/https://github.com/ANR-MAMUT/MAMUT-routing-lib/)](https://archive.softwareheritage.org/browse/origin/?origin_url=https://github.com/ANR-MAMUT/MAMUT-routing-lib)
 
 ## MAMUT project context
