@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mamut-routing-lib"
-version = "0.13.0.dev0"
+version = "0.13.0"
 description = "Modern Python library for CVRP and VRPTW benchmark models, validation, BKS management, and snapshot retrieval."
 readme = "README.md"
 authors = [

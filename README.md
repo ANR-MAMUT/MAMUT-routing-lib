@@ -29,17 +29,14 @@ The library includes the solver registry, adapters and route checkers. The colle
 
 ## Installation
 
-For the development v0.13 family collections, install the library from the submodule pinned by your collection checkout. From the collection root, run `python -m pip install './MAMUT-routing-lib[cli]'` in a new virtual environment. The build prerequisites are listed below. For the released package on PyPI, use either command below.
+Version 0.13.0 reads edition `r1` of the family collections. Install its CLI in a fresh Python environment. The published Linux x86-64 wheels target CPython 3.11 to 3.14. For a source build, install the native build prerequisites listed below.
 
 ```bash
-pip install mamut-routing-lib
+python -m pip install 'mamut-routing-lib[cli]==0.13.0'
+mamut-routing --version
 ```
 
-or, using the modern [`uv`](https://github.com/astral-sh/uv) Python package manager:
-
-```bash
-uv add mamut-routing-lib
-```
+To use the historical September 2026 snapshot, install `mamut-routing-lib[cli]==0.12.0` in a separate environment. The checker and archive reader work independently of the optional solver packages.
 
 ## Exact route evaluation on v0.13
 
@@ -136,7 +133,7 @@ pip install "mamut-routing-lib[cli]"
 uv add "mamut-routing-lib[cli]"
 ```
 
-The development library reads family-first release archives. Until the first such snapshot is published, read the current edition from the collection's pinned family checkouts. For the September 2026 snapshot, use version 0.12.0 in a separate environment. The following commands apply to family-first releases.
+Version 0.13 reads family-first release archives. Until the first such snapshot is published, read the current edition from the collection's pinned family checkouts. For the September 2026 snapshot, use version 0.12.0 in a separate environment. The following commands apply to family-first releases.
 
 ```bash
 # List archives available in the latest release of the configured repo
@@ -187,7 +184,7 @@ stored, whatever the solver claims.
 | Solver | Solves | Needs |
 |---|---|---|
 | `pyvrp` (default) | CVRP (MonoCost), VRPTW (MonoCost, HierarchicalVehicleCost) | the `[pyvrp]` extra |
-| `kayros` | TDVRP, TDVRPTW (Duration, or FleetCostDuration for an instance with a fixed vehicle charge) | `pip install kayros`, in a release whose `mamut-routing-lib` requirement admits this version (`mamut-routing solvers list` warns otherwise) |
+| `kayros` | TDVRP, TDVRPTW (Duration, or FleetCostDuration for an instance with a fixed vehicle charge) | a compatible Kayros 2.0 development build from the collection or tools installation guide. PyPI Kayros 1.7.1 requires a library version below 0.12 |
 | `hgs-cvrp` | CVRP (MonoCost), any metric (the published matrix, asymmetric included) | a build with the lib's full-matrix reader patch (`mamut-routing solvers list` prints its path) |
 | `filo2`, `ails2` | CVRP (MonoCost), euclidean-metric variants (they compute distances from coordinates) | the executable (AILS-II: a jar built with the packaged `ails2-seed-out.patch` for `-seed` and `-out`) |
 | `lkh3` | CVRP and VRPTW (MonoCost), any metric (explicit integer matrices, asymmetric included) | the `LKH` executable |
