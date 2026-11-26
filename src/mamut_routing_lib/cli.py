@@ -350,7 +350,7 @@ def remote_fetch_assets(
     """Download (and optionally extract) one or more benchmark archives.
 
     Archives are kept at <benchmarks-dir>/<filename>. With --extract (default)
-    each one lands in the canonical tree, e.g. <benchmarks-dir>/VRPTW/Sintef2008
+    each family lands in the canonical tree, e.g. <benchmarks-dir>/Sintef2008
     or <benchmarks-dir>/Poryos2026, so `list` and `discover_benchmark_instances`
     work on the fetched tree. Re-fetching replaces the family directory,
     including files written into it since (e.g. BKS saved by `solve`).
