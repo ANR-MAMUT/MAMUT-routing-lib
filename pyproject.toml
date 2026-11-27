@@ -9,7 +9,7 @@ description = "Modern Python library for CVRP and VRPTW benchmark models, valida
 readme = "README.md"
 authors = [
     { name = "Adrien Pichon" },
-    { name = "Florian Rascoussier", email = "onyr.maintainer@gmail.com" },
+    { name = "Florian Rascoussier" },
     { name = "Romain Billot" },
     { name = "Lina Fahed" },
     { name = "Alexandru-Liviu Olteanu" },
